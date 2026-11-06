@@ -19,12 +19,23 @@ through the same token-authenticated loopback API as the hooks.
 
 | Tool | Answers |
 |---|---|
-| `jerry_get_status` | Core running, project monitored or excluded, number of approved plans, hard rules |
-| `jerry_get_approval_status` | approved plans (task, version, scope) and plans not approved, live |
-| `jerry_get_current_task` | latest task for the repository with plan version, scope and status |
-| `jerry_get_next_required_action` | propose a plan, wait for approval, revise a rejected plan, or work within scope |
+| `jerry_get_state` | live state for a repository: monitored or excluded, approved and pending plans with scope, current task, next expected action (propose a plan, wait for approval, revise, work within scope), hard rules |
 | `jerry_check_paths` | the gate verdict for hypothetical edits (PASS / WARN / DENY), not recorded |
 | `jerry_list_deviations` | recorded WARN and DENY events for the repository over a time window |
+
+The spec lists the state questions as separate tools (`jerry_get_current_task`, `jerry_get_workflow_state`,
+`jerry_get_approval_status`, `jerry_get_next_required_action`). They are merged into `jerry_get_state` because every
+tool definition stays in the context of every session, and one call gives the full picture.
+
+**Context budget** (measured, about 3.7 characters per token):
+- Fixed cost per session: about 730 tokens. That is about 310 for the SessionStart context, of which about 200 is
+  the hard-rule text, plus about 390 for the tool definitions and about 30 for the server instructions.
+- A deviation warning costs about 50 tokens.
+- A `jerry_get_state` result costs about 175 tokens.
+
+The first version cost about 1350 tokens. Savings come only from tool descriptions and plan-state wording: the
+hard-rule text Claude receives stays verbatim (product-owner requirement). Claude is asked to mention JERRY
+warnings in its summary rather than calling `jerry_list_deviations` every time, which avoids extra tool calls.
 
 **Deliberately absent:** any tool that approves, rejects, excludes, revises or completes. Those are user
 actions in the CLI or dashboard (spec §4.2: "Do not expose `approve_plan`, `approve_fixes`, `mark_done`").
@@ -53,10 +64,11 @@ SessionStart now points Claude at these tools, because the start message can go 
   live from none to waiting to approved; previews are not recorded; deviations are listed; Core outage is
   reported explicitly; protocol errors do not crash the server.
 - Live (`scripts/e2e-live.mjs`, scenario G, 25/25): a real Claude Code session called
-  `mcp__plugin_jerry_jerry__jerry_get_approval_status` and reported the approved scope from the tool. Every MCP
-  call also passes through the PreToolUse gate (`monitor.mcp-tool`).
+  `mcp__plugin_jerry_jerry__jerry_get_state` and reported the approved scope from the tool. Every MCP call also
+  passes through the PreToolUse gate (`monitor.mcp-tool`).
 
 ## Consequences
 
 - Tool names carry the plugin namespace (`mcp__plugin_jerry_jerry__…`). Allow rules and dashboards must use the full name.
+- The hard rules themselves (enforcement and the wording Claude receives) are out of scope for token savings.
 - Each JERRY tool call adds one PreToolUse hook run (about 100 ms), like every other MCP tool.

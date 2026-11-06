@@ -68,79 +68,47 @@ function summarizeTask(task: TaskWithDecision): Record<string, unknown> {
 
 const pathArgument = {
   type: 'object',
-  properties: { path: { type: 'string', description: 'A file or directory inside the repository. Defaults to the project directory of this session.' } },
+  properties: { path: { type: 'string', description: 'Path inside the repository (default: project directory).' } },
   additionalProperties: false,
 } as const;
 
+/**
+ * Three tools instead of one per question: every tool definition stays in the context of every
+ * session, so the state questions (status, approvals, current task, next action) share one tool.
+ */
 export const TOOLS: readonly ToolDefinition[] = [
   {
-    name: 'jerry_get_status',
-    title: 'JERRY status',
-    description: 'Whether JERRY Core is running and how it treats the current project (monitored, excluded, approved plans).',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-    handler: () =>
+    name: 'jerry_get_state',
+    title: 'JERRY state',
+    description: 'Live JERRY state for a repository: approved and pending plans with scope, current task, and the next expected action.',
+    inputSchema: pathArgument,
+    handler: (args) =>
       withCore(async () => {
         const status = coreStatusSchema.parse(await core('GET', '/api/v1/status'));
-        const state = await repositoryState(undefined);
+        const state = await repositoryState(args['path']);
+        const latest = [...state.tasks].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
         return ok({
           guard: 'GUARDED',
           jerryVersion: status.version,
-          project: projectDir(),
           repository: state.repoRoot,
           monitored: state.repoRoot !== null && !state.excluded,
-          approvedPlans: state.tasks.filter((task) => taskStatus(task) === 'APPROVED').length,
-          hardRules: 'No Git command or Git-server MCP tool that changes anything; no writes inside .git; no changes to JERRY data or the settings that enable it.',
-        });
-      }),
-  },
-  {
-    name: 'jerry_get_approval_status',
-    title: 'Plan approval status',
-    description: 'Current, live approval state of JERRY plans for a repository: approved plans with their scope, and plans waiting for the user. Approvals can change during a session, so check this instead of relying on the session start message.',
-    inputSchema: pathArgument,
-    handler: (args) =>
-      withCore(async () => {
-        const state = await repositoryState(args['path']);
-        return ok({
-          repository: state.repoRoot,
-          excludedFromMonitoring: state.excluded,
           approved: state.tasks.filter((task) => taskStatus(task) === 'APPROVED').map(summarizeTask),
           notApproved: state.tasks.filter((task) => taskStatus(task) !== 'APPROVED').map(summarizeTask),
+          currentTask: latest === undefined ? null : { ...summarizeTask(latest), contentHash: latest.plan.contentHash, createdAt: latest.createdAt },
+          next: nextAction(state),
+          hardRules: 'No Git command or Git-server MCP tool that changes anything; no writes inside .git; no changes to JERRY data or the settings that enable it; no user-only jerry commands.',
         });
-      }),
-  },
-  {
-    name: 'jerry_get_current_task',
-    title: 'Current JERRY task',
-    description: 'The most recently created JERRY task for a repository, with its current plan version, scope and approval status.',
-    inputSchema: pathArgument,
-    handler: (args) =>
-      withCore(async () => {
-        const state = await repositoryState(args['path']);
-        const latest = [...state.tasks].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
-        return ok({ repository: state.repoRoot, task: latest === undefined ? null : { ...summarizeTask(latest), contentHash: latest.plan.contentHash, createdAt: latest.createdAt } });
-      }),
-  },
-  {
-    name: 'jerry_get_next_required_action',
-    title: 'Next required action',
-    description: 'What JERRY expects next in this repository, based on the live plan state.',
-    inputSchema: pathArgument,
-    handler: (args) =>
-      withCore(async () => {
-        const state = await repositoryState(args['path']);
-        return ok({ repository: state.repoRoot, ...nextAction(state) });
       }),
   },
   {
     name: 'jerry_check_paths',
     title: 'Check paths against the plan',
-    description: 'Before editing, ask JERRY how edits to these paths would be treated: inside the approved scope (PASS), a recorded deviation (WARN), or blocked by a hard rule (DENY). Nothing is recorded.',
+    description: 'How edits to these paths would be treated: PASS (in scope), WARN (deviation) or DENY (hard rule). Not recorded.',
     inputSchema: {
       type: 'object',
       properties: {
-        paths: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 50, description: 'File paths, absolute or relative to cwd.' },
-        cwd: { type: 'string', description: 'Directory for relative paths. Defaults to the project directory.' },
+        paths: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 50 },
+        cwd: { type: 'string', description: 'Base for relative paths (default: project directory).' },
       },
       required: ['paths'],
       additionalProperties: false,
@@ -157,13 +125,13 @@ export const TOOLS: readonly ToolDefinition[] = [
   {
     name: 'jerry_list_deviations',
     title: 'Recorded deviations',
-    description: 'Edits and commands JERRY recorded as deviations from the approved plan (WARN) or blocked (DENY) in a repository, newest first. Use it before summarizing work so the user hears about every deviation.',
+    description: 'Recorded deviations (WARN) and blocked actions (DENY) in a repository, newest first.',
     inputSchema: {
       type: 'object',
       properties: {
         path: pathArgument.properties.path,
-        sinceMinutes: { type: 'integer', minimum: 1, maximum: 10080, description: `Look back this many minutes (default ${DEFAULT_DEVIATION_WINDOW_MINUTES}).` },
-        limit: { type: 'integer', minimum: 1, maximum: 200, description: 'Maximum number of entries (default 50).' },
+        sinceMinutes: { type: 'integer', minimum: 1, maximum: 10080 },
+        limit: { type: 'integer', minimum: 1, maximum: 200 },
       },
       additionalProperties: false,
     },

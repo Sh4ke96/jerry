@@ -81,24 +81,26 @@ describe('JERRY MCP server (bundled)', () => {
     const mcp = await connect();
     const listed = (await mcp.request('tools/list'))['result'] as { tools: Array<{ name: string; annotations: { readOnlyHint: boolean } }> };
     const names = listed.tools.map((tool) => tool.name).sort();
-    expect(names).toEqual(['jerry_check_paths', 'jerry_get_approval_status', 'jerry_get_current_task', 'jerry_get_next_required_action', 'jerry_get_status', 'jerry_list_deviations']);
+    expect(names).toEqual(['jerry_check_paths', 'jerry_get_state', 'jerry_list_deviations']);
     expect(listed.tools.every((tool) => tool.annotations.readOnlyHint)).toBe(true);
     expect(names.some((name) => /approve|reject|exclude|done|complete/.test(name))).toBe(false);
   });
 
   it('reports the live plan state: none, waiting, approved', async () => {
     const mcp = await connect();
-    expect((await mcp.call('jerry_get_next_required_action')).structured).toMatchObject({ action: 'propose-plan' });
+    expect((await mcp.call('jerry_get_state')).structured).toMatchObject({ guard: 'GUARDED', monitored: true, currentTask: null, next: { action: 'propose-plan' } });
 
     const created = (await api(core, 'POST', '/api/v1/tasks', { repoPath: repo, title: 'Live state', scope: ['src/**'] })).body as { taskId: string };
-    expect((await mcp.call('jerry_get_next_required_action')).structured).toMatchObject({ action: 'wait-for-approval' });
-    expect((await mcp.call('jerry_get_current_task')).structured).toMatchObject({ task: { taskId: created.taskId, status: 'WAITING_FOR_APPROVAL' } });
+    expect((await mcp.call('jerry_get_state')).structured).toMatchObject({
+      currentTask: { taskId: created.taskId, status: 'WAITING_FOR_APPROVAL' },
+      next: { action: 'wait-for-approval' },
+    });
 
-    // Approved while the session is running: the tools see it immediately.
+    // Approved while the session is running: the tool sees it immediately.
     await api(core, 'POST', `/api/v1/tasks/${created.taskId}/approvals`, { stage: 'PLAN', version: 1, decision: 'APPROVED' });
-    expect((await mcp.call('jerry_get_approval_status')).structured).toMatchObject({ approved: [{ taskId: created.taskId, scope: ['src/**'], status: 'APPROVED' }], notApproved: [] });
-    expect((await mcp.call('jerry_get_next_required_action')).structured).toMatchObject({ action: 'work-within-approved-scope' });
-    expect((await mcp.call('jerry_get_status')).structured).toMatchObject({ guard: 'GUARDED', monitored: true, approvedPlans: 1 });
+    const state = (await mcp.call('jerry_get_state')).structured;
+    expect(state).toMatchObject({ approved: [{ taskId: created.taskId, scope: ['src/**'], status: 'APPROVED' }], notApproved: [], next: { action: 'work-within-approved-scope' } });
+    expect(String(state['hardRules'])).toContain('No Git command');
   });
 
   it('previews gate decisions without recording them', async () => {
@@ -126,7 +128,7 @@ describe('JERRY MCP server (bundled)', () => {
 
   it('says plainly when Core is unreachable, instead of guessing', async () => {
     const mcp = await connect({ JERRY_HOME: path.join(base, 'no-core-here'), CLAUDE_PROJECT_DIR: repo });
-    const result = await mcp.call('jerry_get_approval_status');
+    const result = await mcp.call('jerry_get_state');
     expect(result.isError).toBe(true);
     expect(result.text).toContain('JERRY Core is not reachable');
   });

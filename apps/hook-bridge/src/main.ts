@@ -216,7 +216,7 @@ function emit(decision: GateDecision): never {
           systemMessage: `JERRY: ${decision.reason} [${decision.ruleId}]`,
           hookSpecificOutput: {
             hookEventName: 'PreToolUse',
-            additionalContext: `JERRY warning: ${decision.reason} [${decision.ruleId}] Mention this deviation to the user in your summary; JERRY does not block it.`,
+            additionalContext: `JERRY warning: ${decision.reason} [${decision.ruleId}]`,
           },
         }),
       );
@@ -227,6 +227,10 @@ function emit(decision: GateDecision): never {
   }
 }
 
+/**
+ * The full hard-rule statement, verbatim. The product owner requires it unchanged (2026-11-06):
+ * token savings never come from shortening the safety rules Claude is told about.
+ */
 const HARD_RULES_TEXT =
   'Hard rules, always enforced: you may not run any Git command that changes anything (commit, push, merge, rebase, checkout, switch, reset, restore, stash, fetch, pull, tag, branch changes, config changes, gh/npm version and similar), and you may not use MCP tools of Git servers that push, commit, create branches or files, or open or merge pull requests; the user does all Git operations manually. Read-only Git (status, diff, log, show, blame) is fine. You may not write inside .git, modify JERRY data or the Claude Code settings that enable JERRY, run "jerry approve/reject/install/uninstall/ui", "jerry repo exclude/include", "jerry core start/stop" or "jerry db restore", or call the JERRY API or dashboard.';
 
@@ -235,19 +239,19 @@ const HARD_RULES_TEXT =
  * even in-scope edits of an already approved plan (M0 live finding).
  */
 function monitoredSessionContext(registration: SessionRegistrationResponse): string {
-  const lines = ['JERRY: monitoring this session. JERRY does not block your edits; it records deviations from the user-approved plan and warns you about them.'];
+  const lines = ['JERRY: monitoring this session; it never blocks edits, it records deviations from the approved plan and warns you.'];
   if (registration.repoRoot === null) {
-    lines.push('The working directory is not inside a Git repository.');
+    lines.push('Not inside a Git repository.');
   } else if (registration.excluded) {
-    lines.push(`The user excluded ${registration.repoRoot} from JERRY monitoring.`);
+    lines.push(`The user excluded ${registration.repoRoot} from monitoring.`);
   } else if (registration.approvedPlans.length === 0) {
-    lines.push(`There is no approved JERRY plan for ${registration.repoRoot}; edits there will be recorded as deviations.`);
+    lines.push(`There is no approved JERRY plan for ${registration.repoRoot}.`);
   } else {
     const plans = registration.approvedPlans.map((plan) => `${plan.taskId} v${plan.planVersion} (scope: ${plan.scope.join(', ')})`).join('; ');
-    lines.push(`Approved JERRY plan(s) for ${registration.repoRoot}: ${plans}. Edits outside that scope are recorded as deviations.`);
+    lines.push(`Approved plan: ${plans}.`);
   }
   lines.push(
-    'The plan state can change during the session: check it with the jerry MCP tools (jerry_get_approval_status, jerry_check_paths) and list recorded deviations with jerry_list_deviations before summarizing.',
+    'Mention JERRY warnings in your summary. If you need the current plan state (it can change mid-session), use the jerry MCP tools.',
     HARD_RULES_TEXT,
     'If JERRY blocks an action, report the reason to the user instead of working around it.',
   );
@@ -268,7 +272,7 @@ async function sessionStart(raw: string): Promise<void> {
     context = monitoredSessionContext(registration);
   } catch (error) {
     const cause = error instanceof Error ? error.message : String(error);
-    context = `JERRY: Core unavailable (${cause}); actions are not checked against the plan until Core is back (they are recorded and checked later when possible). ${HARD_RULES_TEXT}`;
+    context = `JERRY: Core unavailable (${cause}); edits are checked against the plan once it is back. ${HARD_RULES_TEXT}`;
     try {
       spool(buildEventEnvelope(JSON.parse(raw) as Record<string, unknown>));
     } catch {

@@ -57,7 +57,7 @@ describe('JERRY guard (bundled bridge + Core)', () => {
 
   it('tells a new session that monitoring is on, there is no plan yet, and what the hard rules are', () => {
     const context = sessionContext();
-    expect(context).toContain('JERRY does not block your edits');
+    expect(context).toContain('it never blocks edits');
     expect(context).toContain('There is no approved JERRY plan');
     expect(context).toContain('the user does all Git operations manually');
   });
