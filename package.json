@@ -1,0 +1,28 @@
+{
+  "name": "jerry",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "JERRY — local development guardian for Claude Code (source repository).",
+  "packageManager": "pnpm@10.34.9",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "check": "tsc -p tsconfig.json && vitest run",
+    "jerry": "node dist/cli/jerry.mjs",
+    "spike:bench": "node scripts/bench-hook.mjs",
+    "spike:live": "node scripts/e2e-live.mjs"
+  },
+  "devDependencies": {
+    "@jerry/contracts": "workspace:*",
+    "@jerry/platform": "workspace:*",
+    "@types/node": "22.20.5",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2",
+    "vitest": "5.1.0"
+  }
+}

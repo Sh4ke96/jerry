@@ -1,0 +1,12 @@
+{
+  "name": "@jerry/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/main.ts",
+  "dependencies": {
+    "@jerry/contracts": "workspace:*",
+    "@jerry/platform": "workspace:*",
+    "zod": "4.6.7"
+  }
+}
