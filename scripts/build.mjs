@@ -1,12 +1,16 @@
 // Bundles each app into a single self-contained ESM file and assembles the plugin payload.
 // Output layout (dist/) mirrors what `jerry install` copies into JERRY_HOME:
-//   dist/plugin/   Claude Code plugin (manifest, hooks.json, bundled bridge)
-//   dist/core/     JERRY Core service
-//   dist/cli/      jerry CLI
+//   dist/plugin/          Claude Code plugin (manifest, hooks.json, bundled bridge, MCP server)
+//   dist/core/            JERRY Core service
+//   dist/core/dashboard/  dashboard web app, served by Core
+//   dist/cli/             jerry CLI
+import vueJsx from '@vitejs/plugin-vue-jsx';
 import { build } from 'esbuild';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { build as viteBuild } from 'vite';
+import { writeIcons } from './icons.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const dist = path.join(root, 'dist');
@@ -37,7 +41,24 @@ await Promise.all([
   build({ ...common, entryPoints: [path.join(root, 'apps/cli/src/main.ts')], outfile: path.join(dist, 'cli/jerry.mjs'), banner: { js: '#!/usr/bin/env node' } }),
 ]);
 
+// Dashboard: Vue components compiled ahead of time (no runtime template compiler, so the page
+// runs under a CSP without 'unsafe-eval'); no inlined assets, so the CSP needs no data: scripts.
+const dashboardDir = path.join(dist, 'core', 'dashboard');
+await viteBuild({
+  configFile: false,
+  root: path.join(root, 'apps/dashboard'),
+  base: '/',
+  logLevel: 'warn',
+  plugins: [vueJsx()],
+  build: { outDir: dashboardDir, emptyOutDir: true, sourcemap: false, assetsInlineLimit: 0, reportCompressedSize: false },
+});
+writeIcons(path.join(dashboardDir, 'icons'));
+
 for (const file of ['plugin/hooks/bridge.mjs', 'plugin/mcp/server.mjs', 'core/core.mjs', 'cli/jerry.mjs']) {
   const size = fs.statSync(path.join(dist, file)).size;
   console.log(`dist/${file}  ${(size / 1024).toFixed(1)} KiB`);
 }
+const dashboardBytes = fs
+  .readdirSync(path.join(dashboardDir, 'assets'))
+  .reduce((sum, name) => sum + fs.statSync(path.join(dashboardDir, 'assets', name)).size, 0);
+console.log(`dist/core/dashboard/assets  ${(dashboardBytes / 1024).toFixed(1)} KiB`);

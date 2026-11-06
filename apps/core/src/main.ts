@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { JERRY_VERSION, type CoreRuntimeInfo } from '@jerry/contracts';
 import type { FastifyInstance } from 'fastify';
 import {
@@ -67,6 +68,7 @@ async function main(): Promise<void> {
       startedAt,
       port: () => boundPort,
       sessions,
+      dashboardDir: fileURLToPath(new URL('./dashboard/', import.meta.url)),
       onShutdownRequested: () => shutdown('shutdown requested via API'),
     });
   let app = createApp();

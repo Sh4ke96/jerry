@@ -24,7 +24,8 @@ import { BrowserSessions, clearedSessionCookie, CSRF_HEADER, readCookie, safeEqu
 import { evaluatePending } from './events.js';
 import { findGitRoot, realPathOfNearestExisting } from './repo-fs.js';
 import { StateError, type StateStore } from './state-store.js';
-import { dashboardPlaceholderPage, HTML_SECURITY_HEADERS, signedOutPage } from './ui.js';
+import { readDashboardFile } from './static-files.js';
+import { DASHBOARD_SECURITY_HEADERS, dashboardPlaceholderPage, HTML_SECURITY_HEADERS, signedOutPage } from './ui.js';
 
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_EVENTS_PAGE = 500;
@@ -52,6 +53,8 @@ export interface CoreAppOptions {
   /** The port Core listens on; Host and Origin checks are derived from it. */
   port: () => number;
   sessions?: BrowserSessions;
+  /** Built dashboard (index.html, assets/, icons/); without it `/` shows a placeholder page. */
+  dashboardDir?: string;
   onShutdownRequested: () => void;
 }
 
@@ -125,7 +128,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   });
   app.setNotFoundHandler((request, reply) => reply.code(404).send({ error: `No route for ${request.method} ${request.url.split('?')[0]}` }));
   app.addHook('onSend', async (_request, reply) => {
-    reply.header('cache-control', 'no-store');
+    if (!reply.hasHeader('cache-control')) reply.header('cache-control', 'no-store');
     reply.header('x-content-type-options', 'nosniff');
   });
 
@@ -141,9 +144,33 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   });
 
   // --- dashboard (browser session) -----------------------------------------------------------
-  app.get('/', { config: SESSION_ONLY, errorHandler: htmlErrors }, async (_request, reply) =>
-    reply.headers(HTML_SECURITY_HEADERS).type('text/html; charset=utf-8').send(dashboardPlaceholderPage(JERRY_VERSION)),
-  );
+  app.get('/', { config: SESSION_ONLY, errorHandler: htmlErrors }, async (_request, reply) => {
+    const index = readDashboardFile(options.dashboardDir, '', 'index.html');
+    if (index === null) {
+      return reply.headers(HTML_SECURITY_HEADERS).type('text/html; charset=utf-8').send(dashboardPlaceholderPage(JERRY_VERSION));
+    }
+    return reply.headers(DASHBOARD_SECURITY_HEADERS).type(index.contentType).send(index.body);
+  });
+
+  app.get('/assets/:name', { config: SESSION_ONLY }, async (request, reply) => {
+    const file = readDashboardFile(options.dashboardDir, 'assets', (request.params as { name: string }).name);
+    if (file === null) throw new HttpError(404, 'No such dashboard asset');
+    // Content-hashed file names: safe to cache for good, but only in this user's browser.
+    return reply.header('cache-control', 'private, max-age=31536000, immutable').type(file.contentType).send(file.body);
+  });
+
+  // The manifest and icons are fetched without cookies when the dashboard is installed as an app; they hold no data.
+  app.get('/manifest.webmanifest', async (_request, reply) => {
+    const file = readDashboardFile(options.dashboardDir, '', 'manifest.webmanifest');
+    if (file === null) throw new HttpError(404, 'The dashboard is not built');
+    return reply.type(file.contentType).send(file.body);
+  });
+
+  app.get('/icons/:name', async (request, reply) => {
+    const file = readDashboardFile(options.dashboardDir, 'icons', (request.params as { name: string }).name);
+    if (file === null) throw new HttpError(404, 'No such icon');
+    return reply.type(file.contentType).send(file.body);
+  });
 
   app.get('/api/v1/ui/session', { config: SESSION_ONLY }, async (request) => {
     const { session } = request.client as Extract<Client, { kind: 'session' }>;

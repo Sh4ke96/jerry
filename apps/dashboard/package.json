@@ -1,0 +1,10 @@
+{
+  "name": "@jerry/dashboard",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@jerry/contracts": "workspace:*",
+    "vue": "3.5.45"
+  }
+}

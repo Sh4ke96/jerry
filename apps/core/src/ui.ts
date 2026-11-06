@@ -9,6 +9,14 @@ export const HTML_SECURITY_HEADERS: Readonly<Record<string, string>> = {
   'referrer-policy': 'no-referrer',
 };
 
+/** The dashboard app: only its own compiled scripts, styles, images and API (no inline code, no eval). */
+export const DASHBOARD_SECURITY_HEADERS: Readonly<Record<string, string>> = {
+  'content-security-policy':
+    "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+  'x-frame-options': 'DENY',
+  'referrer-policy': 'no-referrer',
+};
+
 const STYLE = `
   :root { color-scheme: light dark; --bg: #f7f7f5; --fg: #1d1d1b; --muted: #6b6b66; --card: #ffffff; --line: #e3e3de; }
   @media (prefers-color-scheme: dark) { :root { --bg: #161615; --fg: #ecece8; --muted: #a2a29b; --card: #1f1f1d; --line: #33332f; } }

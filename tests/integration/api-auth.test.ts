@@ -5,7 +5,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildCoreApp } from '../../apps/core/src/app.js';
 import { BrowserSessions, LOGIN_CODE_TTL_MS, SESSION_COOKIE } from '../../apps/core/src/auth.js';
 import { StateStore } from '../../apps/core/src/state-store.js';
-import { createFixtureRepo, tempDir } from '../helpers/harness.js';
+import { createFixtureRepo, ROOT, tempDir } from '../helpers/harness.js';
+
+/** Built by the global test setup (scripts/build.mjs). */
+const DASHBOARD_DIR = path.join(ROOT, 'dist', 'core', 'dashboard');
 
 const PORT = 47999;
 const ORIGIN = `http://127.0.0.1:${PORT}`;
@@ -27,7 +30,7 @@ describe('Core API access control', () => {
 
   beforeAll(async () => {
     store = await StateStore.open({ databaseFile: path.join(base, 'jerry.sqlite'), backupsDir: path.join(base, 'backups'), legacyStateFile: path.join(base, 'none.json') });
-    app = buildCoreApp({ token: TOKEN, store, jerryHome: base, protectedRoots: [], startedAt: new Date(), port: () => PORT, sessions, onShutdownRequested: () => undefined });
+    app = buildCoreApp({ token: TOKEN, store, jerryHome: base, protectedRoots: [], startedAt: new Date(), port: () => PORT, sessions, dashboardDir: DASHBOARD_DIR, onShutdownRequested: () => undefined });
     taskId = (await store.createTask({ repoRoot: repo, title: 'Dashboard approval', scope: ['src/**'] }, new Date())).taskId;
   });
   afterAll(async () => {
@@ -100,16 +103,41 @@ describe('Core API access control', () => {
     expect(status(await app.inject({ method: 'GET', url: url.pathname + url.search, headers: { host: HOST } }))).toBe(401);
   });
 
-  it('serves the dashboard page only to a signed-in browser, with strict security headers', async () => {
+  it('serves the dashboard app only to a signed-in browser, under a strict CSP', async () => {
     const signedOut = await app.inject({ method: 'GET', url: '/', headers: { host: HOST } });
     expect(signedOut.statusCode).toBe(401);
     expect(signedOut.headers['content-type']).toMatch(/text\/html/);
     const auth = await signIn();
     const page = await asBrowser(auth, 'GET', '/', { origin: null });
     expect(page.statusCode).toBe(200);
-    expect(page.headers['content-security-policy']).toContain("frame-ancestors 'none'");
+    expect(page.body).toContain('<div id="app"></div>');
+    const csp = String(page.headers['content-security-policy']);
+    expect(csp).toContain("script-src 'self'");
+    expect(csp).toContain("frame-ancestors 'none'");
+    expect(csp).not.toMatch(/unsafe-(inline|eval)/);
     expect(page.headers['x-frame-options']).toBe('DENY');
     expect(page.body).not.toContain(TOKEN);
+  });
+
+  it('serves dashboard scripts only with a session, and the manifest and icons to anyone', async () => {
+    const script = /\/assets\/(index-[\w-]+\.js)/.exec(fs.readFileSync(path.join(DASHBOARD_DIR, 'index.html'), 'utf8'))![1]!;
+    expect(status(await app.inject({ method: 'GET', url: `/assets/${script}`, headers: { host: HOST } }))).toBe(401);
+    const auth = await signIn();
+    const asset = await asBrowser(auth, 'GET', `/assets/${script}`, { origin: null });
+    expect(asset.statusCode).toBe(200);
+    expect(asset.headers['content-type']).toMatch(/javascript/);
+    expect(asset.body).not.toMatch(/new Function|\beval\(/);
+
+    for (const url of ['/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png', '/icons/icon.svg']) {
+      expect(status(await app.inject({ method: 'GET', url, headers: { host: HOST } })), url).toBe(200);
+    }
+  });
+
+  it('never serves files outside the dashboard directory', async () => {
+    const auth = await signIn();
+    for (const url of ['/assets/..%2F..%2Fcore.mjs', '/assets/..%5C..%5Ccore.mjs', '/icons/..%2Findex.html', '/assets/.env', '/icons/x.exe']) {
+      expect(status(await asBrowser(auth, 'GET', url, { origin: null })), url).toBe(404);
+    }
   });
 
   it('lets the dashboard read, but refuses cross-origin and cross-site requests', async () => {

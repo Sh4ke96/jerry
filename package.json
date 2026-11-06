@@ -10,9 +10,9 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "typecheck": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p apps/dashboard/tsconfig.json",
     "test": "vitest run",
-    "check": "tsc -p tsconfig.json && vitest run",
+    "check": "tsc -p tsconfig.json && tsc -p apps/dashboard/tsconfig.json && vitest run",
     "jerry": "node dist/cli/jerry.mjs",
     "spike:bench": "node scripts/bench-hook.mjs",
     "spike:live": "node scripts/e2e-live.mjs"
@@ -24,10 +24,15 @@
     "@jerry/policy-engine": "workspace:*",
     "@jerry/trace-engine": "workspace:*",
     "@types/node": "22.20.5",
+    "@vitejs/plugin-vue-jsx": "5.1.6",
+    "@vue/test-utils": "2.5.1",
     "esbuild": "0.28.2",
     "fastify": "5.12.8",
+    "happy-dom": "21.0.4",
     "kysely": "0.29.8",
     "typescript": "7.0.2",
-    "vitest": "5.1.0"
+    "vite": "8.3.6",
+    "vitest": "5.1.0",
+    "vue": "3.5.45"
   }
 }
