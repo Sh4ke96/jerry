@@ -216,10 +216,14 @@ export class StateStore {
   }
 
   /** Newest first. */
-  async listEvents(filter: { sessionId?: string; verdict?: string; limit: number }): Promise<StoredEvent[]> {
+  async listEvents(filter: { sessionId?: string; verdicts?: readonly string[]; repoRoot?: string; since?: string; limit: number }): Promise<StoredEvent[]> {
     let query = this.database.db.selectFrom('hook_events').selectAll().orderBy('occurred_at', 'desc').orderBy(sql`rowid`, 'desc').limit(filter.limit);
     if (filter.sessionId !== undefined) query = query.where('session_id', '=', filter.sessionId);
-    if (filter.verdict !== undefined) query = query.where('verdict', '=', filter.verdict);
+    if (filter.verdicts !== undefined && filter.verdicts.length > 0) query = query.where('verdict', 'in', [...filter.verdicts]);
+    if (filter.repoRoot !== undefined) {
+      query = process.platform === 'win32' ? query.where(sql`lower(repo_root)`, '=', filter.repoRoot.toLowerCase()) : query.where('repo_root', '=', filter.repoRoot);
+    }
+    if (filter.since !== undefined) query = query.where('occurred_at', '>=', filter.since);
     const rows = await query.execute();
     return rows.map((row) =>
       storedEventSchema.parse({

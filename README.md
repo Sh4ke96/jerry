@@ -30,6 +30,8 @@ repositories, not to this one.
   a spool while Core is down, and 90-day retention ([ADR 0006](docs/decisions/0006-session-events-spool-retention.md)).
 - Local API on Fastify: bearer token for the CLI and hooks; `jerry ui` signs the browser in with a one-time link,
   with CSRF and Origin checks for the dashboard ([ADR 0007](docs/decisions/0007-local-api-fastify-browser-sessions.md)).
+- MCP server in the plugin with read-only tools that give Claude the live plan state, path checks and recorded
+  deviations; nothing in it can approve ([ADR 0008](docs/decisions/0008-local-mcp-server.md)).
 - `jerry` CLI: `install`, `uninstall`, `doctor`, `ui`, `core start|stop|status`, `task`, `plan revise`,
   `approve`/`reject`, `repo exclude|include|list`, `events`, `db backup|backups|restore` (approve, reject,
   exclude and restore require an interactive terminal).
@@ -39,6 +41,7 @@ repositories, not to this one.
 ```text
 apps/core               JERRY Core (HTTP API, state, gate decisions)
 apps/hook-bridge        Claude Code hook adapter → Core (bundled into the plugin)
+apps/mcp-server         read-only MCP server for Claude (bundled into the plugin)
 apps/cli                jerry CLI
 packages/contracts      Zod schemas shared across processes
 packages/database       SQLite (node:sqlite + Kysely): schema, migrations, backup and restore

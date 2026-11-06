@@ -175,6 +175,16 @@ expect('C: src/hello.txt created (in scope)', exists('src/hello.txt'));
 expect('C: outside.txt created (out of scope, not blocked)', exists('outside.txt'));
 expect('C: log shows PASS in-scope and WARN out-of-scope', cLog.some((e) => e.ruleId === 'monitor.in-approved-scope') && cLog.some((e) => e.verdict === 'WARN' && e.ruleId === 'monitor.out-of-scope'), cLog.map((e) => `${e.verdict}:${e.ruleId}`).join(', '));
 
+// G — JERRY's MCP server: the model reads the live plan state through its read-only tools.
+const g = runClaude(
+  'G: JERRY MCP tools',
+  'Call the jerry_get_approval_status tool from the jerry MCP server and tell me the approved scope exactly as it returns it. Do nothing else.',
+  ['mcp__plugin_jerry_jerry__jerry_get_approval_status'],
+);
+const gTools = (await sessionEvents(g.sessionId)).map((event) => event.toolName).filter(Boolean);
+expect('G: the session called the JERRY MCP tool', gTools.some((tool) => tool.endsWith('__jerry_get_approval_status')), gTools.join(', '));
+expect('G: the model reported the approved scope from the tool', g.text.includes('src/**'));
+
 const registered = await registeredSessionIds();
 expect('SessionStart hook registered the sessions that have it', [a, c].every((run) => run.sessionId !== null && registered.has(run.sessionId)), `${registered.size} session(s) registered`);
 

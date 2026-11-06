@@ -26,6 +26,7 @@ const common = {
 
 await Promise.all([
   build({ ...common, entryPoints: [path.join(root, 'apps/hook-bridge/src/main.ts')], outfile: path.join(dist, 'plugin/hooks/bridge.mjs'), minify: true }),
+  build({ ...common, entryPoints: [path.join(root, 'apps/mcp-server/src/main.ts')], outfile: path.join(dist, 'plugin/mcp/server.mjs'), minify: true }),
   // Fastify and its dependencies are CommonJS and require Node built-ins; an ESM bundle needs a real `require`.
   build({
     ...common,
@@ -36,7 +37,7 @@ await Promise.all([
   build({ ...common, entryPoints: [path.join(root, 'apps/cli/src/main.ts')], outfile: path.join(dist, 'cli/jerry.mjs'), banner: { js: '#!/usr/bin/env node' } }),
 ]);
 
-for (const file of ['plugin/hooks/bridge.mjs', 'core/core.mjs', 'cli/jerry.mjs']) {
+for (const file of ['plugin/hooks/bridge.mjs', 'plugin/mcp/server.mjs', 'core/core.mjs', 'cli/jerry.mjs']) {
   const size = fs.statSync(path.join(dist, file)).size;
   console.log(`dist/${file}  ${(size / 1024).toFixed(1)} KiB`);
 }

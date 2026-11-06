@@ -3,6 +3,7 @@ import {
   approvalRequestSchema,
   eventIngestRequestSchema,
   gateCheckRequestSchema,
+  gatePreviewRequestSchema,
   JERRY_VERSION,
   planReviseRequestSchema,
   repositoryExclusionRequestSchema,
@@ -13,9 +14,10 @@ import {
   type CoreStatus,
   type GateCheckRequest,
   type GateDecision,
+  type RepositoryState,
   type SessionRegistrationResponse,
 } from '@jerry/contracts';
-import { approvedPlansForRepo, evaluateGate, isRepoExcluded } from '@jerry/policy-engine';
+import { approvedPlansForRepo, comparablePath, evaluateGate, isRepoExcluded } from '@jerry/policy-engine';
 import { buildEventEnvelope } from '@jerry/trace-engine';
 import type { z } from 'zod';
 import { BrowserSessions, clearedSessionCookie, CSRF_HEADER, readCookie, safeEqual, SESSION_COOKIE, sessionCookie, type BrowserSession } from './auth.js';
@@ -210,10 +212,50 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
 
   app.get('/api/v1/events', { config: TOKEN_OR_SESSION }, async (request) => {
     const query = request.query as Record<string, unknown>;
+    const text = (key: string): string | undefined => (typeof query[key] === 'string' && query[key] !== '' ? (query[key] as string) : undefined);
     const limit = Math.min(Number(query['limit'] ?? '100') || 100, MAX_EVENTS_PAGE);
-    const sessionId = typeof query['sessionId'] === 'string' ? query['sessionId'] : undefined;
-    const verdict = typeof query['verdict'] === 'string' ? query['verdict'] : undefined;
-    return store.listEvents({ limit, ...(sessionId === undefined ? {} : { sessionId }), ...(verdict === undefined ? {} : { verdict }) });
+    const sessionId = text('sessionId');
+    const verdicts = text('verdict')?.split(',').map((verdict) => verdict.trim().toUpperCase());
+    const since = text('since');
+    if (since !== undefined && Number.isNaN(Date.parse(since))) throw new HttpError(400, 'since must be an ISO-8601 timestamp');
+    const repoPath = text('repoPath');
+    const repoRoot = repoPath === undefined ? undefined : (findGitRoot(realPathOfNearestExisting(repoPath)) ?? repoPath);
+    return store.listEvents({
+      limit,
+      ...(sessionId === undefined ? {} : { sessionId }),
+      ...(verdicts === undefined ? {} : { verdicts }),
+      ...(repoRoot === undefined ? {} : { repoRoot }),
+      ...(since === undefined ? {} : { since: new Date(since).toISOString() }),
+    });
+  });
+
+  app.get('/api/v1/repositories/state', { config: TOKEN_OR_SESSION }, async (request) => {
+    const path = (request.query as Record<string, unknown>)['path'];
+    if (typeof path !== 'string' || path === '') throw new HttpError(400, 'path is required');
+    const repoRoot = findGitRoot(realPathOfNearestExisting(path));
+    const snapshot = store.snapshot();
+    const state: RepositoryState = {
+      repoRoot,
+      excluded: repoRoot !== null && isRepoExcluded(snapshot, repoRoot, process.platform),
+      tasks:
+        repoRoot === null
+          ? []
+          : snapshot.tasks
+              .filter((task) => comparablePath(task.repoRoot, task.repoRoot, process.platform) === comparablePath(repoRoot, repoRoot, process.platform))
+              .map((task) => ({ ...task, planDecision: store.planDecision(task.taskId) })),
+    };
+    return state;
+  });
+
+  /** What the gate would say about edits to these paths; nothing is recorded. */
+  app.post('/api/v1/gate/preview', { config: TOKEN_ONLY }, async (request) => {
+    const body = parse(gatePreviewRequestSchema, request.body);
+    return {
+      decisions: body.paths.map((target) => ({
+        path: target,
+        ...evaluate({ sessionId: 'preview', cwd: body.cwd, toolName: 'Write', toolInput: { file_path: target }, toolUseId: null, agentId: null }),
+      })),
+    };
   });
 
   app.post('/api/v1/sessions', { config: TOKEN_ONLY }, async (request) => {

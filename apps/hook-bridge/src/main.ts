@@ -246,7 +246,11 @@ function monitoredSessionContext(registration: SessionRegistrationResponse): str
     const plans = registration.approvedPlans.map((plan) => `${plan.taskId} v${plan.planVersion} (scope: ${plan.scope.join(', ')})`).join('; ');
     lines.push(`Approved JERRY plan(s) for ${registration.repoRoot}: ${plans}. Edits outside that scope are recorded as deviations.`);
   }
-  lines.push(HARD_RULES_TEXT, 'If JERRY blocks an action, report the reason to the user instead of working around it.');
+  lines.push(
+    'The plan state can change during the session: check it with the jerry MCP tools (jerry_get_approval_status, jerry_check_paths) and list recorded deviations with jerry_list_deviations before summarizing.',
+    HARD_RULES_TEXT,
+    'If JERRY blocks an action, report the reason to the user instead of working around it.',
+  );
   return lines.join(' ');
 }
 

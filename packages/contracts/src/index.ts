@@ -288,6 +288,26 @@ export type CoreStatus = z.infer<typeof coreStatusSchema>;
 
 export const databaseBackupResultSchema = z.object({ file: z.string().min(1) });
 
+export const taskWithDecisionSchema = taskSchema.extend({ planDecision: approvalRecordSchema.nullable() });
+export type TaskWithDecision = z.infer<typeof taskWithDecisionSchema>;
+
+/** Everything JERRY knows about the repository containing a path (used by MCP tools and the dashboard). */
+export const repositoryStateSchema = z.object({
+  repoRoot: z.string().nullable(),
+  excluded: z.boolean(),
+  tasks: z.array(taskWithDecisionSchema),
+});
+export type RepositoryState = z.infer<typeof repositoryStateSchema>;
+
+/** Gate decisions for hypothetical edits: evaluated, never recorded. */
+export const gatePreviewRequestSchema = z.object({
+  cwd: z.string().min(1),
+  paths: z.array(z.string().min(1)).min(1).max(50),
+});
+export const gatePreviewResponseSchema = z.object({
+  decisions: z.array(gateDecisionSchema.extend({ path: z.string() })),
+});
+
 /** One-time dashboard login link, created for the CLI's `jerry ui`. */
 export const loginCodeResponseSchema = z.object({
   url: z.string().url(),
