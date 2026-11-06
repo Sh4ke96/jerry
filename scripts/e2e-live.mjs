@@ -290,10 +290,11 @@ expect('M: the session read the project profile', mTools.some((tool) => tool.end
 expect('M: Claude named the project’s own test command', /npm run test/.test(m.text), m.text.slice(0, 200));
 
 // N — plugin subagents: Claude Code loads JERRY's read-only analysts from the plugin, and they only read.
+const nTask = await coreApi(info, 'POST', '/api/v1/tasks', { repoPath: repo, title: 'Live analysis', scope: ['src/**'] });
 const n = runClaude(
   'N: JERRY analyst subagent',
-  'Use the jerry-risk-analyst subagent (from the jerry plugin) to look at src/app.ts and name one risk with its file:line evidence. Do nothing else yourself.',
-  ['Task', 'Agent', 'Read', 'Grep', 'Glob'],
+  `Use the jerry-risk-analyst subagent (from the jerry plugin) to analyse src/app.ts for task ${nTask.taskId}; tell it the task ID so it submits its report to JERRY. Do nothing else yourself, then summarise what it found.`,
+  ['Task', 'Agent', 'Read', 'Grep', 'Glob', 'mcp__plugin_jerry_jerry__jerry_get_project_profile', 'mcp__plugin_jerry_jerry__jerry_get_state', 'mcp__plugin_jerry_jerry__jerry_submit_analysis_report'],
 );
 const nRows = await (async () => {
   const { DatabaseSync } = await import('node:sqlite');
@@ -308,6 +309,14 @@ const analystStarts = nRows.filter((row) => row.event_type === 'SubagentStart' &
 expect('N: Claude Code ran the jerry-risk-analyst subagent from the plugin', analystStarts.length > 0, nRows.map((row) => `${row.event_type}:${row.agent_type ?? ''}:${row.tool_name ?? ''}`).join(', ').slice(0, 240));
 const analystIds = new Set(analystStarts.map((row) => row.agent_id));
 expect('N: the analyst only read (no write or shell tool)', !nRows.some((row) => analystIds.has(row.agent_id) && /^(Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell)$/.test(row.tool_name ?? '')));
+const nDetail = await coreApi(info, 'GET', `/api/v1/tasks/${nTask.taskId}`);
+const nAnalysis = (nDetail.analyses ?? [])[0];
+expect(
+  'N: the analyst submitted an evidence-backed report, tied to its own run, with verified citations',
+  nAnalysis !== undefined && analystIds.has(nAnalysis.agentId) && nAnalysis.citations.checked > 0 && nAnalysis.citations.missingFiles.length === 0,
+  JSON.stringify(nAnalysis?.citations ?? nDetail.analyses ?? nDetail).slice(0, 240),
+);
+await coreApi(info, 'POST', `/api/v1/tasks/${nTask.taskId}/transitions`, { event: 'task.cancelled' });
 
 // L — Git baseline: the user's uncommitted work is protected, and Git sees what shell commands changed.
 fs.writeFileSync(path.join(repo, 'src', 'app.ts'), 'export const answer = 43; // user edit, uncommitted\n');

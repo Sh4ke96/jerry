@@ -14,6 +14,7 @@ import {
   checkpointRequestSchema,
   reportSubmitRequestSchema,
   repositoryScanRequestSchema,
+  analysisReportRequestSchema,
   type CoreState,
   type RepositorySummary,
   type CoreStatus,
@@ -32,6 +33,7 @@ import { buildEventEnvelope } from '@jerry/trace-engine';
 import type { z } from 'zod';
 import { BrowserSessions, clearedSessionCookie, CSRF_HEADER, readCookie, safeEqual, SESSION_COOKIE, sessionCookie, type BrowserSession } from './auth.js';
 import { evaluatePending, withRepoRoot } from './events.js';
+import { checkCitations } from './citations.js';
 import { ProfileService } from './profiles.js';
 import { findGitRoot, realPathOfNearestExisting } from './repo-fs.js';
 import { StateError, type StateStore } from './state-store.js';
@@ -95,6 +97,7 @@ export function gateEvaluator(store: StateStore, protectedRoots: readonly string
       approvedPlans: (repoRoot) => approvedPlansForRepo(snapshot, repoRoot, process.platform),
       isExcluded: (repoRoot) => isRepoExcluded(snapshot, repoRoot, process.platform),
       isUserChangedFile: (taskId, relativePath) => store.isUserChangedFile(taskId, relativePath),
+      activeSubagents: (sessionId) => store.activeSubagents(sessionId),
     });
   };
 }
@@ -394,7 +397,12 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     const task = store.snapshot().tasks.find((candidate) => candidate.taskId === taskId);
     if (task === undefined) throw new HttpError(404, `Unknown task ${taskId}`);
     const [summary] = await summarize(store, [task]);
-    const detail: TaskDetail = { ...summary!, ...(await store.taskHistory(taskId)), reports: await store.reportsOf(taskId), baseline: await store.taskBaseline(taskId) };
+    const detail: TaskDetail = {
+      ...summary!,
+      ...(await store.taskHistory(taskId)),
+      reports: await store.reportsOf(taskId),
+      baseline: await store.taskBaseline(taskId),
+    };
     return detail;
   });
 
@@ -420,6 +428,16 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId);
     const body = parse(planReviseRequestSchema, request.body);
     return store.revisePlan(taskId, body.scope, new Date(), body.document, body.submittedBy, await store.resolveOrigin(body.origin));
+  });
+
+  /** An analyst's evidence-backed report (through MCP, ADR 0023); Core checks its citations. */
+  app.post('/api/v1/tasks/:taskId/analyses', { config: TOKEN_ONLY }, async (request, reply) => {
+    const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId);
+    const body = parse(analysisReportRequestSchema, request.body);
+    const task = store.snapshot().tasks.find((candidate) => candidate.taskId === taskId);
+    if (task === undefined) throw new HttpError(404, `Unknown task ${taskId}`);
+    const [sessionId, agentId] = await Promise.all([store.resolveOrigin(body.origin), store.resolveAgent(body.origin)]);
+    return reply.code(201).send(await store.saveAnalysisReport(taskId, body.report, checkCitations(task.repoRoot, body.report), sessionId, agentId, new Date()));
   });
 
   /** Claude's progress notes (through MCP). Notes only: no state changes. */
@@ -500,17 +518,23 @@ const NO_ACTIVITY = { activity: { sessionCount: 0, lastSessionId: null, lastActi
 
 async function summarize(store: StateStore, tasks: readonly Task[]): Promise<TaskSummary[]> {
   const [activity, reports, checks] = await Promise.all([store.taskActivity(), store.latestReports(), store.latestCompletionChecks()]);
-  return tasks.map((task) => {
+  const summaries: TaskSummary[] = [];
+  for (const task of tasks) {
     const report = reports.get(task.taskId) ?? null;
-    return {
+    // Analyses matter while a task is open; finished tasks keep them in their details only.
+    const open = !isTerminal(task.state);
+    summaries.push({
       ...task,
       planDecision: store.planDecision(task.taskId),
       finalCheck: checks.get(task.taskId) ?? null,
       ...(activity.get(task.taskId) ?? NO_ACTIVITY),
       lastReport: report,
       reportDecision: report === null ? null : store.reportDecision(report),
-    };
-  });
+      analyses: open ? await store.analysesOf(task.taskId) : [],
+      agentRuns: open ? await store.agentRunsOf(task.taskId) : [],
+    });
+  }
+  return summaries;
 }
 
 /** At most this many open tasks go into a session's start context. */

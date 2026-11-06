@@ -7,7 +7,10 @@
           {
             "type": "command",
             "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/bridge.mjs", "session-start"],
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/bridge.mjs",
+              "session-start"
+            ],
             "timeout": 5,
             "onFailure": "continue"
           }
@@ -16,12 +19,15 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell|Monitor",
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell|Monitor|Task|Agent",
         "hooks": [
           {
             "type": "command",
             "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/bridge.mjs", "pre-tool-use"],
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/bridge.mjs",
+              "pre-tool-use"
+            ],
             "timeout": 10,
             "onFailure": "block"
           }
@@ -33,7 +39,10 @@
           {
             "type": "command",
             "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/bridge.mjs", "pre-tool-use"],
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/bridge.mjs",
+              "pre-tool-use"
+            ],
             "timeout": 10,
             "onFailure": "block"
           }
@@ -43,46 +52,144 @@
     "PostToolUse": [
       {
         "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell|Monitor",
-        "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/bridge.mjs", "event"], "async": true, "timeout": 10 }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/bridge.mjs",
+              "event"
+            ],
+            "async": true,
+            "timeout": 10
+          }
+        ]
       },
       {
         "matcher": "^mcp__",
-        "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/bridge.mjs", "event"], "async": true, "timeout": 10 }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/bridge.mjs",
+              "event"
+            ],
+            "async": true,
+            "timeout": 10
+          }
+        ]
       }
     ],
     "PostToolUseFailure": [
       {
         "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell|Monitor",
-        "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/bridge.mjs", "event"], "async": true, "timeout": 10 }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/bridge.mjs",
+              "event"
+            ],
+            "async": true,
+            "timeout": 10
+          }
+        ]
       },
       {
         "matcher": "^mcp__",
-        "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/bridge.mjs", "event"], "async": true, "timeout": 10 }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/bridge.mjs",
+              "event"
+            ],
+            "async": true,
+            "timeout": 10
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
       {
-        "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/bridge.mjs", "event"], "async": true, "timeout": 10 }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/bridge.mjs",
+              "event"
+            ],
+            "async": true,
+            "timeout": 10
+          }
+        ]
       }
     ],
     "SubagentStart": [
       {
-        "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/bridge.mjs", "event"], "async": true, "timeout": 10 }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/bridge.mjs",
+              "event"
+            ],
+            "async": true,
+            "timeout": 10
+          }
+        ]
       }
     ],
     "SubagentStop": [
       {
-        "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/bridge.mjs", "event"], "async": true, "timeout": 10 }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/bridge.mjs",
+              "event"
+            ],
+            "async": true,
+            "timeout": 10
+          }
+        ]
       }
     ],
     "Stop": [
       {
-        "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/bridge.mjs", "event"], "async": true, "timeout": 10 }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/bridge.mjs",
+              "event"
+            ],
+            "async": true,
+            "timeout": 10
+          }
+        ]
       }
     ],
     "SessionEnd": [
       {
-        "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/bridge.mjs", "event"], "timeout": 3 }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/bridge.mjs",
+              "event"
+            ],
+            "timeout": 3
+          }
+        ]
       }
     ]
   }

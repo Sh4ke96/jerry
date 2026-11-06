@@ -71,6 +71,19 @@ export async function showTask(taskId: string): Promise<void> {
 
   printFinalCheck(task);
 
+  if (task.analyses.length > 0 || task.agentRuns.length > 0) {
+    console.log('\nAnalysis:');
+    for (const analysis of task.analyses) {
+      const { report, citations } = analysis;
+      const problems = citations.missingFiles.length + citations.outOfRange.length;
+      console.log(`  ${report.role}  confidence ${report.confidence.level}  ${report.observations.length} observation(s), ${report.risks.length} risk(s), ${report.gaps.length} gap(s)  citations ${citations.checked - problems}/${citations.checked} verified`);
+      for (const gap of report.gaps) console.log(`    gap: ${gap}`);
+    }
+    for (const run of task.agentRuns.filter((candidate) => candidate.status === 'no-report' || candidate.status === 'timed-out')) {
+      console.log(`  ! ${run.agentType ?? run.agentId}: ${run.status === 'no-report' ? 'stopped without a report (gap)' : 'no result after 30 minutes (gap)'}`);
+    }
+  }
+
   const baseline = task.baseline;
   if (baseline !== null) {
     console.log(`\nGit baseline at plan approval (${baseline.at}):`);

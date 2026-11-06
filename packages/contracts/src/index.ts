@@ -547,6 +547,63 @@ export const completionCheckSchema = z.object({
 });
 export type CompletionCheck = z.infer<typeof completionCheckSchema>;
 
+/** `path:line` or `path:line-line`, repo-relative (absolute paths inside the repository are accepted). */
+const evidenceSchema = z.string().trim().regex(/^.+:\d+(-\d+)?$/, 'evidence is path:line or path:line-line');
+
+/** An analyst's report (spec §7.2 Phase 2, ADR 0023): every observation carries file:line evidence. */
+export const analysisReportSchema = z.object({
+  role: z.enum(['jerry-architecture-analyst', 'jerry-risk-analyst', 'jerry-quality-analyst']),
+  /** What the analyst was asked to look at. */
+  scope: text,
+  filesRead: z.array(text).min(1),
+  observations: z.array(z.object({ statement: text, evidence: z.array(evidenceSchema).min(1) })).min(1),
+  risks: z.array(z.object({ risk: text, severity: z.enum(['low', 'medium', 'high', 'critical']), scenario: z.string().default('') })).default([]),
+  recommendations: z.array(text).default([]),
+  confidence: z.object({ level: z.enum(['low', 'medium', 'high']), reason: text }),
+  /** What could not be checked and why; never empty-by-omission: an analyst with no gaps says so. */
+  gaps: z.array(text).default([]),
+});
+export type AnalysisReport = z.infer<typeof analysisReportSchema>;
+
+export const analysisReportRequestSchema = z.object({
+  report: analysisReportSchema,
+  origin: callOriginSchema.optional(),
+});
+
+/** What Core found when it checked the citations against the repository. */
+export const citationCheckSchema = z.object({
+  checked: z.number().int().nonnegative(),
+  /** Cited files that do not exist in the repository (or lie outside it). */
+  missingFiles: z.array(z.string()),
+  /** Citations whose line lies beyond the end of the file. */
+  outOfRange: z.array(z.string()),
+});
+
+export const analysisReportRecordSchema = z.object({
+  id: z.number().int().positive(),
+  taskId: taskIdSchema,
+  report: analysisReportSchema,
+  citations: citationCheckSchema,
+  sessionId: z.string().nullable(),
+  /** The subagent run the report came from, when the hook saw it. */
+  agentId: z.string().nullable(),
+  createdAt: z.iso.datetime(),
+});
+export type AnalysisReportRecord = z.infer<typeof analysisReportRecordSchema>;
+
+/** A subagent run as JERRY saw it through SubagentStart/SubagentStop (ADR 0023). */
+export const agentRunSchema = z.object({
+  agentId: z.string(),
+  agentType: z.string().nullable(),
+  sessionId: z.string().nullable(),
+  startedAt: z.iso.datetime(),
+  stoppedAt: z.iso.datetime().nullable(),
+  /** running; completed; no-report (an analyst that stopped without a report: a gap); timed-out (no stop within 30 min). */
+  status: z.enum(['running', 'completed', 'no-report', 'timed-out']),
+  reportId: z.number().int().nullable(),
+});
+export type AgentRun = z.infer<typeof agentRunSchema>;
+
 /** A task as lists show it: decisions, session activity, the latest checkpoint and report. */
 export const taskSummarySchema = taskWithDecisionSchema.extend({
   /** The latest final checks, if any were run. */
@@ -556,6 +613,10 @@ export const taskSummarySchema = taskWithDecisionSchema.extend({
   lastReport: implementationReportRecordSchema.nullable(),
   /** The user's latest decision on exactly the latest report (version and hash). */
   reportDecision: approvalRecordSchema.nullable(),
+  /** Analysts' reports, oldest first (ADR 0023). */
+  analyses: z.array(analysisReportRecordSchema).default([]),
+  /** Subagent runs of the sessions linked to the task. */
+  agentRuns: z.array(agentRunSchema).default([]),
 });
 export type TaskSummary = z.infer<typeof taskSummarySchema>;
 

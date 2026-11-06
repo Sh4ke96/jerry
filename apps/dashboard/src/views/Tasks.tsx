@@ -4,6 +4,7 @@ import { defineComponent, reactive, ref } from 'vue';
 import { api } from '../api';
 import { Badge } from '../components/Badge';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { AnalysisReports } from '../components/AnalysisReports';
 import { ImplementationReportView } from '../components/ImplementationReport';
 import { PlanDocumentView } from '../components/PlanDocument';
 import { formatTime, isOpen, stateTone } from '../format';
@@ -274,6 +275,7 @@ export const Tasks = defineComponent({
             )}
           </section>
         )}
+        <AnalysisReports analyses={task.analyses} runs={task.agentRuns} />
         {task.lastReport !== null &&
           (task.state === 'WAIT_IMPLEMENTATION_ACCEPTANCE' ? (
             <ImplementationReportView report={task.lastReport} />

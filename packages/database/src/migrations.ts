@@ -279,4 +279,34 @@ export const MIGRATIONS: Readonly<Record<string, Migration>> = {
         .execute();
     },
   },
+
+  '0010_analysis': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Subagent runs seen through SubagentStart/SubagentStop, and analysts' reports (ADR 0023).
+      await db.schema
+        .createTable('agent_runs')
+        .addColumn('agent_id', 'text', (column) => column.primaryKey())
+        .addColumn('agent_type', 'text')
+        .addColumn('session_id', 'text')
+        .addColumn('started_at', 'text', (column) => column.notNull())
+        .addColumn('stopped_at', 'text')
+        .addColumn('created_at', 'text', (column) => column.notNull())
+        .addColumn('updated_at', 'text', (column) => column.notNull())
+        .execute();
+      await db.schema.createIndex('agent_runs_session').on('agent_runs').columns(['session_id', 'started_at']).execute();
+
+      await db.schema
+        .createTable('analysis_reports')
+        .addColumn('id', 'integer', (column) => column.primaryKey().autoIncrement())
+        .addColumn('task_id', 'text', (column) => column.notNull().references('tasks.task_id'))
+        .addColumn('role', 'text', (column) => column.notNull())
+        .addColumn('agent_id', 'text')
+        .addColumn('session_id', 'text')
+        .addColumn('report_json', 'text', (column) => column.notNull())
+        .addColumn('citations_json', 'text', (column) => column.notNull())
+        .addColumn('created_at', 'text', (column) => column.notNull())
+        .execute();
+      await db.schema.createIndex('analysis_reports_task').on('analysis_reports').columns(['task_id', 'id']).execute();
+    },
+  },
 };

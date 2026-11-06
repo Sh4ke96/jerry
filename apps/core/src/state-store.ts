@@ -9,6 +9,10 @@ import {
   type Checkpoint,
   type CoreState,
   type CompletionCheck,
+  type AgentRun,
+  type AnalysisReport,
+  type AnalysisReportRecord,
+  analysisReportRecordSchema,
   type ProjectProfile,
   projectProfileSchema,
   type TaskDetail,
@@ -49,7 +53,10 @@ const NEXT_TASK_NUMBER = 'next_task_number';
 export type Channel = 'cli' | 'dashboard';
 
 /** What a session last did for a task. */
-export type SessionActivity = 'plan.submitted' | 'plan.revised' | 'edit' | 'checkpoint' | 'report';
+export type SessionActivity = 'plan.submitted' | 'plan.revised' | 'edit' | 'checkpoint' | 'report' | 'analysis';
+
+/** A subagent run without SubagentStop after this long is timed-out; also the window for counting active ones. */
+const SUBAGENT_TIMEOUT_MS = 30 * 60 * 1000;
 
 /** Tools whose target path JERRY sees, so their edits count as observed. */
 const FILE_TOOLS: ReadonlySet<string> = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
@@ -480,6 +487,89 @@ export class StateStore {
     return origin.sessionId ?? null;
   }
 
+  /** The subagent behind an MCP call: the agent ID the hook recorded for the same tool use. */
+  async resolveAgent(origin: CallOrigin | undefined): Promise<string | null> {
+    if (origin?.toolUseId === undefined) return null;
+    const row = await this.database.db
+      .selectFrom('hook_events')
+      .select('agent_id')
+      .where('tool_use_id', '=', origin.toolUseId)
+      .where('event_type', '=', 'PreToolUse')
+      .where('agent_id', 'is not', null)
+      .limit(1)
+      .executeTakeFirst();
+    return row?.agent_id ?? null;
+  }
+
+  /** An analyst's report with Core's citation check (ADR 0023); open tasks only. */
+  async saveAnalysisReport(
+    taskId: string,
+    report: AnalysisReport,
+    citations: AnalysisReportRecord['citations'],
+    sessionId: string | null,
+    agentId: string | null,
+    now: Date,
+  ): Promise<AnalysisReportRecord> {
+    const task = this.requireTask(taskId);
+    if (isTerminal(task.state)) throw new StateError(409, `${taskId} is ${task.state}; analysis reports are for open tasks`);
+    const at = now.toISOString();
+    const id = await this.database.db.transaction().execute(async (trx) => {
+      const inserted = await trx
+        .insertInto('analysis_reports')
+        .values({ task_id: taskId, role: report.role, agent_id: agentId, session_id: sessionId, report_json: JSON.stringify(report), citations_json: JSON.stringify(citations), created_at: at })
+        .returning('id')
+        .executeTakeFirstOrThrow();
+      if (sessionId !== null) await linkSession(trx, sessionId, taskId, 'analysis', at);
+      return inserted.id;
+    });
+    return { id, taskId, report, citations, sessionId, agentId, createdAt: at };
+  }
+
+  async analysesOf(taskId: string): Promise<AnalysisReportRecord[]> {
+    const rows = await this.database.db.selectFrom('analysis_reports').selectAll().where('task_id', '=', taskId).orderBy('id').execute();
+    return rows.map((row) =>
+      analysisReportRecordSchema.parse({ id: row.id, taskId: row.task_id, report: JSON.parse(row.report_json), citations: JSON.parse(row.citations_json), sessionId: row.session_id, agentId: row.agent_id, createdAt: row.created_at }),
+    );
+  }
+
+  /**
+   * Subagent runs of the sessions linked to a task. An analyst that stopped without a report is a
+   * gap (no-report), never a success; a run without a stop after 30 minutes is timed-out.
+   */
+  async agentRunsOf(taskId: string, now: Date = new Date()): Promise<AgentRun[]> {
+    const { db } = this.database;
+    const rows = await db
+      .selectFrom('agent_runs')
+      .selectAll()
+      .where('session_id', 'in', db.selectFrom('session_tasks').select('session_id').where('task_id', '=', taskId))
+      .orderBy('started_at')
+      .execute();
+    const reports = await db.selectFrom('analysis_reports').select(['id', 'agent_id']).where('task_id', '=', taskId).where('agent_id', 'is not', null).execute();
+    const reportOf = new Map(reports.map((report) => [report.agent_id!, report.id]));
+    return rows.map((row) => {
+      const reportId = reportOf.get(row.agent_id) ?? null;
+      const analyst = (row.agent_type ?? '').includes('-analyst');
+      let status: AgentRun['status'] = 'completed';
+      if (row.stopped_at === null) status = now.getTime() - Date.parse(row.started_at) > SUBAGENT_TIMEOUT_MS ? 'timed-out' : 'running';
+      else if (analyst && reportId === null) status = 'no-report';
+      return { agentId: row.agent_id, agentType: row.agent_type, sessionId: row.session_id, startedAt: row.started_at, stoppedAt: row.stopped_at, status, reportId };
+    });
+  }
+
+  /**
+   * Subagents a session started in the last 30 minutes and has not finished, counted from the
+   * hook's records (each Task/Agent call, minus each SubagentStop). Synchronous: the gate uses it.
+   */
+  activeSubagents(sessionId: string, now: Date = new Date()): number {
+    const since = new Date(now.getTime() - SUBAGENT_TIMEOUT_MS).toISOString();
+    const row = this.database.raw
+      .prepare(
+        "SELECT (SELECT COUNT(*) FROM hook_events WHERE session_id = ? AND event_type = 'PreToolUse' AND tool_name IN ('Task', 'Agent') AND (verdict IS NULL OR verdict != 'DENY') AND occurred_at >= ?) - (SELECT COUNT(*) FROM hook_events WHERE session_id = ? AND event_type = 'SubagentStop' AND occurred_at >= ?) AS active",
+      )
+      .get(sessionId, since, sessionId, since) as { active: number } | undefined;
+    return Math.max(0, Number(row?.active ?? 0));
+  }
+
   /** Claude's progress note; open tasks only. It changes no state. */
   async saveCheckpoint(taskId: string, note: { summary: string; nextSteps: string[] }, sessionId: string | null, now: Date): Promise<Checkpoint> {
     const task = this.requireTask(taskId);
@@ -604,6 +694,21 @@ export class StateStore {
       // decision was made late for an event from the spool.
       if (event.eventType === 'PreToolUse' && (event.ruleId === 'monitor.in-approved-scope' || event.ruleId === 'monitor.user-uncommitted-file') && event.taskId !== null) {
         await this.linkSession(event.sessionId, event.taskId, 'edit', new Date(event.timestamp));
+      }
+      // Subagent runs (ADR 0023): started and stopped as the hooks saw them.
+      if (event.eventType === 'SubagentStart' && event.agentId !== null) {
+        await this.database.db
+          .insertInto('agent_runs')
+          .values({ agent_id: event.agentId, agent_type: event.agentType, session_id: event.sessionId, started_at: event.timestamp, stopped_at: null, created_at: at, updated_at: at })
+          .onConflict((conflict) => conflict.column('agent_id').doNothing())
+          .execute();
+      }
+      if (event.eventType === 'SubagentStop' && event.agentId !== null) {
+        await this.database.db
+          .insertInto('agent_runs')
+          .values({ agent_id: event.agentId, agent_type: event.agentType, session_id: event.sessionId, started_at: event.timestamp, stopped_at: event.timestamp, created_at: at, updated_at: at })
+          .onConflict((conflict) => conflict.column('agent_id').doUpdateSet({ stopped_at: event.timestamp, updated_at: at }))
+          .execute();
       }
       // SessionEnd closes the session (also when it arrives late through the spool).
       if (event.eventType !== 'SessionEnd') continue;

@@ -124,6 +124,29 @@ export interface GitSnapshotsTable {
   created_at: string;
 }
 
+/** A subagent run, from SubagentStart (and SubagentStop when it ended). */
+export interface AgentRunsTable {
+  agent_id: string;
+  agent_type: string | null;
+  session_id: string | null;
+  started_at: string;
+  stopped_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** An analyst's evidence-backed report and Core's citation check. */
+export interface AnalysisReportsTable {
+  id: Generated<number>;
+  task_id: string;
+  role: string;
+  agent_id: string | null;
+  session_id: string | null;
+  report_json: string;
+  citations_json: string;
+  created_at: string;
+}
+
 /** The latest project profile of a repository and its freshness fingerprints. */
 export interface ProjectProfilesTable {
   repo_id: string;
@@ -213,6 +236,8 @@ export interface JerrySchema {
   task_completion_checks: TaskCompletionChecksTable;
   git_snapshots: GitSnapshotsTable;
   project_profiles: ProjectProfilesTable;
+  agent_runs: AgentRunsTable;
+  analysis_reports: AnalysisReportsTable;
   settings: SettingsTable;
   audit_log: AuditLogTable;
 }

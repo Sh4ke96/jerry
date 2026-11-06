@@ -4,6 +4,7 @@ import { absolutePath, comparablePath, isComparableInside, matchesAnyGlob, relat
 import { assessMcpGitUsage } from './mcp.js';
 import { assessGitUsage, assessShellCommand } from './shell.js';
 import { classifyToolCall, type ToolAction } from './tool-call.js';
+import { MAX_SUBAGENTS } from '@jerry/contracts/agents';
 
 /**
  * Gate policy (ADR 0003): JERRY monitors Claude Code and blocks only hard rules.
@@ -33,6 +34,8 @@ export interface GateContext {
    * Claude was not warned about it yet (ADR 0017). Absent where Git baselines are not known.
    */
   isUserChangedFile?(taskId: string, relativePath: string): boolean;
+  /** Subagents the session started and has not finished (ADR 0023); absent where unknown. */
+  activeSubagents?(sessionId: string): number;
 }
 
 /**
@@ -40,6 +43,8 @@ export interface GateContext {
  * status) stay available. Pausing, resuming and cancelling a task are user decisions (ADR 0012).
  */
 const USER_ONLY_JERRY_COMMAND = /\bjerry(?:\.mjs|\.cmd|\.ps1)?\s+(?:approve|reject|install|uninstall|ui|repo\s+(?:exclude|include)|task\s+(?:pause|resume|cancel)|core\s+(?:start|stop)|db\s+restore)\b/i;
+/** Tools that start a Claude Code subagent. */
+const SUBAGENT_TOOLS: ReadonlySet<string> = new Set(['Task', 'Agent']);
 /** The Core API and the dashboard login: an agent holding a session could approve its own plan. */
 const CORE_API_PATTERN = /\/api\/v1\/|\/ui\/(?:login|logout)\b/i;
 /**
@@ -123,8 +128,16 @@ function hardRulesForShell(command: string, dialect: 'bash' | 'powershell', cwd:
 
 function evaluateMonitoring(action: ToolAction, request: GateCheckRequest, context: GateContext): GateDecision {
   switch (action.kind) {
-    case 'not-guarded':
+    case 'not-guarded': {
+      // ADR 0015: at most three subagents at a time. A fourth is warned about, not blocked.
+      if (SUBAGENT_TOOLS.has(request.toolName)) {
+        const active = context.activeSubagents?.(request.sessionId) ?? 0;
+        if (active >= MAX_SUBAGENTS) {
+          return decision('WARN', 'monitor.subagent-cap', `${active} subagents are already running in this session; JERRY works with at most ${MAX_SUBAGENTS} at a time (ADR 0015). Wait for one to finish instead of starting another.`);
+        }
+      }
       return decision('PASS', 'tool.not-guarded', `${request.toolName} is not a write or shell tool`);
+    }
     case 'mcp':
       return decision('PASS', 'monitor.mcp-tool', `${action.server}/${action.tool} does not change Git state`);
     case 'file-write-unknown':

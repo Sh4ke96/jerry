@@ -21,8 +21,8 @@ to three implementers with disjoint scopes.
 - [ ] Architecture and contracts analyst: architecture and impact, API, database, cross-repository integration.
 - [ ] Risk analyst: security and threats, devil's advocate.
 - [ ] Quality analyst: tests and QA strategy, regression, UI/UX and accessibility.
-- [ ] Evidence-backed agent report schema (files read, observations, evidence, risk, confidence, gaps).
-- [ ] Agent timeout/failure handling: a missing result is a recorded gap, never a pass.
+- [x] Evidence-backed agent report schema (files read, observations, evidence, risk, confidence, gaps) ([ADR 0023](decisions/0023-analysis-reports-and-agent-runs.md)).
+- [x] Agent timeout/failure handling: a missing result is a recorded gap, never a pass ([ADR 0023](decisions/0023-analysis-reports-and-agent-runs.md)).
 - [ ] Plan synthesis from the analysts' reports.
 - [ ] Plan completeness grader.
 - [ ] Plan version diff UI.

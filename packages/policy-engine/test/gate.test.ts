@@ -278,6 +278,17 @@ describe('computeReportHash', () => {
   });
 });
 
+describe('subagents (ADR 0015, ADR 0023)', () => {
+  const spawn = (toolName = 'Task'): GateCheckRequest => ({ sessionId: 's1', cwd: REPO, toolName, toolInput: {}, toolUseId: null, agentId: null });
+
+  it('warns before a fourth concurrent subagent, and never blocks one', () => {
+    expect(evaluateGate(spawn(), context(emptyState(), { activeSubagents: () => 2 }))).toMatchObject({ verdict: 'PASS' });
+    expect(evaluateGate(spawn('Agent'), context(emptyState(), { activeSubagents: () => 3 }))).toMatchObject({ verdict: 'WARN', ruleId: 'monitor.subagent-cap', reason: expect.stringContaining('at most 3') });
+    expect(evaluateGate(spawn(), context(emptyState()))).toMatchObject({ verdict: 'PASS' });
+    expect(evaluateGate(spawn('Read'), context(emptyState(), { activeSubagents: () => 9 })).verdict).toBe('PASS');
+  });
+});
+
 describe('other tools', () => {
   it('does not monitor read tools', () => {
     const request: GateCheckRequest = { sessionId: 's', cwd: REPO, toolName: 'Read', toolInput: { file_path: 'a' }, toolUseId: null, agentId: null };

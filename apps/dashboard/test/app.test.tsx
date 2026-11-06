@@ -23,6 +23,8 @@ const waitingTask: TaskSummary = {
   lastReport: null,
   reportDecision: null,
   finalCheck: null,
+  analyses: [],
+  agentRuns: [],
 };
 
 /** Reported, waiting for acceptance; JERRY saw an edit the report does not list. */
@@ -62,6 +64,27 @@ const approvedTask: TaskSummary = {
   planDecision: { approvalId: 'apr_1', taskId: 'JRY-0001', stage: 'PLAN', version: 1, contentHash: waitingTask.plan.contentHash, decision: 'APPROVED', approvedBy: 'local-user', approvedAt: NOW, comment: '' },
   activity: { sessionCount: 2, lastSessionId: 's2', lastActivityAt: NOW, lastSessionEndedAt: NOW },
   lastCheckpoint: { taskId: 'JRY-0001', sessionId: 's2', summary: 'Store and API for sessions are done.', nextSteps: ['Dashboard card', 'Live check'], at: NOW },
+  analyses: [
+    {
+      id: 1,
+      taskId: 'JRY-0001',
+      report: {
+        role: 'jerry-risk-analyst',
+        scope: 'login form',
+        filesRead: ['src/auth/login.ts'],
+        observations: [{ statement: 'Passwords are compared without constant time', evidence: ['src/auth/login.ts:12'] }],
+        risks: [{ risk: 'Timing attack on login', severity: 'high', scenario: '' }],
+        recommendations: ['Use a constant-time comparison'],
+        confidence: { level: 'medium', reason: 'one code path read' },
+        gaps: ['Rate limiting not checked'],
+      },
+      citations: { checked: 1, missingFiles: [], outOfRange: ['src/auth/login.ts:999'] },
+      sessionId: 's2',
+      agentId: 'agent-1',
+      createdAt: NOW,
+    },
+  ],
+  agentRuns: [{ agentId: 'agent-2', agentType: 'jerry:jerry-quality-analyst', sessionId: 's2', startedAt: NOW, stoppedAt: NOW, status: 'no-report', reportId: null }],
 };
 
 const cancelledTask: TaskSummary = { ...waitingTask, taskId: 'JRY-0003', title: 'Dropped idea', state: 'CANCELLED' };
@@ -303,6 +326,19 @@ describe('Dashboard app', () => {
     const dialog = wrapper.get('form.dialog');
     expect(dialog.text()).toContain("You confirm the plan's Definition of Done:");
     for (const item of samplePlan('D:\\Work\\shop', ['src/auth/**']).definitionOfDone) expect(dialog.text()).toContain(item);
+    wrapper.unmount();
+  });
+
+  it('shows the analysts’ reports with unverified citations, and a run without a report as a gap', async () => {
+    const wrapper = await mountApp();
+    await openTasks(wrapper);
+    const analysis = wrapper.findAll('article.task').find((candidate) => candidate.text().includes('JRY-0001'))!.get('.analysis');
+    expect(analysis.text()).toContain('Risk');
+    expect(analysis.text()).toContain('medium confidence');
+    expect(analysis.text()).toContain('Passwords are compared without constant time');
+    expect(analysis.text()).toContain('Unverified citations: src/auth/login.ts:999 (beyond end of file)');
+    expect(analysis.text()).toContain('jerry:jerry-quality-analyst: stopped without a report (a gap, not a result)');
+    expect(analysis.text()).toContain('Gaps: Rate limiting not checked');
     wrapper.unmount();
   });
 

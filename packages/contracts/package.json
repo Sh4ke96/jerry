@@ -6,7 +6,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./constants": "./src/constants.ts",
-    "./guards": "./src/guards.ts"
+    "./guards": "./src/guards.ts",
+    "./agents": "./src/agents.ts"
   },
   "dependencies": {
     "zod": "4.6.7"
