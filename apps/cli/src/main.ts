@@ -27,11 +27,11 @@ async function run(argv: string[]): Promise<void> {
   const [command, ...rest] = argv;
   switch (command) {
     case 'install':
-      install();
+      await install();
       return;
     case 'uninstall': {
       const { values } = parseArgs({ args: rest, options: { 'purge-data': { type: 'boolean', default: false } } });
-      uninstall({ purgeData: values['purge-data'] });
+      await uninstall({ purgeData: values['purge-data'] });
       return;
     }
     case 'doctor':

@@ -21,20 +21,32 @@ import {
   runClaude,
   runClaudeOrThrow,
 } from './claude-cli.js';
+import { getCoreStatus, stopCore } from './core-commands.js';
 
 const PLUGIN_PAYLOAD = fileURLToPath(new URL('../plugin/', import.meta.url));
+const CORE_PAYLOAD = fileURLToPath(new URL('../core/', import.meta.url));
+
+/** Stage then swap, so a session never loads a half-copied plugin or Core. */
+function copyStagedThenSwap(source: string, target: string): void {
+  const staging = `${target}.staging`;
+  fs.rmSync(staging, { recursive: true, force: true });
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.cpSync(source, staging, { recursive: true });
+  fs.rmSync(target, { recursive: true, force: true });
+  fs.renameSync(staging, target);
+}
 
 /**
  * Global, user-scope install. Copies the plugin payload into JERRY_HOME, publishes it through a
  * local marketplace and registers both via the official Claude Code CLI, which merges its own
  * keys into settings.json. JERRY never edits Claude settings files directly.
  */
-export function install(): void {
+export async function install(): Promise<void> {
   const claude = requireClaudeBinary();
   console.log(`Claude Code: ${claudeVersion(claude)} (${claude.source}: ${claude.path})`);
 
-  if (!fs.existsSync(path.join(PLUGIN_PAYLOAD, 'hooks', 'bridge.mjs'))) {
-    throw new Error(`Plugin payload not found at ${PLUGIN_PAYLOAD}. Run "pnpm build" first.`);
+  if (!fs.existsSync(path.join(PLUGIN_PAYLOAD, 'hooks', 'bridge.mjs')) || !fs.existsSync(path.join(CORE_PAYLOAD, 'core.mjs'))) {
+    throw new Error(`Build output not found next to the CLI (${PLUGIN_PAYLOAD}, ${CORE_PAYLOAD}). Run "pnpm build" first.`);
   }
 
   const home = resolveJerryHome();
@@ -42,13 +54,10 @@ export function install(): void {
   const paths = jerryPaths(home);
   const pluginDir = path.join(paths.marketplaceDir, 'plugins', PLUGIN_NAME);
 
-  // Stage then swap, so a session never loads a half-copied plugin.
-  const staging = `${pluginDir}.staging`;
-  fs.rmSync(staging, { recursive: true, force: true });
-  fs.mkdirSync(path.dirname(pluginDir), { recursive: true });
-  fs.cpSync(PLUGIN_PAYLOAD, staging, { recursive: true });
-  fs.rmSync(pluginDir, { recursive: true, force: true });
-  fs.renameSync(staging, pluginDir);
+  copyStagedThenSwap(PLUGIN_PAYLOAD, pluginDir);
+  // The runtime copy of Core is what the hooks start automatically (ADR 0003 keeps work going
+  // without Core, but monitoring needs it running).
+  copyStagedThenSwap(CORE_PAYLOAD, path.dirname(paths.runtimeCoreFile));
 
   writeFileAtomic(
     path.join(paths.marketplaceDir, '.claude-plugin', 'marketplace.json'),
@@ -93,14 +102,25 @@ export function install(): void {
     )}\n`,
   );
   console.log(`Installed ${PLUGIN_ID} (user scope), loaded from ${installed.readFromFolder ?? installed.installPath ?? pluginDir}.`);
+  console.log(`Installed JERRY Core runtime at ${paths.runtimeCoreFile}; Claude Code sessions start it automatically.`);
+
+  try {
+    const { status } = await getCoreStatus(home);
+    if (status.version !== JERRY_VERSION) {
+      console.log(`A JERRY Core ${status.version} is still running; restart it to use ${JERRY_VERSION}: jerry core stop, then jerry core start.`);
+    }
+  } catch {
+    // Core not running: the next session starts the new runtime.
+  }
   console.log('Restart Claude Code sessions (or run /reload-plugins) so they pick up the plugin. Then run "jerry doctor".');
 }
 
 /**
- * Removes only what JERRY added: its plugin, its marketplace and its plugin payload.
- * JERRY data (state, logs) is kept unless purgeData is set. Never touches project repositories.
+ * Removes only what JERRY added: its plugin, its marketplace, its plugin payload and Core runtime,
+ * and stops Core. JERRY data (state, logs) is kept unless purgeData is set. Never touches project
+ * repositories.
  */
-export function uninstall(options: { purgeData: boolean }): void {
+export async function uninstall(options: { purgeData: boolean }): Promise<void> {
   const claude = requireClaudeBinary();
   const home = resolveJerryHome();
   const paths = jerryPaths(home);
@@ -112,7 +132,9 @@ export function uninstall(options: { purgeData: boolean }): void {
   reportIdempotent(removeResult, 'not_configured', `Removed marketplace ${MARKETPLACE_NAME}`, `Marketplace ${MARKETPLACE_NAME} was not configured`);
 
   assertJerryHomeOutsideRepositories(home);
+  await stopCore();
   fs.rmSync(paths.marketplaceDir, { recursive: true, force: true });
+  fs.rmSync(paths.runtimeDir, { recursive: true, force: true });
   fs.rmSync(paths.installManifestFile, { force: true });
 
   if (options.purgeData) {

@@ -190,6 +190,14 @@ describe('hard rules: always blocked, with or without a plan, in excluded reposi
   it('blocks commands that reference JERRY data, even read-only ones', () => {
     expect(evaluateGate(shell(`cat ${JERRY_HOME}/run/core.json`), context()).ruleId).toBe('hard.protected-path');
     expect(evaluateGate(shell('Get-Content $env:LOCALAPPDATA\\JERRY\\run\\core.json', 'PowerShell'), context()).ruleId).toBe('hard.protected-path');
+    for (const command of ['cat $JERRY_HOME/run/core.json', 'cat ${JERRY_HOME}/run/core.json', 'type %JERRY_HOME%\\run\\core.json', 'Get-Content $env:JERRY_HOME\\run\\core.json']) {
+      expect(evaluateGate(shell(command), context()).ruleId).toBe('hard.protected-path');
+    }
+  });
+
+  it('does not treat source code that mentions the JERRY_HOME identifier as JERRY data', () => {
+    const command = `sed -i "s#{ JERRY_HOME: home }#{ JERRY_HOME: home, JERRY_CORE_PORT: '0' }#" scripts/e2e-live.mjs`;
+    expect(evaluateGate(shell(command), context(approvedState(task(['**'])))).verdict).not.toBe('DENY');
   });
 
   it('lets agents run read-only JERRY commands without a warning', () => {

@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { assertJerryHomeOutsideRepositories, CoreUnavailableError, findClaudeBinary, jerryPaths, resolveJerryHome } from '@jerry/platform';
+import { assertJerryHomeOutsideRepositories, CoreUnavailableError, findClaudeBinary, jerryPaths, resolveCorePort, resolveJerryHome } from '@jerry/platform';
 import { claudeVersion, listInstalledPlugins, PLUGIN_ID } from './claude-cli.js';
 import { getCoreStatus } from './core-commands.js';
 
@@ -61,14 +61,27 @@ export async function doctor(): Promise<void> {
     const { info, status } = await getCoreStatus(home);
     coreHealthy = true;
     add('core', 'PASS', `JERRY Core ${status.version} pid ${info.pid} on 127.0.0.1:${info.port}, ${status.taskCount} task(s)`);
+    const expectedPort = resolveCorePort();
+    if (expectedPort !== 0 && info.port !== expectedPort) {
+      add('core-port', 'WARN', `Core runs on port ${info.port} instead of ${expectedPort} (port in use by another program, or Core started before this setting); the dashboard origin depends on a stable port`);
+    }
   } catch (error) {
     add('core', 'FAIL', error instanceof CoreUnavailableError ? `${error.message} (run "jerry core start")` : String(error));
+  }
+
+  const paths = jerryPaths(home);
+  if (fs.existsSync(paths.autostartDisabledFile)) {
+    add('core-autostart', 'WARN', 'disabled by "jerry core stop"; run "jerry core start" to enable it again');
+  } else if (!fs.existsSync(paths.runtimeCoreFile)) {
+    add('core-autostart', 'WARN', `no Core runtime at ${paths.runtimeCoreFile} (run "jerry install")`);
+  } else {
+    add('core-autostart', 'PASS', `sessions start Core from ${paths.runtimeCoreFile} when it is not running`);
   }
 
   const footprint = findFootprint(process.cwd());
   add('project-footprint', footprint.length === 0 ? 'PASS' : 'FAIL', footprint.length === 0 ? `no JERRY files under ${process.cwd()}` : `found ${footprint.join(', ')}`);
 
-  if (!fs.existsSync(jerryPaths(home).installManifestFile)) {
+  if (!fs.existsSync(paths.installManifestFile)) {
     add('install-manifest', 'WARN', 'no install manifest (plugin may have been loaded with --plugin-dir)');
   }
 

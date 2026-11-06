@@ -33,8 +33,12 @@ export interface GateContext {
 /** Commands only the user may run. Read-only ones (status, doctor, task/repo list, core status) stay available. */
 const USER_ONLY_JERRY_COMMAND = /\bjerry(?:\.mjs|\.cmd|\.ps1)?\s+(?:approve|reject|install|uninstall|repo\s+(?:exclude|include)|core\s+(?:start|stop))\b/i;
 const CORE_API_PATTERN = /\/api\/v1\//i;
-/** Catches %LOCALAPPDATA%\JERRY and $env:LOCALAPPDATA\JERRY, which never contain the literal path. */
-const JERRY_HOME_VARIABLE_PATTERN = /localappdata[%)]?[\\/]+jerry\b|jerry_home/i;
+/**
+ * Catches %LOCALAPPDATA%\JERRY, $env:LOCALAPPDATA\JERRY and references to the JERRY_HOME variable
+ * ($JERRY_HOME, ${JERRY_HOME}, %JERRY_HOME%, $env:JERRY_HOME), which never contain the literal path.
+ * The bare identifier is not matched: source code that mentions JERRY_HOME is not JERRY data.
+ */
+const JERRY_HOME_VARIABLE_PATTERN = /localappdata[%)]?[\\/]+jerry\b|(?:\$env:|\$\{?|%)jerry_home\b/i;
 
 export function evaluateGate(request: GateCheckRequest, context: GateContext): GateDecision {
   const action = classifyToolCall(request.toolName, request.toolInput);

@@ -21,6 +21,8 @@ repositories, not to this one.
   MCP tools (the user does all Git operations), writes inside `.git`, tampering with JERRY data or the Claude
   Code settings that enable it.
 - `jerry repo exclude <path>` turns monitoring off for a repository; hard rules still apply there.
+- Core starts automatically from Claude Code sessions and listens on `127.0.0.1:47823` (`JERRY_CORE_PORT`);
+  `jerry core stop` pauses it until `jerry core start` ([ADR 0004](docs/decisions/0004-core-autostart-fixed-port.md)).
 - JERRY never modifies any repository ([ADR 0002](docs/decisions/0002-jerry-never-modifies-repositories.md)).
 - `jerry` CLI: `install`, `uninstall`, `doctor`, `core start|stop|status`, `task`, `plan revise`,
   `approve`/`reject`, `repo exclude|include|list` (approve, reject and exclude require an interactive terminal).

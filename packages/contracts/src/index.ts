@@ -195,6 +195,8 @@ export type CoreState = z.infer<typeof coreStateSchema>;
 export const coreRuntimeInfoSchema = z.object({
   pid: z.number().int().positive(),
   port: z.number().int().min(1).max(65535),
+  /** The port Core was asked to use; differs from `port` when it was taken and Core fell back. */
+  configuredPort: z.number().int().min(0).max(65535).optional(),
   token: z.string().regex(/^[0-9a-f]{64}$/),
   startedAt: z.iso.datetime(),
   version: z.string().min(1),

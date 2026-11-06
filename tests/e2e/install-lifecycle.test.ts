@@ -52,7 +52,7 @@ describe.skipIf(claude === null)('jerry install / doctor / uninstall (isolated C
     claudeConfigDir = path.join(base, 'claude-config');
     fs.mkdirSync(claudeConfigDir, { recursive: true });
     fs.writeFileSync(path.join(claudeConfigDir, 'settings.json'), JSON.stringify(EXISTING_SETTINGS, null, 2));
-    env = { ...process.env, JERRY_HOME: jerryHome, CLAUDE_CONFIG_DIR: claudeConfigDir };
+    env = { ...process.env, JERRY_HOME: jerryHome, CLAUDE_CONFIG_DIR: claudeConfigDir, JERRY_CORE_PORT: '0' };
     repo = createFixtureRepo(path.join(base, 'repo'));
     repoBefore = snapshotRepo(repo);
     realProfileBefore = fingerprintRealProfile();
@@ -86,6 +86,7 @@ describe.skipIf(claude === null)('jerry install / doctor / uninstall (isolated C
     const jerryPlugin = plugins.find((plugin) => plugin.id === 'jerry@jerry-local');
     expect(jerryPlugin).toMatchObject({ enabled: true, scope: 'user' });
     expect(path.resolve(jerryPlugin!.readFromFolder!)).toBe(path.resolve(jerryHome, 'marketplace', 'plugins', 'jerry'));
+    expect(fs.existsSync(path.join(jerryHome, 'runtime', 'core', 'core.mjs'))).toBe(true);
   });
 
   it('produces a plugin that passes official validation', () => {
@@ -117,6 +118,7 @@ describe.skipIf(claude === null)('jerry install / doctor / uninstall (isolated C
     const healthy = jerry(['doctor']);
     expect(healthy.exitCode, healthy.output).toBe(0);
     expect(healthy.output).toContain('Guard status: GUARDED');
+    expect(healthy.output).toMatch(/PASS\s+core-autostart/);
     expect(jerry(['core', 'stop']).exitCode).toBe(0);
   });
 
@@ -127,6 +129,7 @@ describe.skipIf(claude === null)('jerry install / doctor / uninstall (isolated C
     const plugins = claudeJson(['plugin', 'list', '--json']) as Array<{ id: string }>;
     expect(plugins.map((plugin) => plugin.id)).not.toContain('jerry@jerry-local');
     expect(fs.existsSync(path.join(jerryHome, 'marketplace'))).toBe(false);
+    expect(fs.existsSync(path.join(jerryHome, 'runtime'))).toBe(false);
     expect(fs.existsSync(path.join(jerryHome, 'state'))).toBe(true);
 
     const { enabledPlugins, extraKnownMarketplaces, ...rest } = settings();
@@ -148,7 +151,7 @@ describe.skipIf(claude === null)('jerry install / doctor / uninstall (isolated C
     expect(result.exitCode, result.output).toBe(0);
     expect(result.output).toContain('JERRY did not create');
     expect(fs.existsSync(foreign)).toBe(true);
-    for (const entry of ['run', 'state', 'logs', 'config', 'marketplace']) {
+    for (const entry of ['run', 'state', 'logs', 'config', 'marketplace', 'runtime']) {
       expect(fs.existsSync(path.join(jerryHome, entry))).toBe(false);
     }
   });

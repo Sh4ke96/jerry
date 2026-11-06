@@ -7,8 +7,9 @@ import {
   type GateCheckRequest,
   type GateDecision,
   type SessionRegistrationResponse,
+  type SessionStartInput,
 } from '@jerry/contracts';
-import { protectedRoots, readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
+import { autostartCore, protectedRoots, readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
 import { classifyToolCall, evaluateHardRules } from '@jerry/policy-engine';
 
 /**
@@ -29,6 +30,8 @@ import { classifyToolCall, evaluateHardRules } from '@jerry/policy-engine';
  */
 
 const CORE_TIMEOUT_MS = 1500;
+/** SessionStart has a 5 s hook timeout; leave room for registration after Core comes up. */
+const AUTOSTART_WAIT_MS = 3000;
 const WATCHDOG_MS = 8000;
 const MAX_STDIN_BYTES = 64 * 1024 * 1024;
 /** Only these tool_input fields are forwarded to Core: never file contents or edit payloads. */
@@ -102,8 +105,48 @@ async function preToolUse(raw: string): Promise<void> {
   hardRulesCleared = true;
 
   const decision = await askCore(request).catch(() => null);
-  if (decision === null) proceed(); // Core unavailable: monitoring is off, work continues.
+  if (decision === null) {
+    // Core unavailable: this call proceeds unrecorded. Start Core in the background so the
+    // following calls are monitored again; never make Claude wait for it.
+    tryAutostart();
+    proceed();
+  }
   emit(decision);
+}
+
+function tryAutostart(): 'started' | 'throttled' | 'unavailable' {
+  try {
+    return autostartCore(resolveJerryHome());
+  } catch {
+    return 'unavailable';
+  }
+}
+
+async function registerSession(input: SessionStartInput): Promise<SessionRegistrationResponse> {
+  const info = readCoreRuntimeInfo(resolveJerryHome());
+  return sessionRegistrationResponseSchema.parse(
+    await requestCore(info, {
+      method: 'POST',
+      path: '/api/v1/sessions',
+      body: { sessionId: input.session_id, cwd: input.cwd, source: input.source ?? null },
+      timeoutMs: CORE_TIMEOUT_MS,
+    }),
+  );
+}
+
+/** After an automatic start, waits for Core to accept the session (bounded by the SessionStart hook timeout). */
+async function registerSessionAfterAutostart(input: SessionStartInput): Promise<SessionRegistrationResponse> {
+  const deadline = Date.now() + AUTOSTART_WAIT_MS;
+  let lastError: unknown = new Error('Core did not start in time');
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    try {
+      return await registerSession(input);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
 }
 
 async function askCore(request: GateCheckRequest): Promise<GateDecision> {
@@ -163,15 +206,13 @@ async function sessionStart(raw: string): Promise<void> {
   let context: string;
   try {
     const input = sessionStartInputSchema.parse(JSON.parse(raw));
-    const info = readCoreRuntimeInfo(resolveJerryHome());
-    const registration = sessionRegistrationResponseSchema.parse(
-      await requestCore(info, {
-        method: 'POST',
-        path: '/api/v1/sessions',
-        body: { sessionId: input.session_id, cwd: input.cwd, source: input.source ?? null },
-        timeoutMs: CORE_TIMEOUT_MS,
-      }),
-    );
+    let registration: SessionRegistrationResponse;
+    try {
+      registration = await registerSession(input);
+    } catch (error) {
+      if (tryAutostart() === 'unavailable') throw error;
+      registration = await registerSessionAfterAutostart(input);
+    }
     context = monitoredSessionContext(registration);
   } catch (error) {
     const cause = error instanceof Error ? error.message : String(error);

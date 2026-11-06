@@ -14,7 +14,7 @@ const iterations = Number(process.argv[2] ?? 20);
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'jerry-bench-'));
 const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'jerry-bench-repo-'));
 spawnSync('git', ['init', '-q', repo]);
-const env = { ...process.env, JERRY_HOME: home };
+const env = { ...process.env, JERRY_HOME: home, JERRY_CORE_PORT: '0' };
 
 const input = JSON.stringify({
   session_id: 'bench',

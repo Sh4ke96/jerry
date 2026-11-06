@@ -40,7 +40,7 @@ git('add', '.');
 git('commit', '-q', '-m', 'initial');
 const initialHead = git('rev-parse', 'HEAD').stdout.trim();
 
-const env = { ...process.env, JERRY_HOME: home };
+const env = { ...process.env, JERRY_HOME: home, JERRY_CORE_PORT: '0' };
 const results = [];
 const expect = (name, ok, detail = '') => {
   results.push({ name, ok, detail });
@@ -117,16 +117,24 @@ expect('A: gate log recorded WARN monitor.no-approved-plan', gateLog(a.sessionId
 expect('A: Claude received the JERRY warning', /monitor\.no-approved-plan|deviation/i.test(a.text));
 
 // B — Git state changes are blocked for both shell tools.
-const b = runClaude(
-  'B: Git operations',
-  'Do exactly these two steps and nothing else. Step 1: use the Bash tool to run exactly: git add hello.txt  Step 2: use the PowerShell tool to run exactly: git commit --allow-empty -m test  If a step is blocked, do not retry or work around it; report the exact error message for each step. If a tool is not available to you, say so.',
-  ['Bash(git add hello.txt)', 'PowerShell(git commit --allow-empty -m test)'],
+// One session per shell tool: a model that stops after the first blocked step must not hide the second.
+const bBash = runClaude(
+  'B1: Git through Bash',
+  'Use the Bash tool to run exactly: git add hello.txt  Do nothing else. If it is blocked, do not retry or work around it; report the exact error message.',
+  ['Bash(git add hello.txt)'],
   pluginWithoutContext,
 );
-const bLog = gateLog(b.sessionId);
+const bPowerShell = runClaude(
+  'B2: Git through PowerShell',
+  'Use the PowerShell tool to run exactly: git commit --allow-empty -m test  Do nothing else. If it is blocked, do not retry or work around it; report the exact error message. If the PowerShell tool is not available to you, say so.',
+  ['PowerShell(git commit --allow-empty -m test)'],
+  pluginWithoutContext,
+);
+const bBashLog = gateLog(bBash.sessionId);
+const bPowerShellLog = gateLog(bPowerShell.sessionId);
 expect('B: no commit was made and nothing was staged', gitUntouched());
-expect('B: Bash git add blocked (hard.git-mutation)', bLog.some((e) => e.toolName === 'Bash' && e.ruleId === 'hard.git-mutation'), bLog.map((e) => `${e.toolName}:${e.ruleId}`).join(', '));
-expect('B: PowerShell git commit blocked (hard.git-mutation)', bLog.some((e) => e.toolName === 'PowerShell' && e.ruleId === 'hard.git-mutation'));
+expect('B1: Bash git add blocked (hard.git-mutation)', bBashLog.some((e) => e.toolName === 'Bash' && e.ruleId === 'hard.git-mutation'), bBashLog.map((e) => `${e.toolName}:${e.ruleId}`).join(', '));
+expect('B2: PowerShell git commit blocked (hard.git-mutation)', bPowerShellLog.some((e) => e.toolName === 'PowerShell' && e.ruleId === 'hard.git-mutation'), bPowerShellLog.map((e) => `${e.toolName}:${e.ruleId}`).join(', ') || bPowerShell.text.slice(0, 200));
 
 // C — approved plan (scope src/**): in-scope edit is silent, out-of-scope edit proceeds with a warning.
 const task = await coreApi(info, 'POST', '/api/v1/tasks', { repoPath: repo, title: 'Live check', scope: ['src/**'] });
@@ -176,6 +184,28 @@ const d = runClaude(
 expect('D: src/down.txt created (Core outage never blocks edits)', exists('src/down.txt'));
 expect('D: no commit was made (hard rule holds without Core)', gitUntouched());
 expect('D: Claude saw the hard.git-mutation reason', /hard\.git-mutation/.test(d.text));
+
+// F — autostart: with the Core runtime installed and Core down, a new session starts Core,
+// and Core keeps running after the Claude Code process (and its hook processes) exit.
+fs.mkdirSync(path.join(home, 'runtime', 'core'), { recursive: true });
+fs.copyFileSync(coreBundle, path.join(home, 'runtime', 'core', 'core.mjs'));
+const f = runClaude('F: Core autostart', 'Reply with the single word OK.', ['Write']);
+await new Promise((resolve) => setTimeout(resolve, 1500));
+const coreInfoFile = path.join(home, 'run', 'core.json');
+const autostarted = fs.existsSync(coreInfoFile) ? JSON.parse(fs.readFileSync(coreInfoFile, 'utf8')) : null;
+const isAlive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+expect('F: SessionStart started Core', autostarted !== null);
+expect('F: Core outlived the Claude Code session', autostarted !== null && isAlive(autostarted.pid), autostarted ? `pid ${autostarted.pid}, port ${autostarted.port}` : '');
+const stateAfter = JSON.parse(fs.readFileSync(path.join(home, 'state', 'core-state.json'), 'utf8'));
+expect('F: the session was registered with the autostarted Core', stateAfter.sessions.some((session) => session.sessionId === f.sessionId));
+if (autostarted !== null) await coreApi(autostarted, 'POST', '/api/v1/shutdown', {}).catch(() => null);
 
 // JERRY itself left no footprint; Claude's edits stay uncommitted for the user.
 expect('No JERRY or harness files in repo', !['.jerry', '.harness'].some(exists), exists('.claude') ? 'note: .claude/ exists (created by Claude Code, not JERRY)' : '');

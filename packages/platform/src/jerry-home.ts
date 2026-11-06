@@ -26,6 +26,13 @@ export interface JerryPaths {
   home: string;
   runDir: string;
   coreInfoFile: string;
+  coreLockFile: string;
+  autostartStampFile: string;
+  /** Present after "jerry core stop": hooks must not restart Core against the user's wish. */
+  autostartDisabledFile: string;
+  /** Installed copy of Core that the hooks may start automatically. */
+  runtimeDir: string;
+  runtimeCoreFile: string;
   stateDir: string;
   stateFile: string;
   logsDir: string;
@@ -40,10 +47,16 @@ export function jerryPaths(home: string): JerryPaths {
   const stateDir = path.join(home, 'state');
   const logsDir = path.join(home, 'logs');
   const configDir = path.join(home, 'config');
+  const runtimeDir = path.join(home, 'runtime');
   return {
     home,
     runDir,
     coreInfoFile: path.join(runDir, 'core.json'),
+    coreLockFile: path.join(runDir, 'core.lock'),
+    autostartStampFile: path.join(runDir, 'autostart.stamp'),
+    autostartDisabledFile: path.join(runDir, 'autostart.disabled'),
+    runtimeDir,
+    runtimeCoreFile: path.join(runtimeDir, 'core', 'core.mjs'),
     stateDir,
     stateFile: path.join(stateDir, 'core-state.json'),
     logsDir,

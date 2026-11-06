@@ -1,13 +1,13 @@
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
+import type http from 'node:http';
 import { JERRY_VERSION, type CoreRuntimeInfo } from '@jerry/contracts';
 import {
+  acquireSingleInstanceLock,
   assertJerryHomeOutsideRepositories,
-  CoreUnavailableError,
   jerryPaths,
   protectedRoots,
-  readCoreRuntimeInfo,
-  requestCore,
+  resolveCorePort,
   resolveJerryHome,
   writeFileAtomic,
 } from '@jerry/platform';
@@ -22,11 +22,18 @@ async function main(): Promise<void> {
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  await refuseIfAlreadyRunning(home);
+  // One Core per JERRY_HOME. A concurrent start (two sessions at once) exits quietly.
+  const lock = acquireSingleInstanceLock(paths.coreLockFile);
+  if (!lock.acquired) {
+    process.stdout.write(`JERRY Core is already running for ${home} (pid ${lock.heldBy}); exiting.\n`);
+    return;
+  }
+  const releaseLock = lock.release;
 
   const store = new StateStore(paths.stateFile);
   const token = randomBytes(32).toString('hex');
   const startedAt = new Date();
+  const configuredPort = resolveCorePort();
 
   const server = createCoreServer({
     token,
@@ -38,53 +45,59 @@ async function main(): Promise<void> {
     onShutdownRequested: () => shutdown('shutdown requested via API'),
   });
 
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => resolve());
-  });
-  const address = server.address();
-  if (typeof address !== 'object' || address === null) {
-    throw new Error('Core server did not bind to a TCP port');
+  let port: number;
+  try {
+    port = await listen(server, configuredPort);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE' || configuredPort === 0) throw error;
+    // Another program holds the port: keep guarding on a random port; doctor reports the fallback.
+    process.stdout.write(`Port ${configuredPort} is in use by another program; falling back to a random port.\n`);
+    port = await listen(server, 0);
   }
 
   const info: CoreRuntimeInfo = {
     pid: process.pid,
-    port: address.port,
+    port,
+    configuredPort,
     token,
     startedAt: startedAt.toISOString(),
     version: JERRY_VERSION,
   };
   writeFileAtomic(paths.coreInfoFile, `${JSON.stringify(info, null, 2)}\n`);
-  process.stdout.write(`JERRY Core ${JERRY_VERSION} listening on 127.0.0.1:${address.port} (pid ${process.pid}, home ${home})\n`);
+  process.stdout.write(`JERRY Core ${JERRY_VERSION} listening on 127.0.0.1:${port} (pid ${process.pid}, home ${home})\n`);
 
   let stopping = false;
+  function cleanUp(): void {
+    removeRuntimeInfoIfOwned(paths.coreInfoFile);
+    releaseLock();
+  }
   function shutdown(reason: string): void {
     if (stopping) return;
     stopping = true;
     process.stdout.write(`JERRY Core stopping: ${reason}\n`);
-    removeRuntimeInfoIfOwned(paths.coreInfoFile);
+    cleanUp();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 2000).unref();
   }
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('exit', () => removeRuntimeInfoIfOwned(paths.coreInfoFile));
+  process.on('exit', cleanUp);
 }
 
-async function refuseIfAlreadyRunning(home: string): Promise<void> {
-  let info: CoreRuntimeInfo;
-  try {
-    info = readCoreRuntimeInfo(home);
-  } catch (error) {
-    if (error instanceof CoreUnavailableError) return;
-    throw error;
-  }
-  try {
-    await requestCore(info, { method: 'GET', path: '/api/v1/status', timeoutMs: 1000 });
-  } catch {
-    return; // stale runtime file from a crashed Core; it is overwritten on start
-  }
-  throw new Error(`JERRY Core is already running (pid ${info.pid}, port ${info.port})`);
+function listen(server: http.Server, port: number): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const onError = (error: Error): void => reject(error);
+    server.once('error', onError);
+    server.listen(port, '127.0.0.1', () => {
+      server.off('error', onError);
+      const address = server.address();
+      if (typeof address !== 'object' || address === null) {
+        reject(new Error('Core server did not bind to a TCP port'));
+        return;
+      }
+      resolve(address.port);
+    });
+  });
 }
 
 /** Only the owning process removes core.json, so a second Core never deletes the first one's file. */

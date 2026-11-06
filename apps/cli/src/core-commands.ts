@@ -1,4 +1,3 @@
-import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { coreStatusSchema, type CoreRuntimeInfo, type CoreStatus } from '@jerry/contracts';
@@ -9,9 +8,11 @@ import {
   readCoreRuntimeInfo,
   requestCore,
   resolveJerryHome,
+  spawnDetachedCore,
 } from '@jerry/platform';
 
-const CORE_BUNDLE = fileURLToPath(new URL('../core/core.mjs', import.meta.url));
+/** Core from the same build as this CLI; falls back to the installed runtime copy. */
+const SIBLING_CORE = fileURLToPath(new URL('../core/core.mjs', import.meta.url));
 
 export async function getCoreStatus(home: string = resolveJerryHome()): Promise<{ info: CoreRuntimeInfo; status: CoreStatus }> {
   const info = readCoreRuntimeInfo(home);
@@ -21,6 +22,10 @@ export async function getCoreStatus(home: string = resolveJerryHome()): Promise<
 
 export async function startCore(): Promise<void> {
   const home = resolveJerryHome();
+  assertJerryHomeOutsideRepositories(home);
+  const paths = jerryPaths(home);
+  fs.rmSync(paths.autostartDisabledFile, { force: true });
+
   try {
     const { info } = await getCoreStatus(home);
     console.log(`JERRY Core already running (pid ${info.pid}, port ${info.port}).`);
@@ -28,29 +33,18 @@ export async function startCore(): Promise<void> {
   } catch (error) {
     if (!(error instanceof CoreUnavailableError)) throw error;
   }
-  if (!fs.existsSync(CORE_BUNDLE)) throw new Error(`Core bundle not found at ${CORE_BUNDLE}. Run "pnpm build" first.`);
 
-  assertJerryHomeOutsideRepositories(home);
-  const paths = jerryPaths(home);
-  fs.mkdirSync(paths.logsDir, { recursive: true });
-  const log = fs.openSync(`${paths.logsDir}/core.log`, 'a');
-  const child = spawn(process.execPath, [CORE_BUNDLE], {
-    // Never inherit a repository as working directory: on Windows a running process's cwd
-    // cannot be deleted or renamed, so Core would lock the user's project folder.
-    cwd: home,
-    detached: true,
-    stdio: ['ignore', log, log],
-    windowsHide: true,
-    env: { ...process.env, JERRY_HOME: home },
-  });
-  child.unref();
+  const coreScript = fs.existsSync(SIBLING_CORE) ? SIBLING_CORE : paths.runtimeCoreFile;
+  if (!fs.existsSync(coreScript)) throw new Error(`Core not found at ${SIBLING_CORE} or ${paths.runtimeCoreFile}. Run "pnpm build" or "jerry install".`);
+  spawnDetachedCore(home, coreScript);
 
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 150));
     try {
       const { info } = await getCoreStatus(home);
-      console.log(`JERRY Core started (pid ${info.pid}, port ${info.port}, home ${home}).`);
+      const fallback = info.configuredPort !== undefined && info.configuredPort !== 0 && info.configuredPort !== info.port;
+      console.log(`JERRY Core started (pid ${info.pid}, port ${info.port}${fallback ? `, configured port ${info.configuredPort} was in use` : ''}, home ${home}).`);
       return;
     } catch {
       // not ready yet
@@ -59,14 +53,19 @@ export async function startCore(): Promise<void> {
   throw new Error(`JERRY Core did not become healthy within 10 s; see ${paths.logsDir}\\core.log`);
 }
 
+/** Stops Core and disables automatic starts until the user runs "jerry core start" again. */
 export async function stopCore(): Promise<void> {
   const home = resolveJerryHome();
+  const paths = jerryPaths(home);
+  fs.mkdirSync(paths.runDir, { recursive: true });
+  fs.writeFileSync(paths.autostartDisabledFile, new Date().toISOString());
+
   let info: CoreRuntimeInfo;
   try {
     info = readCoreRuntimeInfo(home);
   } catch (error) {
     if (error instanceof CoreUnavailableError) {
-      console.log('JERRY Core is not running.');
+      console.log('JERRY Core is not running. Automatic start is disabled until "jerry core start".');
       return;
     }
     throw error;
@@ -79,8 +78,8 @@ export async function stopCore(): Promise<void> {
     return;
   }
   const deadline = Date.now() + 5000;
-  while (Date.now() < deadline && fs.existsSync(jerryPaths(home).coreInfoFile)) {
+  while (Date.now() < deadline && fs.existsSync(paths.coreInfoFile)) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  console.log(`JERRY Core (pid ${info.pid}) stopped.`);
+  console.log(`JERRY Core (pid ${info.pid}) stopped. Automatic start is disabled until "jerry core start".`);
 }

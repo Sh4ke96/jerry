@@ -20,4 +20,4 @@ export function assertJerryHomeOutsideRepositories(home: string): void {
 }
 
 /** Every top-level entry JERRY creates in JERRY_HOME. Purge removes exactly these, never anything else. */
-export const JERRY_HOME_ENTRIES = ['run', 'state', 'logs', 'config', 'marketplace'] as const;
+export const JERRY_HOME_ENTRIES = ['run', 'state', 'logs', 'config', 'marketplace', 'runtime'] as const;

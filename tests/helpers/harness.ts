@@ -22,8 +22,15 @@ export interface RunningCore {
   stop(): Promise<void>;
 }
 
-export async function startCore(home: string): Promise<RunningCore> {
-  const child = spawn(process.execPath, [CORE], { env: { ...process.env, JERRY_HOME: home }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+/** Port 0 keeps test Cores away from the default port, which the user's real Core may hold. */
+export const TEST_CORE_ENV = { JERRY_CORE_PORT: '0' } as const;
+
+export async function startCore(home: string, extraEnv: Record<string, string> = {}): Promise<RunningCore> {
+  const child = spawn(process.execPath, [CORE], {
+    env: { ...process.env, ...TEST_CORE_ENV, JERRY_HOME: home, ...extraEnv },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
   let output = '';
   child.stdout?.on('data', (chunk: Buffer) => (output += chunk.toString()));
   child.stderr?.on('data', (chunk: Buffer) => (output += chunk.toString()));
@@ -88,7 +95,7 @@ export function runBridge(event: 'pre-tool-use' | 'session-start', input: unknow
   const started = performance.now();
   const result = spawnSync(process.execPath, [BRIDGE, event], {
     input: typeof input === 'string' ? input : JSON.stringify(input),
-    env: { ...process.env, ...env },
+    env: { ...process.env, ...TEST_CORE_ENV, ...env },
     encoding: 'utf8',
     timeout: 20_000,
     windowsHide: true,
