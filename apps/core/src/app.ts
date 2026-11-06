@@ -24,12 +24,12 @@ import {
   type TaskDetail,
   type TaskSummary,
 } from '@jerry/contracts';
-import { approvedPlansForRepo, comparablePath, evaluateGate, isRepoExcluded } from '@jerry/policy-engine';
+import { absolutePath, approvedPlansForRepo, comparablePath, evaluateGate, isRepoExcluded, relativeInside } from '@jerry/policy-engine';
 import { isTerminal } from '@jerry/workflow';
 import { buildEventEnvelope } from '@jerry/trace-engine';
 import type { z } from 'zod';
 import { BrowserSessions, clearedSessionCookie, CSRF_HEADER, readCookie, safeEqual, SESSION_COOKIE, sessionCookie, type BrowserSession } from './auth.js';
-import { evaluatePending } from './events.js';
+import { evaluatePending, withRepoRoot } from './events.js';
 import { findGitRoot, realPathOfNearestExisting } from './repo-fs.js';
 import { StateError, type StateStore } from './state-store.js';
 import { readDashboardFile } from './static-files.js';
@@ -89,6 +89,7 @@ export function gateEvaluator(store: StateStore, protectedRoots: readonly string
       findRepoRoot: findGitRoot,
       approvedPlans: (repoRoot) => approvedPlansForRepo(snapshot, repoRoot, process.platform),
       isExcluded: (repoRoot) => isRepoExcluded(snapshot, repoRoot, process.platform),
+      isUserChangedFile: (taskId, relativePath) => store.isUserChangedFile(taskId, relativePath),
     });
   };
 }
@@ -238,13 +239,19 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
         extraPayload: { reason: decision.reason },
       },
     );
-    if (event !== null) await store.recordEvents([event], now, false);
+    if (event !== null) await store.recordEvents([withRepoRoot(event)], now, false);
+    // One warning per file and task about the user's uncommitted changes (previews do not count).
+    if (decision.ruleId === 'monitor.user-uncommitted-file' && decision.taskId !== null && decision.repoRoot !== null) {
+      const target = gateRequest.toolInput['file_path'] ?? gateRequest.toolInput['notebook_path'];
+      const relative = typeof target === 'string' ? relativeInside(absolutePath(realPathOfNearestExisting(absolutePath(target, gateRequest.cwd, process.platform)), gateRequest.cwd, process.platform), decision.repoRoot, process.platform) : null;
+      if (relative !== null) store.markUserFileWarned(decision.taskId, relative);
+    }
     return decision;
   });
 
   app.post('/api/v1/events', { config: TOKEN_ONLY }, async (request, reply) => {
     const body = parse(eventIngestRequestSchema, request.body);
-    const inserted = await store.recordEvents(body.events.map((event) => evaluatePending(event, evaluate)), new Date(), false);
+    const inserted = await store.recordEvents(body.events.map((event) => withRepoRoot(evaluatePending(event, evaluate))), new Date(), false);
     return reply.code(202).send({ accepted: body.events.length, inserted });
   });
 
@@ -339,7 +346,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     const task = store.snapshot().tasks.find((candidate) => candidate.taskId === taskId);
     if (task === undefined) throw new HttpError(404, `Unknown task ${taskId}`);
     const [summary] = await summarize(store, [task]);
-    const detail: TaskDetail = { ...summary!, ...(await store.taskHistory(taskId)), reports: await store.reportsOf(taskId) };
+    const detail: TaskDetail = { ...summary!, ...(await store.taskHistory(taskId)), reports: await store.reportsOf(taskId), baseline: await store.taskBaseline(taskId) };
     return detail;
   });
 
@@ -472,24 +479,29 @@ async function openTasksFor(store: StateStore, snapshot: CoreState, repoRoot: st
   const activity = await store.taskActivity();
   const mine = new Set(await store.tasksOfSession(sessionId));
   const recency = (task: Task): string => activity.get(task.taskId)?.activity.lastActivityAt ?? task.createdAt;
-  return tasks
-    .sort((a, b) => Number(mine.has(b.taskId)) - Number(mine.has(a.taskId)) || recency(b).localeCompare(recency(a)))
-    .slice(0, MAX_OPEN_TASKS)
-    .map((task) => {
-      const checkpoint = activity.get(task.taskId)?.lastCheckpoint ?? null;
-      return {
-        taskId: task.taskId,
-        title: task.title,
-        state: task.state,
-        planVersion: task.plan.version,
-        scope: task.plan.scope,
-        coversEdits: covering.has(task.taskId),
-        workedInThisSession: mine.has(task.taskId),
-        lastActivityAt: activity.get(task.taskId)?.activity.lastActivityAt ?? null,
-        checkpoint: checkpoint === null ? null : { summary: checkpoint.summary, nextSteps: checkpoint.nextSteps, at: checkpoint.at },
-      };
-    });
+  const ordered = tasks.sort((a, b) => Number(mine.has(b.taskId)) - Number(mine.has(a.taskId)) || recency(b).localeCompare(recency(a))).slice(0, MAX_OPEN_TASKS);
+  // Git is read only for the tasks shown in the start context, within a small time budget.
+  const since = await Promise.all(ordered.map((task, index) => (index < OPEN_TASKS_SHOWN && activity.get(task.taskId)?.lastCheckpoint != null ? store.changesSinceCheckpoint(task) : Promise.resolve(null))));
+  return ordered.map((task, index) => {
+    const checkpoint = activity.get(task.taskId)?.lastCheckpoint ?? null;
+    const sinceCheckpoint = since[index] ?? null;
+    return {
+      taskId: task.taskId,
+      title: task.title,
+      state: task.state,
+      planVersion: task.plan.version,
+      scope: task.plan.scope,
+      coversEdits: covering.has(task.taskId),
+      workedInThisSession: mine.has(task.taskId),
+      lastActivityAt: activity.get(task.taskId)?.activity.lastActivityAt ?? null,
+      checkpoint: checkpoint === null ? null : { summary: checkpoint.summary, nextSteps: checkpoint.nextSteps, at: checkpoint.at },
+      ...(sinceCheckpoint === null ? {} : { sinceCheckpoint }),
+    };
+  });
 }
+
+/** Open tasks the bridge shows in full at session start (apps/hook-bridge OPEN_TASKS_IN_CONTEXT). */
+const OPEN_TASKS_SHOWN = 3;
 
 /** Pages get a readable HTML answer instead of JSON when access is refused. */
 function htmlErrors(error: Error, _request: FastifyRequest, reply: FastifyReply): FastifyReply {

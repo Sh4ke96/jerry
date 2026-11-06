@@ -103,6 +103,27 @@ export interface ImplementationReportsTable {
   created_at: string;
 }
 
+/** Read-only Git baselines of a task's repository (plan.approved, report, checkpoint). */
+export interface GitSnapshotsTable {
+  id: Generated<number>;
+  task_id: string;
+  repo_root: string;
+  kind: string;
+  head: string | null;
+  branch: string | null;
+  upstream: string | null;
+  remote_url: string | null;
+  staged_json: string;
+  unstaged_json: string;
+  untracked_json: string;
+  truncated: number;
+  /** Repo-relative path → content hash: the user's dirty files (plan.approved) or files changed since it. */
+  fingerprints_json: string;
+  /** Why Git could not be read, when it could not. */
+  error: string | null;
+  created_at: string;
+}
+
 /** Runs of Core's final checks; DONE follows only a passing one. */
 export interface TaskCompletionChecksTable {
   id: Generated<number>;
@@ -180,6 +201,7 @@ export interface JerrySchema {
   task_checkpoints: TaskCheckpointsTable;
   implementation_reports: ImplementationReportsTable;
   task_completion_checks: TaskCompletionChecksTable;
+  git_snapshots: GitSnapshotsTable;
   settings: SettingsTable;
   audit_log: AuditLogTable;
 }

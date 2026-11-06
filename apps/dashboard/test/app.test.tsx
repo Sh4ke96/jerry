@@ -46,6 +46,7 @@ const reportedTask: TaskSummary = {
       observedEdits: ['README.md', 'src/greeting/greet.ts'],
       unreportedEdits: ['README.md'],
       failedOrNotRunChecks: 1,
+      git: null,
     },
     submittedBy: 'claude',
     sessionId: 's9',

@@ -262,6 +262,21 @@ export const reportEvidenceSchema = z.object({
   unreportedEdits: z.array(z.string()),
   /** Checks the report marks FAIL or NOT_RUN. */
   failedOrNotRunChecks: z.number().int().nonnegative(),
+  /**
+   * What Git shows since the plan's baseline (ADR 0017), including changes made by shell commands.
+   * Files the user had changed before approval count only if their content changed again. Null
+   * when Git could not be read; absent in reports made before M3.
+   */
+  git: z
+    .object({
+      baselineHead: z.string().nullable(),
+      baselineAt: z.iso.datetime().nullable(),
+      changed: z.array(z.string()),
+      /** Files with the user's uncommitted changes at baseline that changed again. */
+      userChanged: z.array(z.string()),
+    })
+    .nullable()
+    .default(null),
 });
 export type ReportEvidence = z.infer<typeof reportEvidenceSchema>;
 
@@ -427,6 +442,8 @@ export const openTaskSchema = z.object({
   workedInThisSession: z.boolean(),
   lastActivityAt: z.iso.datetime().nullable(),
   checkpoint: z.object({ summary: z.string(), nextSteps: z.array(z.string()), at: z.iso.datetime() }).nullable(),
+  /** What changed in the repository since the checkpoint (ADR 0017); absent when unknown. */
+  sinceCheckpoint: z.object({ headBefore: z.string().nullable(), headNow: z.string().nullable(), changedFiles: z.number().int().nonnegative() }).optional(),
 });
 export type OpenTask = z.infer<typeof openTaskSchema>;
 
@@ -558,6 +575,21 @@ export const taskDetailSchema = taskSummarySchema.extend({
   checkpoints: z.array(checkpointSchema),
   /** Every implementation report version, newest first. */
   reports: z.array(implementationReportRecordSchema),
+  /** The Git baseline taken when the current plan was approved (ADR 0017). */
+  baseline: z
+    .object({
+      at: z.iso.datetime(),
+      head: z.string().nullable(),
+      branch: z.string().nullable(),
+      upstream: z.string().nullable(),
+      remoteUrl: z.string().nullable(),
+      /** Files with the user's uncommitted changes at that moment. */
+      userFiles: z.array(z.string()),
+      truncated: z.boolean(),
+      /** Why Git could not be read, when it could not. */
+      error: z.string().nullable(),
+    })
+    .nullable(),
 });
 export type TaskDetail = z.infer<typeof taskDetailSchema>;
 

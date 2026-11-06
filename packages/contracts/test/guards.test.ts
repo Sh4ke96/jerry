@@ -92,6 +92,7 @@ describe('guards accept exactly what the Zod schemas accept', () => {
       coversEdits: UNUSUAL,
       workedInThisSession: UNUSUAL,
       lastActivityAt: ['2026-11-06', '2026-11-06T12:00:00Z', ...UNUSUAL],
+      sinceCheckpoint: [{ headBefore: 'a', headNow: 'b', changedFiles: 2 }, { headBefore: null, headNow: null, changedFiles: 0 }, { headBefore: 'a', headNow: 'b', changedFiles: -1 }, { headBefore: 1, headNow: 'b', changedFiles: 0 }, { headBefore: 'a', headNow: 'b' }, ...UNUSUAL],
       checkpoint: [
         ...UNUSUAL,
         { ...checkpoint, summary: '' },

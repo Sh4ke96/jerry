@@ -9,6 +9,7 @@ import {
   type Checkpoint,
   type CoreState,
   type CompletionCheck,
+  type TaskDetail,
   type ImplementationReport,
   type ImplementationReportRecord,
   type ReportEvidence,
@@ -33,6 +34,7 @@ import {
 import { backupDatabase, openJerryDatabase, type JerryDatabase, type JerrySchema } from '@jerry/database';
 import { absolutePath, comparablePath, computePlanHash, computeReportHash, currentPlanDecision, decisionFor, matchesAnyGlob, relativeInside } from '@jerry/policy-engine';
 import { applyEvent, evaluateCompletion, isTerminal } from '@jerry/workflow';
+import { fingerprintFiles, gitReader, type GitReader, type GitSnapshot } from './git-reader.js';
 import { sql, type Kysely, type Selectable, type Transaction } from 'kysely';
 import { z } from 'zod';
 
@@ -72,6 +74,26 @@ export interface StateStoreOptions {
   backupsDir: string;
   /** M0 JSON state; imported once into an empty database, then renamed. */
   legacyStateFile: string;
+  /** Read-only Git access (ADR 0017); tests may replace it. */
+  git?: GitReader;
+}
+
+/** When a Git baseline is taken. */
+export type SnapshotKind = 'plan.approved' | 'report' | 'checkpoint';
+
+interface StoredSnapshot {
+  head: string | null;
+  fingerprints: Record<string, string>;
+  createdAt: string;
+}
+
+/** A Git reading taken before a transaction (Git runs as a process; transactions stay short). */
+interface PreparedSnapshot {
+  snapshot: GitSnapshot | null;
+  error: string | null;
+  fingerprints: Record<string, string>;
+  /** Files changed since the plan baseline (report and checkpoint snapshots). */
+  changed: string[];
 }
 
 /**
@@ -82,12 +104,19 @@ export interface StateStoreOptions {
 export class StateStore {
   private state: CoreState = emptyState();
   private sessionTotal = 0;
+  /** Per task: files with the user's uncommitted changes when its plan was approved (comparable keys). */
+  private userDirty = new Map<string, Set<string>>();
+  /** (task, file) pairs Claude was already warned about; one warning per file and task. */
+  private readonly userFileWarnings = new Set<string>();
 
-  private constructor(private readonly database: JerryDatabase) {}
+  private constructor(
+    private readonly database: JerryDatabase,
+    private readonly git: GitReader,
+  ) {}
 
   static async open(options: StateStoreOptions): Promise<StateStore> {
     const database = await openJerryDatabase({ file: options.databaseFile, backupsDir: options.backupsDir });
-    const store = new StateStore(database);
+    const store = new StateStore(database, options.git ?? gitReader);
     try {
       await store.importLegacyState(options.legacyStateFile);
       await store.reload();
@@ -166,6 +195,11 @@ export class StateStore {
   async recordApproval(taskId: string, request: ApprovalRequest, now: Date, channel: Channel = 'cli'): Promise<ApprovalRecord> {
     const task = this.requireTask(taskId);
     const at = now.toISOString();
+    // Git is read before the transaction: a plan approval takes the baseline (the user's uncommitted
+    // work at that moment); an acceptance compares the repository with the report's snapshot.
+    const approvingPlan = request.stage === 'PLAN' && request.decision === 'APPROVED';
+    const accepting = request.stage === 'IMPLEMENTATION' && request.decision === 'APPROVED';
+    const gitNow = approvingPlan ? await this.prepareSnapshot(task, 'plan.approved') : accepting ? await this.prepareSnapshot(task, 'report') : null;
     const record = await this.database.db.transaction().execute(async (trx) => {
       const label = request.stage === 'PLAN' ? 'plan' : 'implementation report';
       const subject = request.stage === 'PLAN' ? { version: task.plan.version, contentHash: task.plan.contentHash } : await latestReportSubject(trx, taskId);
@@ -203,8 +237,9 @@ export class StateStore {
         })
         .execute();
       await audit(trx, at, `approval.${record.decision.toLowerCase()}`, taskId, { stage: record.stage, version: record.version, contentHash: record.contentHash, channel });
+      if (event === 'plan.approved' && gitNow !== null) await insertSnapshot(trx, task, 'plan.approved', gitNow, at);
       // Accepting the implementation hands the task to Core's final checks, in the same transaction.
-      if (event === 'implementation.accepted') await this.runFinalChecks(trx, task, at);
+      if (event === 'implementation.accepted') await this.runFinalChecks(trx, task, at, gitNow);
       return record;
     });
     await this.reload();
@@ -212,12 +247,68 @@ export class StateStore {
   }
 
   /**
+   * Reads Git for a task's repository (ADR 0017). Never throws: when Git cannot be read the reason
+   * is kept, and checks that depend on Git say so instead of guessing.
+   */
+  private async prepareSnapshot(task: Task, kind: SnapshotKind): Promise<PreparedSnapshot> {
+    try {
+      const snapshot = await this.git.snapshot(task.repoRoot);
+      if (kind === 'plan.approved') {
+        const dirty = [...new Set([...snapshot.staged, ...snapshot.unstaged, ...snapshot.untracked])];
+        return { snapshot, error: null, fingerprints: fingerprintFiles(task.repoRoot, dirty), changed: dirty };
+      }
+      const baseline = await latestSnapshot(this.database.db, task.taskId, 'plan.approved');
+      const changed = await this.git.changedSince(task.repoRoot, baseline?.head ?? snapshot.head);
+      return { snapshot, error: null, fingerprints: fingerprintFiles(task.repoRoot, changed), changed };
+    } catch (error) {
+      return { snapshot: null, error: error instanceof Error ? error.message : String(error), fingerprints: {}, changed: [] };
+    }
+  }
+
+  /**
+   * True when a file had the user's uncommitted changes when the task's plan was approved and
+   * Claude has not been warned about it yet (ADR 0017). Pure lookup: previews do not use it up.
+   */
+  isUserChangedFile(taskId: string, relativePath: string): boolean {
+    const key = fileKey(relativePath);
+    return this.userDirty.get(taskId)?.has(key) === true && !this.userFileWarnings.has(`${taskId}|${key}`);
+  }
+
+  /** Called once the warning was recorded for a real edit. */
+  markUserFileWarned(taskId: string, relativePath: string): void {
+    this.userFileWarnings.add(`${taskId}|${fileKey(relativePath)}`);
+  }
+
+  /** The Git baseline of the task's latest plan approval, as task details show it. */
+  async taskBaseline(taskId: string): Promise<TaskDetail['baseline']> {
+    const row = await this.database.db.selectFrom('git_snapshots').selectAll().where('task_id', '=', taskId).where('kind', '=', 'plan.approved').orderBy('id', 'desc').limit(1).executeTakeFirst();
+    if (row === undefined) return null;
+    const userFiles = [...new Set([...(JSON.parse(row.staged_json) as string[]), ...(JSON.parse(row.unstaged_json) as string[]), ...(JSON.parse(row.untracked_json) as string[])])].sort();
+    return { at: row.created_at, head: row.head, branch: row.branch, upstream: row.upstream, remoteUrl: row.remote_url, userFiles, truncated: row.truncated === 1, error: row.error };
+  }
+
+  /** What changed in the repository since the task's last checkpoint, if one was taken. */
+  async changesSinceCheckpoint(task: Task, budgetMs = 700): Promise<{ headBefore: string | null; headNow: string | null; changedFiles: number } | null> {
+    const checkpoint = await latestSnapshot(this.database.db, task.taskId, 'checkpoint');
+    if (checkpoint === null) return null;
+    const now = await Promise.race([this.prepareSnapshot(task, 'checkpoint'), new Promise<null>((resolve) => setTimeout(() => resolve(null), budgetMs))]);
+    if (now === null || now.snapshot === null) return null;
+    const files = new Set([...Object.keys(checkpoint.fingerprints), ...Object.keys(now.fingerprints)]);
+    const changedFiles = [...files].filter((file) => checkpoint.fingerprints[file] !== now.fingerprints[file]).length;
+    return { headBefore: checkpoint.head, headNow: now.snapshot.head, changedFiles };
+  }
+
+  /**
    * The DONE validator (ADR 0016): Core gathers the facts, records the result, and sets DONE only
    * when every blocking condition passed. No model and no API call can set DONE otherwise.
    */
-  private async runFinalChecks(trx: Transaction<JerrySchema>, task: Task, at: string): Promise<CompletionCheck> {
+  private async runFinalChecks(trx: Transaction<JerrySchema>, task: Task, at: string, gitNow: PreparedSnapshot | null): Promise<CompletionCheck> {
     const reportRow = await trx.selectFrom('implementation_reports').selectAll().where('task_id', '=', task.taskId).orderBy('version', 'desc').limit(1).executeTakeFirst();
     const report = reportRow === undefined ? null : reportFromRow(reportRow);
+    // Edits after the report: seen by the hooks (file tools), and by Git (also shell commands).
+    const hookEdits = report === null ? [] : await editsInScopeBetween(trx, task, report.createdAt, at);
+    const reportSnapshot = await latestSnapshot(trx, task.taskId, 'report');
+    const gitEdits = report === null || reportSnapshot === null || gitNow === null || gitNow.snapshot === null ? [] : changedInScope(task, reportSnapshot.fingerprints, gitNow.fingerprints);
     const decisions = await trx.selectFrom('approvals').selectAll().where('task_id', '=', task.taskId).orderBy('approved_at').orderBy(sql`rowid`).execute();
     const approvals = decisions.map((row) => approvalRecordSchema.parse({ approvalId: row.approval_id, taskId: row.task_id, stage: row.stage, version: row.version, contentHash: row.content_hash, decision: row.decision, approvedBy: row.approved_by, approvedAt: row.approved_at, comment: row.comment }));
     const result = evaluateCompletion({
@@ -225,7 +316,7 @@ export class StateStore {
       planApproved: currentPlanDecision(task, approvals)?.decision === 'APPROVED',
       report,
       reportAccepted: report !== null && decisionFor(approvals, { taskId: task.taskId, stage: 'IMPLEMENTATION', version: report.version, contentHash: report.contentHash })?.decision === 'APPROVED',
-      editsSinceReport: report === null ? [] : await editsInScopeBetween(trx, task, report.createdAt, at),
+      editsSinceReport: [...new Set([...hookEdits, ...gitEdits])].sort(),
       definitionOfDone: task.plan.document?.definitionOfDone ?? [],
     });
     const check: CompletionCheck = { taskId: task.taskId, reportVersion: report?.version ?? null, at, passed: result.passed, conditions: result.conditions, definitionOfDone: task.plan.document?.definitionOfDone ?? [] };
@@ -263,11 +354,14 @@ export class StateStore {
   async submitReport(taskId: string, document: ImplementationReport, submittedBy: 'user' | 'claude', sessionId: string | null, now: Date): Promise<ImplementationReportRecord> {
     const task = this.requireTask(taskId);
     const at = now.toISOString();
+    const gitNow = await this.prepareSnapshot(task, 'report');
     const record = await this.database.db.transaction().execute(async (trx) => {
       const previous = await latestReportSubject(trx, taskId);
       const version = (previous?.version ?? 0) + 1;
       await this.transition(trx, taskId, 'report.submitted', submittedBy, `implementation report version ${version}`, at);
-      const evidence = await collectEvidence(trx, task, document, at);
+      const baseline = await latestSnapshot(trx, taskId, 'plan.approved');
+      const evidence = await collectEvidence(trx, task, document, at, gitEvidence(baseline, gitNow));
+      await insertSnapshot(trx, task, 'report', gitNow, at);
       const record: ImplementationReportRecord = {
         taskId,
         version,
@@ -388,9 +482,12 @@ export class StateStore {
     const task = this.requireTask(taskId);
     if (isTerminal(task.state)) throw new StateError(409, `${taskId} is ${task.state}; checkpoints are for open tasks`);
     const at = now.toISOString();
+    // What the repository looked like at the checkpoint, so a resumed session learns what moved since.
+    const gitNow = await this.prepareSnapshot(task, 'checkpoint');
     await this.database.db.transaction().execute(async (trx) => {
       await trx.insertInto('task_checkpoints').values({ task_id: taskId, session_id: sessionId, summary: note.summary, next_steps_json: JSON.stringify(note.nextSteps), created_at: at }).execute();
       if (sessionId !== null) await linkSession(trx, sessionId, taskId, 'checkpoint', at);
+      await insertSnapshot(trx, task, 'checkpoint', gitNow, at);
     });
     return { taskId, sessionId, summary: note.summary, nextSteps: note.nextSteps, at };
   }
@@ -502,7 +599,7 @@ export class StateStore {
       if (event.sessionId === null) continue;
       // An edit inside a task's approved scope means the session works on that task, also when the
       // decision was made late for an event from the spool.
-      if (event.eventType === 'PreToolUse' && event.ruleId === 'monitor.in-approved-scope' && event.taskId !== null) {
+      if (event.eventType === 'PreToolUse' && (event.ruleId === 'monitor.in-approved-scope' || event.ruleId === 'monitor.user-uncommitted-file') && event.taskId !== null) {
         await this.linkSession(event.sessionId, event.taskId, 'edit', new Date(event.timestamp));
       }
       // SessionEnd closes the session (also when it arrives late through the spool).
@@ -647,6 +744,14 @@ export class StateStore {
       excludedRepos: excluded.map((row) => ({ repoRoot: row.root_path, excludedAt: row.excluded_at! })),
     });
     this.sessionTotal = Number(sessionTotal.count);
+
+    // The user's uncommitted files at each open task's latest plan approval (ADR 0017).
+    const userDirty = new Map<string, Set<string>>();
+    for (const task of this.state.tasks.filter((candidate) => !isTerminal(candidate.state))) {
+      const baseline = await latestSnapshot(db, task.taskId, 'plan.approved');
+      if (baseline !== null) userDirty.set(task.taskId, new Set(Object.keys(baseline.fingerprints).map(fileKey)));
+    }
+    this.userDirty = userDirty;
   }
 
   /** One-time import of the M0 JSON state into an empty database; the JSON file is kept, renamed. */
@@ -784,7 +889,59 @@ function reportFromRow(row: Selectable<JerrySchema['implementation_reports']>): 
  * What JERRY recorded in the task's repository since its plan was last approved: deviations,
  * blocks and the files edited with the file tools, compared with the files the report lists.
  */
-async function collectEvidence(trx: Transaction<JerrySchema>, task: Task, document: ImplementationReport, until: string): Promise<ReportEvidence> {
+/** Comparable key of a repo-relative path (case-insensitive on Windows). */
+function fileKey(relative: string): string {
+  const normalized = relative.replaceAll('\\', '/').replace(/^\.\//, '');
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+async function latestSnapshot(trx: Transaction<JerrySchema> | Kysely<JerrySchema>, taskId: string, kind: SnapshotKind): Promise<StoredSnapshot | null> {
+  const row = await trx.selectFrom('git_snapshots').select(['head', 'fingerprints_json', 'created_at', 'error']).where('task_id', '=', taskId).where('kind', '=', kind).orderBy('id', 'desc').limit(1).executeTakeFirst();
+  if (row === undefined || row.error !== null) return null;
+  return { head: row.head, fingerprints: JSON.parse(row.fingerprints_json) as Record<string, string>, createdAt: row.created_at };
+}
+
+async function insertSnapshot(trx: Transaction<JerrySchema>, task: Task, kind: SnapshotKind, prepared: PreparedSnapshot, at: string): Promise<void> {
+  const snapshot = prepared.snapshot;
+  await trx
+    .insertInto('git_snapshots')
+    .values({
+      task_id: task.taskId,
+      repo_root: task.repoRoot,
+      kind,
+      head: snapshot?.head ?? null,
+      branch: snapshot?.branch ?? null,
+      upstream: snapshot?.upstream ?? null,
+      remote_url: snapshot?.remoteUrl ?? null,
+      staged_json: JSON.stringify(snapshot?.staged ?? []),
+      unstaged_json: JSON.stringify(snapshot?.unstaged ?? []),
+      untracked_json: JSON.stringify(snapshot?.untracked ?? []),
+      truncated: snapshot?.truncated === true ? 1 : 0,
+      fingerprints_json: JSON.stringify(prepared.fingerprints),
+      error: prepared.error,
+      created_at: at,
+    })
+    .execute();
+}
+
+/**
+ * Git's view for a report: files changed since the plan baseline. A file the user had already
+ * changed at baseline counts only if its content changed again since then.
+ */
+function gitEvidence(baseline: StoredSnapshot | null, now: PreparedSnapshot): ReportEvidence['git'] {
+  if (now.snapshot === null) return null;
+  const userAtBaseline = baseline?.fingerprints ?? {};
+  const changed = now.changed.filter((file) => !(file in userAtBaseline) || userAtBaseline[file] !== now.fingerprints[file]);
+  return { baselineHead: baseline?.head ?? null, baselineAt: baseline?.createdAt ?? null, changed, userChanged: changed.filter((file) => file in userAtBaseline) };
+}
+
+/** In-scope files whose content differs between two fingerprint sets (added, changed or removed). */
+function changedInScope(task: Task, before: Record<string, string>, after: Record<string, string>): string[] {
+  const files = new Set([...Object.keys(before), ...Object.keys(after)]);
+  return [...files].filter((file) => before[file] !== after[file] && matchesAnyGlob(file, task.plan.scope, process.platform === 'win32')).sort();
+}
+
+async function collectEvidence(trx: Transaction<JerrySchema>, task: Task, document: ImplementationReport, until: string, git: ReportEvidence['git']): Promise<ReportEvidence> {
   const platform = process.platform;
   const approved = await trx.selectFrom('workflow_transitions').select('at').where('task_id', '=', task.taskId).where('event', '=', 'plan.approved').orderBy('id', 'desc').limit(1).executeTakeFirst();
   const since = approved?.at ?? task.createdAt;
@@ -826,14 +983,18 @@ async function collectEvidence(trx: Transaction<JerrySchema>, task: Task, docume
   const sameRepo = (repository: string): boolean => repository.trim() === '' || comparablePath(repository, task.repoRoot, platform) === comparablePath(task.repoRoot, task.repoRoot, platform);
   const reported = new Set(document.changes.filter((change) => sameRepo(change.repository)).map((change) => key(change.path.trim().replaceAll('\\', '/').replace(/^\.\//, ''))));
   const observedEdits = [...observed.values()].sort();
+  // Git also sees what shell commands and generators changed (ADR 0017).
+  const changed = new Map(observed);
+  for (const file of git?.changed ?? []) changed.set(key(file), file);
   return {
     since,
     deviations,
     deviationCount,
     blockedCount,
     observedEdits,
-    unreportedEdits: observedEdits.filter((relative) => !reported.has(key(relative))),
+    unreportedEdits: [...changed.values()].filter((relative) => !reported.has(key(relative))).sort(),
     failedOrNotRunChecks: document.checks.filter((check) => check.result !== 'PASS').length,
+    git,
   };
 }
 

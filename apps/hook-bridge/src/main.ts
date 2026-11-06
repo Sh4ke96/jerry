@@ -275,6 +275,11 @@ function resumeContext(openTasks: readonly OpenTask[]): string[] {
     if (task.checkpoint !== null) {
       entry += `; last checkpoint: ${oneLine(task.checkpoint.summary, 300)}`;
       if (task.checkpoint.nextSteps.length > 0) entry += ` Next: ${task.checkpoint.nextSteps.slice(0, 3).map((step) => oneLine(step, 120)).join('; ')}`;
+      const since = task.sinceCheckpoint;
+      if (since !== undefined && (since.headBefore !== since.headNow || since.changedFiles > 0)) {
+        const head = since.headBefore !== since.headNow ? `HEAD moved from ${since.headBefore?.slice(0, 7) ?? 'none'} to ${since.headNow?.slice(0, 7) ?? 'none'}` : 'HEAD unchanged';
+        entry += ` Since then: ${head}, ${since.changedFiles} file(s) changed (check git log and git diff first).`;
+      }
     }
     return entry;
   });

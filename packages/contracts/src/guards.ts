@@ -59,9 +59,14 @@ const isScope = (value: unknown): boolean => Array.isArray(value) && value.lengt
 const isStringArray = (value: unknown): boolean => Array.isArray(value) && value.every((item) => typeof item === 'string');
 const WORKFLOW_STATE_SET: ReadonlySet<unknown> = new Set(WORKFLOW_STATES);
 
+function isSinceCheckpoint(value: unknown): boolean {
+  return value === undefined || (isObject(value) && isNullableString(value['headBefore']) && isNullableString(value['headNow']) && isInteger(value['changedFiles'], 0));
+}
+
 function isOpenTask(task: unknown): boolean {
   if (!isObject(task)) return false;
   const checkpoint = task['checkpoint'];
+  if (!isSinceCheckpoint(task['sinceCheckpoint'])) return false;
   return (
     isTaskId(task['taskId']) &&
     isNonEmptyString(task['title']) &&

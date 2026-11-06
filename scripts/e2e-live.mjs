@@ -252,6 +252,31 @@ expect(
 const doneHistory = await coreApi(info, 'GET', `/api/v1/tasks/${task.taskId}/transitions`);
 expect('K: DONE was set by Core, not by a model or the user', doneHistory.at(-1)?.event === 'task.completed' && doneHistory.at(-1)?.actor === 'core', JSON.stringify(doneHistory.at(-1)));
 
+// L — Git baseline: the user's uncommitted work is protected, and Git sees what shell commands changed.
+fs.writeFileSync(path.join(repo, 'src', 'app.ts'), 'export const answer = 43; // user edit, uncommitted\n');
+const lTask = await coreApi(info, 'POST', '/api/v1/tasks', { repoPath: repo, title: 'Live baseline', scope: ['src/**'] });
+await coreApi(info, 'POST', `/api/v1/tasks/${lTask.taskId}/approvals`, { stage: 'PLAN', version: 1, decision: 'APPROVED' });
+const l = runClaude(
+  'L: user changes and a shell-made file',
+  'Do exactly these two steps and nothing else. Step 1: use the Edit tool to add the line "// reviewed" at the end of src/app.ts, keeping everything already in the file. Step 2: use the Bash tool to run exactly: node -e "require(\'fs\').writeFileSync(\'src/shell.txt\',\'x\')"  Then tell me what JERRY said about step 1.',
+  ['Read', 'Edit', 'Bash(node -e:*)'],
+);
+const lLog = await gateLog(l.sessionId);
+expect('L: editing the user’s uncommitted file is warned about', lLog.some((e) => e.toolName === 'Edit' && e.verdict === 'WARN' && e.ruleId === 'monitor.user-uncommitted-file'), lLog.map((e) => `${e.toolName}:${e.verdict}:${e.ruleId}`).join(', '));
+expect('L: the user’s change was kept', fs.readFileSync(path.join(repo, 'src', 'app.ts'), 'utf8').includes('user edit, uncommitted'));
+const lReport = await coreApi(info, 'POST', `/api/v1/tasks/${lTask.taskId}/reports`, {
+  submittedBy: 'user',
+  report: {
+    summary: 'Live baseline check.',
+    changes: [{ path: 'src/app.ts', kind: 'modified', description: 'reviewed marker' }],
+    checks: [{ kind: 'test', command: 'none', result: 'NOT_RUN', details: 'fixture without tooling' }],
+    commitSubjects: ['chore: live check'],
+    qaScenarios: [{ id: 'QA-1', priority: 'P3', title: 'none', location: 'none', steps: ['none'], expected: 'none', kind: 'new' }],
+  },
+});
+expect('L: Git shows the shell-made file in the report evidence', (lReport.evidence?.git?.changed ?? []).includes('src/shell.txt') && (lReport.evidence?.unreportedEdits ?? []).includes('src/shell.txt'), JSON.stringify(lReport.evidence?.git ?? lReport).slice(0, 200));
+await coreApi(info, 'POST', `/api/v1/tasks/${lTask.taskId}/transitions`, { event: 'task.cancelled' });
+
 // H — /jerry:plan: the model studies the repository, drafts a full plan and submits it; nothing is approved.
 const h = runClaude(
   'H: /jerry:plan',
@@ -354,7 +379,12 @@ if (autostarted !== null) await coreApi(autostarted, 'POST', '/api/v1/shutdown',
 // JERRY itself left no footprint; Claude's edits stay uncommitted for the user.
 expect('No JERRY or harness files in repo', !['.jerry', '.harness'].some(exists), exists('.claude') ? 'note: .claude/ exists (created by Claude Code, not JERRY)' : '');
 const status = git('status', '--porcelain', '--untracked-files=all').stdout.trim().split('\n').filter(Boolean);
-expect('Repo changes are exactly Claude’s six untracked edits', status.length === 6 && status.every((line) => line.startsWith('?? ')), status.join(' | '));
+expect(
+  'Repo changes are exactly the expected edits (seven new files, and src/app.ts with the user’s and Claude’s lines)',
+  // trim() also takes the leading space of the first porcelain line, hence the optional space.
+  status.length === 8 && status.filter((line) => line.startsWith('?? ')).length === 7 && status.some((line) => /^ ?M src\/app\.ts$/.test(line)),
+  status.join(' | '),
+);
 
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed. Artifacts kept in ${base}`);

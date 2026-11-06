@@ -16,8 +16,8 @@ to three implementers with disjoint scopes.
 ## M3 — Repository Discovery
 
 - [x] Git root resolver.
-- [ ] Git baseline snapshot.
-- [ ] Uncommitted changes inventory.
+- [x] Git baseline snapshot ([ADR 0017](decisions/0017-git-baseline.md)).
+- [x] Uncommitted changes inventory ([ADR 0017](decisions/0017-git-baseline.md)).
 - [ ] Language/framework detectors.
 - [ ] Manifest/lockfile detection.
 - [ ] Documentation indexer.

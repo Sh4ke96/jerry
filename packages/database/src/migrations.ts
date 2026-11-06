@@ -237,4 +237,30 @@ export const MIGRATIONS: Readonly<Record<string, Migration>> = {
       await db.schema.createIndex('task_completion_checks_task').on('task_completion_checks').columns(['task_id', 'id']).execute();
     },
   },
+
+  '0008_git_snapshots': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Read-only Git baselines (ADR 0017): at plan approval, report and checkpoint. Paths and
+      // content hashes only, never file contents; remote URLs without credentials.
+      await db.schema
+        .createTable('git_snapshots')
+        .addColumn('id', 'integer', (column) => column.primaryKey().autoIncrement())
+        .addColumn('task_id', 'text', (column) => column.notNull().references('tasks.task_id'))
+        .addColumn('repo_root', 'text', (column) => column.notNull())
+        .addColumn('kind', 'text', (column) => column.notNull())
+        .addColumn('head', 'text')
+        .addColumn('branch', 'text')
+        .addColumn('upstream', 'text')
+        .addColumn('remote_url', 'text')
+        .addColumn('staged_json', 'text', (column) => column.notNull())
+        .addColumn('unstaged_json', 'text', (column) => column.notNull())
+        .addColumn('untracked_json', 'text', (column) => column.notNull())
+        .addColumn('truncated', 'integer', (column) => column.notNull().defaultTo(0))
+        .addColumn('fingerprints_json', 'text', (column) => column.notNull())
+        .addColumn('error', 'text')
+        .addColumn('created_at', 'text', (column) => column.notNull())
+        .execute();
+      await db.schema.createIndex('git_snapshots_task').on('git_snapshots').columns(['task_id', 'kind', 'id']).execute();
+    },
+  },
 };

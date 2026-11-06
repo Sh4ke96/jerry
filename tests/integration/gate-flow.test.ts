@@ -103,6 +103,8 @@ describe('JERRY guard (bundled bridge + Core)', () => {
   it('after approval, is silent inside the scope and warns outside it; hard rules still apply', async () => {
     expect((await api(core, 'POST', `/api/v1/tasks/${taskId}/approvals`, { stage: 'PLAN', version: 1, decision: 'APPROVED' })).status).toBe(201);
 
+    // src/app.ts holds the user's uncommitted change (fixture): one warning, then silence (ADR 0017).
+    expectWarned(write('src/app.ts'), 'monitor.user-uncommitted-file');
     expectPassed(write('src/app.ts'));
     expectPassed(write('src/new/module.ts'));
     expectWarned(write('README.md'), 'monitor.out-of-scope');
@@ -138,6 +140,8 @@ describe('JERRY guard (bundled bridge + Core)', () => {
     core = await startCore(home);
     const tasks = await api(core, 'GET', '/api/v1/tasks');
     expect(tasks.body).toMatchObject([{ taskId, plan: { version: 2 }, planDecision: { decision: 'APPROVED', version: 2 } }]);
+    // The new approval took a new baseline; the user's change in src/app.ts is still uncommitted.
+    expectWarned(write('src/app.ts'), 'monitor.user-uncommitted-file');
     expectPassed(write('src/app.ts'));
   });
 

@@ -92,6 +92,15 @@ describe('monitoring: file writes are never blocked, deviations are warned', () 
     expect(evaluateGate(write('src/a.ts'), context(approvedState(v1, 1, `sha256:${'0'.repeat(64)}`))).verdict).toBe('WARN');
   });
 
+  it('warns about editing a file that had the user’s uncommitted changes, within the scope too', () => {
+    const state = approvedState(task(['src/**']));
+    const userFiles = context(state, { isUserChangedFile: (taskId, relative) => taskId === 'JRY-0001' && relative === 'src/app.ts' });
+    expect(evaluateGate(write('src/app.ts'), userFiles)).toMatchObject({ verdict: 'WARN', ruleId: 'monitor.user-uncommitted-file', taskId: 'JRY-0001', reason: expect.stringContaining("user's uncommitted changes") });
+    expect(evaluateGate(write('src/other.ts'), userFiles).verdict).toBe('PASS');
+    // Outside the scope the out-of-scope warning comes first; with no plan there is no baseline.
+    expect(evaluateGate(write('README.md'), userFiles).ruleId).toBe('monitor.out-of-scope');
+  });
+
   it('covers edits only while the task is being implemented', () => {
     for (const state of ['WAIT_IMPLEMENTATION_ACCEPTANCE', 'PAUSED', 'FINAL_REPORT', 'DONE', 'CANCELLED', 'WAIT_PLAN_APPROVAL'] as const) {
       expect(evaluateGate(write('src/a.ts'), context(approvedState(task(['src/**'], 1, REPO, state)))).ruleId, state).toBe('monitor.no-approved-plan');

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { EVENT_SCHEMA_VERSION, eventEnvelopeSchema, gateVerdictSchema, type EventEnvelope, type GateCheckRequest, type GateDecision } from '@jerry/contracts';
 import { quarantineSpoolFile, readSpool } from '@jerry/platform';
+import { findGitRoot, realPathOfNearestExisting } from './repo-fs.js';
 import type { StateStore } from './state-store.js';
 
 export type Evaluate = (request: GateCheckRequest) => GateDecision;
@@ -38,6 +39,15 @@ export function evaluatePending(event: EventEnvelope, evaluate: Evaluate): Event
   };
 }
 
+/**
+ * Gives an event the repository its working directory lies in, when it has none: hard-rule blocks
+ * are decided before the repository is resolved, and telemetry hooks carry only the cwd.
+ */
+export function withRepoRoot(event: EventEnvelope): EventEnvelope {
+  if (event.repoRoot !== null || event.cwd === null) return event;
+  return { ...event, repoRoot: findGitRoot(realPathOfNearestExisting(event.cwd)) };
+}
+
 /** Moves events from the spool into the database. Returns how many files were processed. */
 export async function drainSpool(home: string, store: StateStore, evaluate: Evaluate, now: () => Date = () => new Date()): Promise<number> {
   const files = readSpool(home, SPOOL_BATCH);
@@ -55,7 +65,7 @@ export async function drainSpool(home: string, store: StateStore, evaluate: Eval
       quarantineSpoolFile(home, file);
       continue;
     }
-    accepted.push({ file, event: evaluatePending(parsed.data, evaluate) });
+    accepted.push({ file, event: withRepoRoot(evaluatePending(parsed.data, evaluate)) });
   }
   const events = accepted.map((entry) => entry.event);
   await store.recordEvents(events, now(), true);

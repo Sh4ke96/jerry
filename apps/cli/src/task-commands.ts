@@ -71,6 +71,16 @@ export async function showTask(taskId: string): Promise<void> {
 
   printFinalCheck(task);
 
+  const baseline = task.baseline;
+  if (baseline !== null) {
+    console.log(`\nGit baseline at plan approval (${baseline.at}):`);
+    if (baseline.error !== null) console.log(`  not available: ${baseline.error}`);
+    else {
+      console.log(`  ${baseline.branch ?? 'detached HEAD'} @ ${baseline.head?.slice(0, 12) ?? 'no commits'}${baseline.upstream === null ? '' : ` (upstream ${baseline.upstream})`}`);
+      console.log(`  your uncommitted files then: ${baseline.userFiles.length === 0 ? 'none' : baseline.userFiles.join(', ')}${baseline.truncated ? ' (list truncated)' : ''}`);
+    }
+  }
+
   const [checkpoint] = task.checkpoints;
   if (checkpoint !== undefined) {
     console.log(`\nLast checkpoint (${checkpoint.at}, written by Claude${task.checkpoints.length > 1 ? `; ${task.checkpoints.length - 1} earlier` : ''}):`);

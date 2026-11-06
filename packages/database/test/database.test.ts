@@ -35,7 +35,7 @@ describe('openJerryDatabase', () => {
     expect(database.migration).toBe(LATEST);
     const tables = await sql<{ name: string }>`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`.execute(database.db);
     expect(tables.rows.map((row) => row.name)).toEqual(
-      expect.arrayContaining(['approvals', 'audit_log', 'hook_events', 'implementation_reports', 'plans', 'repositories', 'schema_migrations', 'session_tasks', 'sessions', 'settings', 'task_checkpoints', 'task_completion_checks', 'tasks', 'workflow_transitions']),
+      expect.arrayContaining(['approvals', 'audit_log', 'hook_events', 'implementation_reports', 'plans', 'repositories', 'schema_migrations', 'session_tasks', 'sessions', 'settings', 'task_checkpoints', 'task_completion_checks', 'tasks', 'workflow_transitions', 'git_snapshots']),
     );
     await database.close();
     expect(listBackups(where.backupsDir)).toHaveLength(0);

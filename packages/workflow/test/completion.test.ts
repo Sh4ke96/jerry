@@ -18,7 +18,7 @@ const report = (overrides: { checks?: Report['document']['checks']; risks?: Repo
     qaScenarios: [],
     artifact: '',
   },
-  evidence: { since: '2026-11-06T10:00:00.000Z', deviations: [], deviationCount: overrides.deviationCount ?? 0, blockedCount: 0, observedEdits: [], unreportedEdits: overrides.unreportedEdits ?? [], failedOrNotRunChecks: 0 },
+  evidence: { since: '2026-11-06T10:00:00.000Z', deviations: [], deviationCount: overrides.deviationCount ?? 0, blockedCount: 0, observedEdits: [], unreportedEdits: overrides.unreportedEdits ?? [], failedOrNotRunChecks: 0, git: null },
 });
 
 const ready: CompletionInput = { currentPlanVersion: 1, planApproved: true, report: report(), reportAccepted: true, editsSinceReport: [], definitionOfDone: ['tests pass', 'README updated'] };

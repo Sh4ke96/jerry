@@ -99,10 +99,12 @@ describe('JERRY MCP server (bundled)', () => {
   it('previews gate decisions without recording them', async () => {
     const mcp = await connect();
     const before = ((await api(core, 'GET', '/api/v1/events?limit=500')).body as unknown[]).length;
-    const result = await mcp.call('jerry_check_paths', { paths: ['src/app.ts', 'README.md', '.git/config'] });
+    const result = await mcp.call('jerry_check_paths', { paths: ['src/app.ts', 'src/other.ts', 'README.md', '.git/config'] });
     expect(result.structured).toMatchObject({
       decisions: [
-        { path: 'src/app.ts', verdict: 'PASS', rule: 'monitor.in-approved-scope' },
+        // The fixture's src/app.ts holds the user's uncommitted change; a preview shows the warning without using it up.
+        { path: 'src/app.ts', verdict: 'WARN', rule: 'monitor.user-uncommitted-file' },
+        { path: 'src/other.ts', verdict: 'PASS', rule: 'monitor.in-approved-scope' },
         { path: 'README.md', verdict: 'WARN', rule: 'monitor.out-of-scope' },
         { path: '.git/config', verdict: 'DENY', rule: 'hard.git-metadata' },
       ],

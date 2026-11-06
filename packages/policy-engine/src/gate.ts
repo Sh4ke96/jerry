@@ -28,6 +28,11 @@ export interface GateContext {
   approvedPlans(repoRoot: string): readonly ApprovedPlan[];
   /** True when the user excluded the repository from monitoring (hard rules still apply). */
   isExcluded(repoRoot: string): boolean;
+  /**
+   * True when the file had the user's uncommitted changes when the task's plan was approved and
+   * Claude was not warned about it yet (ADR 0017). Absent where Git baselines are not known.
+   */
+  isUserChangedFile?(taskId: string, relativePath: string): boolean;
 }
 
 /**
@@ -153,6 +158,15 @@ function monitorWrite(target: string, cwd: string, context: GateContext): GateDe
   if (covering === undefined) {
     const ids = plans.map((plan) => `${plan.taskId} v${plan.planVersion}`).join(', ');
     return decision('WARN', 'monitor.out-of-scope', `${relative} is outside the approved scope of ${ids}. The edit proceeds and is recorded as a deviation.`, plans[0]?.taskId ?? null, repoRoot);
+  }
+  if (context.isUserChangedFile?.(covering.taskId, relative) === true) {
+    return decision(
+      'WARN',
+      'monitor.user-uncommitted-file',
+      `${relative} had the user's uncommitted changes when ${covering.taskId} v${covering.planVersion} was approved. The edit proceeds; keep the user's changes (they are not in Git).`,
+      covering.taskId,
+      repoRoot,
+    );
   }
   return decision('PASS', 'monitor.in-approved-scope', `${relative} is within the approved scope of ${covering.taskId} v${covering.planVersion}`, covering.taskId, repoRoot);
 }
