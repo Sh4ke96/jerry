@@ -603,6 +603,51 @@ export const repositoryStateSchema = z.object({
 });
 export type RepositoryState = z.infer<typeof repositoryStateSchema>;
 
+/**
+ * What JERRY knows about a repository (spec §6.4, ADR 0020): a cache of the read-only scan, never
+ * the source of truth. Paths, titles and hashes only; no file contents.
+ */
+export const projectProfileSchema = z.object({
+  repoRoot: z.string(),
+  scannedAt: z.iso.datetime(),
+  checkedAt: z.iso.datetime(),
+  /** Parts whose sources changed since the scan (empty right after a refresh); "age" for an old profile. */
+  stale: z.array(z.string()),
+  files: z.number().int().nonnegative(),
+  truncated: z.boolean(),
+  languages: z.array(z.object({ name: z.string(), files: z.number().int() })),
+  packageManager: z.string().nullable(),
+  frameworks: z.array(z.object({ name: z.string(), evidence: z.string() })),
+  manifests: z.array(z.object({ path: z.string(), kind: z.string(), lockfile: z.string().nullable() })),
+  /** `command` as the project defines it; `run` as it works on this machine (e.g. through corepack). */
+  commands: z.array(z.object({ kind: z.string(), command: z.string(), run: z.string(), source: z.string() })),
+  environment: z.object({ missingRunners: z.array(z.string()), notes: z.array(z.string()) }),
+  ci: z.array(z.object({ path: z.string(), kind: z.string() })),
+  containers: z.array(z.object({ path: z.string(), kind: z.string() })),
+  apiSchemas: z.array(z.object({ path: z.string(), kind: z.string() })),
+  migrations: z.array(z.object({ path: z.string(), kind: z.string(), files: z.number().int() })),
+  docs: z.array(z.object({ path: z.string(), kind: z.string(), title: z.string().nullable(), hash: z.string().nullable(), size: z.number() })),
+  instructions: z.array(z.object({ path: z.string(), kind: z.string(), role: z.enum(['rules', 'config']), hash: z.string().nullable(), size: z.number(), notes: z.array(z.string()) })),
+  injection: z.object({
+    findings: z.array(z.object({ path: z.string(), line: z.number().int(), rule: z.string(), excerpt: z.string() })),
+    scannedFiles: z.number().int(),
+    complete: z.boolean(),
+  }),
+  skippedDirectories: z.array(z.string()),
+});
+export type ProjectProfile = z.infer<typeof projectProfileSchema>;
+
+export const repositoryScanRequestSchema = z.object({ repoPath: z.string().min(1) });
+
+/** A known repository as the dashboard lists it. */
+export const repositorySummarySchema = z.object({
+  repoRoot: z.string(),
+  excluded: z.boolean(),
+  openTasks: z.number().int().nonnegative(),
+  profile: projectProfileSchema.nullable(),
+});
+export type RepositorySummary = z.infer<typeof repositorySummarySchema>;
+
 /** Gate decisions for hypothetical edits: evaluated, never recorded. */
 export const gatePreviewRequestSchema = z.object({
   cwd: z.string().min(1),

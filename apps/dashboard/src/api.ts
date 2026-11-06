@@ -1,4 +1,4 @@
-import type { ApprovalRecord, CoreStatus, RepositoryExclusion, StoredEvent, Task, TaskSummary, WorkflowTransition } from '@jerry/contracts';
+import type { ApprovalRecord, CoreStatus, ProjectProfile, RepositoryExclusion, RepositorySummary, StoredEvent, Task, TaskSummary, WorkflowTransition } from '@jerry/contracts';
 
 export type TaskControlEvent = 'task.paused' | 'task.resumed' | 'task.cancelled';
 
@@ -47,6 +47,9 @@ export const api = {
   status: () => request<CoreStatus>('GET', '/api/v1/status'),
   tasks: () => request<TaskSummary[]>('GET', '/api/v1/tasks'),
   exclusions: () => request<RepositoryExclusion[]>('GET', '/api/v1/repositories/exclusions'),
+  repositories: () => request<RepositorySummary[]>('GET', '/api/v1/repositories'),
+  /** Read-only rescan of a repository's profile. */
+  scanRepository: (repoPath: string) => request<ProjectProfile>('POST', '/api/v1/repositories/scan', { repoPath }),
   events: (query: EventQuery = {}) => {
     const params = new URLSearchParams({ limit: String(query.limit ?? 200) });
     if (query.verdict !== undefined) params.set('verdict', query.verdict);

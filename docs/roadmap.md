@@ -26,8 +26,8 @@ to three implementers with disjoint scopes.
 - [x] API schema detection ([ADR 0018](decisions/0018-repository-scanner.md)).
 - [x] Database migration detection ([ADR 0018](decisions/0018-repository-scanner.md)).
 - [ ] Multi-repo workspace graph.
-- [ ] Project profile storage outside project.
-- [ ] Profile freshness invalidation.
+- [x] Project profile storage outside project ([ADR 0020](decisions/0020-project-profile.md)).
+- [x] Profile freshness invalidation ([ADR 0020](decisions/0020-project-profile.md)).
 - [x] Prompt injection handling rules ([ADR 0019](decisions/0019-docs-instructions-injection.md)).
 
 ## M4 — Analysis and Planning (three analysts)

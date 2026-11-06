@@ -1,4 +1,4 @@
-import type { CoreStatus, RepositoryExclusion, StoredEvent, TaskSummary } from '@jerry/contracts';
+import type { CoreStatus, RepositoryExclusion, RepositorySummary, StoredEvent, TaskSummary } from '@jerry/contracts';
 import { reactive } from 'vue';
 import { api, SignedOutError, startSession } from './api.js';
 
@@ -13,6 +13,7 @@ export interface DashboardState {
   tasks: TaskSummary[];
   events: StoredEvent[];
   exclusions: RepositoryExclusion[];
+  repositories: RepositorySummary[];
   refreshedAt: Date | null;
 }
 
@@ -24,13 +25,14 @@ export const state = reactive<DashboardState>({
   tasks: [],
   events: [],
   exclusions: [],
+  repositories: [],
   refreshedAt: null,
 });
 
 export async function refresh(): Promise<void> {
   try {
-    const [status, tasks, events, exclusions] = await Promise.all([api.status(), api.tasks(), api.events({ limit: 300 }), api.exclusions()]);
-    Object.assign(state, { status, tasks, events, exclusions, refreshedAt: new Date(), phase: 'ready', error: null });
+    const [status, tasks, events, exclusions, repositories] = await Promise.all([api.status(), api.tasks(), api.events({ limit: 300 }), api.exclusions(), api.repositories()]);
+    Object.assign(state, { status, tasks, events, exclusions, repositories, refreshedAt: new Date(), phase: 'ready', error: null });
   } catch (error) {
     handleError(error);
   }

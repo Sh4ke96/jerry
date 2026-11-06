@@ -1,5 +1,7 @@
+import type { RepositorySummary } from '@jerry/contracts';
 import { defineComponent, ref } from 'vue';
 import { api } from '../api';
+import { Badge } from '../components/Badge';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { formatTime } from '../format';
 import { perform, state } from '../state';
@@ -21,8 +23,86 @@ export const Repositories = defineComponent({
       }
     };
 
+    const rescan = (repoRoot: string): Promise<boolean> => perform(() => api.scanRepository(repoRoot), `Rescanned ${repoRoot}.`);
+
+    const profileCard = (repository: RepositorySummary) => {
+      const profile = repository.profile;
+      return (
+        <article class="panel repository" key={repository.repoRoot}>
+          <header class="task__header">
+            <div>
+              <h2>
+                <code>{repository.repoRoot}</code>
+              </h2>
+              <p class="muted">
+                {repository.openTasks} open task(s){repository.excluded && ' · excluded from monitoring'}
+                {profile !== null && ` · scanned ${formatTime(profile.scannedAt)}`}
+                {profile !== null && profile.stale.length > 0 && <span class="attention"> · out of date: {profile.stale.join(', ')}</span>}
+              </p>
+            </div>
+            <button class="button" onClick={() => rescan(repository.repoRoot)}>
+              {profile === null ? 'Scan' : 'Rescan'}
+            </button>
+          </header>
+          {profile === null ? (
+            <p class="muted">Not scanned yet. JERRY scans a repository when a Claude Code session starts in it.</p>
+          ) : (
+            <dl class="facts">
+              <dt>Stack</dt>
+              <dd>{[...profile.languages.slice(0, 5).map((language) => language.name), ...profile.frameworks.map((framework) => framework.name)].join(', ') || 'unknown'}</dd>
+              <dt>Commands</dt>
+              <dd>
+                {profile.commands.length === 0
+                  ? 'none found'
+                  : profile.commands.map((command) => (
+                      <div key={`${command.kind}${command.run}`}>
+                        <Badge>{command.kind}</Badge> <code>{command.run}</code>
+                      </div>
+                    ))}
+                {profile.environment.missingRunners.length > 0 && <div class="attention">Not installed: {profile.environment.missingRunners.join(', ')}</div>}
+              </dd>
+              {profile.ci.length > 0 && [<dt key="ci">CI</dt>, <dd key="ci-v">{profile.ci.map((entry) => entry.path).join(', ')}</dd>]}
+              {profile.apiSchemas.length > 0 && [<dt key="api">API schemas</dt>, <dd key="api-v">{profile.apiSchemas.map((entry) => `${entry.path} (${entry.kind})`).join(', ')}</dd>]}
+              {profile.migrations.length > 0 && [<dt key="mig">Migrations</dt>, <dd key="mig-v">{profile.migrations.map((entry) => `${entry.path} (${entry.kind}, ${entry.files})`).join(', ')}</dd>]}
+              <dt>Docs</dt>
+              <dd>{profile.docs.length} indexed</dd>
+              <dt>Instructions</dt>
+              <dd>
+                {profile.instructions.length === 0
+                  ? 'none'
+                  : profile.instructions.map((entry) => (
+                      <div key={entry.path}>
+                        <code>{entry.path}</code> <span class="muted">{entry.role}</span>
+                        {entry.notes.length > 0 && <span class="attention"> · {entry.notes.join('; ')}</span>}
+                      </div>
+                    ))}
+              </dd>
+              <dt>Suspicious text</dt>
+              <dd>
+                {profile.injection.findings.length === 0 ? (
+                  'none found'
+                ) : (
+                  <ul class="list small">
+                    {profile.injection.findings.slice(0, 20).map((finding) => (
+                      <li key={`${finding.path}:${finding.line}`}>
+                        <code>
+                          {finding.path}:{finding.line}
+                        </code>{' '}
+                        <Badge tone="warn">{finding.rule}</Badge> <span class="muted">{finding.excerpt}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </dd>
+            </dl>
+          )}
+        </article>
+      );
+    };
+
     return () => (
       <div class="stack">
+        {state.repositories.map(profileCard)}
         <section class="panel">
           <h2>Monitored repositories</h2>
           <p class="muted">JERRY monitors every Git repository except the ones below. Hard rules (no Git changes, no writes inside .git, no tampering with JERRY) apply everywhere.</p>

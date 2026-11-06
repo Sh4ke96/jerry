@@ -4,6 +4,7 @@ import { readSmallFile, walkRepository, type WalkResult } from './walker.js';
 
 export * from './detectors.js';
 export * from './knowledge.js';
+export * from './profile.js';
 export * from './walker.js';
 
 export interface RepositoryScanResult extends RepositoryScan {

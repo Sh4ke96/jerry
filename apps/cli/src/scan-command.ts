@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { scanRepository, type RepositoryScanResult } from '@jerry/discovery';
+import { projectProfileSchema, type ProjectProfile } from '@jerry/contracts';
+import { scanRepository } from '@jerry/discovery';
+import { readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
 
 /** Nearest ancestor containing ".git" (directory or file), like Core's resolver. */
 function gitRootOf(target: string): string | null {
@@ -10,6 +12,26 @@ function gitRootOf(target: string): string | null {
     const parent = path.dirname(current);
     if (parent === current) return null;
     current = parent;
+  }
+}
+
+/**
+ * `jerry repo profile`: the profile Core keeps for the repository (ADR 0020), rescanned when stale
+ * (or always with --refresh). Commands are shown as they run on this machine.
+ */
+export async function profileCommand(target: string, options: { refresh: boolean; json: boolean }): Promise<void> {
+  const info = readCoreRuntimeInfo(resolveJerryHome());
+  const params = new URLSearchParams({ path: path.resolve(target), refresh: options.refresh ? 'force' : 'auto' });
+  const profile = projectProfileSchema.parse(await requestCore(info, { method: 'GET', path: `/api/v1/repositories/profile?${params.toString()}`, timeoutMs: 60_000 }));
+  if (options.json) {
+    console.log(JSON.stringify(profile, null, 2));
+    return;
+  }
+  console.log(`Profile of ${profile.repoRoot}: scanned ${profile.scannedAt}${profile.stale.length === 0 ? '' : ` (stale: ${profile.stale.join(', ')})`}`);
+  // Commands as they run on this machine (e.g. through corepack).
+  printScan({ ...profile, root: profile.repoRoot, commands: profile.commands.map((command) => ({ kind: command.kind, command: command.run, source: command.source })) });
+  if (profile.environment.notes.length > 0 || profile.environment.missingRunners.length > 0) {
+    console.log(`  environment: ${[...profile.environment.notes, ...profile.environment.missingRunners.map((runner) => `${runner} is not installed`)].join('; ')}`);
   }
 }
 
@@ -27,7 +49,13 @@ export function scanCommand(target: string, options: { json: boolean }): void {
   printScan(scan);
 }
 
-function printScan(scan: RepositoryScanResult): void {
+/** What both a fresh scan and a stored profile can show. */
+type ScanView = Omit<ProjectProfile, 'repoRoot' | 'checkedAt' | 'stale' | 'environment' | 'commands'> & {
+  root: string;
+  commands: Array<{ kind: string; command: string; source: string }>;
+};
+
+function printScan(scan: ScanView): void {
   const list = (items: readonly string[]): string => (items.length === 0 ? 'none found' : items.join(', '));
   console.log(`${scan.root}  (${scan.files} file(s)${scan.truncated ? ', walk stopped at a limit' : ''})`);
   console.log(`  languages:   ${list(scan.languages.slice(0, 8).map((language) => `${language.name} ${language.files}`))}`);

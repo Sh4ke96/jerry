@@ -9,6 +9,8 @@ import {
   type Checkpoint,
   type CoreState,
   type CompletionCheck,
+  type ProjectProfile,
+  projectProfileSchema,
   type TaskDetail,
   type ImplementationReport,
   type ImplementationReportRecord,
@@ -34,6 +36,7 @@ import {
 import { backupDatabase, openJerryDatabase, type JerryDatabase, type JerrySchema } from '@jerry/database';
 import { absolutePath, comparablePath, computePlanHash, computeReportHash, currentPlanDecision, decisionFor, matchesAnyGlob, relativeInside } from '@jerry/policy-engine';
 import { applyEvent, evaluateCompletion, isTerminal } from '@jerry/workflow';
+import type { ProfileFingerprints } from '@jerry/discovery';
 import { fingerprintFiles, gitReader, type GitReader, type GitSnapshot } from './git-reader.js';
 import { sql, type Kysely, type Selectable, type Transaction } from 'kysely';
 import { z } from 'zod';
@@ -752,6 +755,34 @@ export class StateStore {
       if (baseline !== null) userDirty.set(task.taskId, new Set(Object.keys(baseline.fingerprints).map(fileKey)));
     }
     this.userDirty = userDirty;
+  }
+
+  /** The stored profile of a repository with its freshness fingerprints (ADR 0020). */
+  async storedProfile(repoRoot: string): Promise<{ profile: ProjectProfile; fingerprints: ProfileFingerprints; scannedAt: string } | null> {
+    const row = await this.database.db.selectFrom('project_profiles').selectAll().where('repo_id', '=', repositoryId(repoRoot)).executeTakeFirst();
+    if (row === undefined) return null;
+    const parsed = projectProfileSchema.safeParse(JSON.parse(row.profile_json));
+    // A profile from an older format is simply rescanned.
+    if (!parsed.success) return null;
+    return { profile: parsed.data, fingerprints: JSON.parse(row.fingerprints_json) as ProfileFingerprints, scannedAt: row.scanned_at };
+  }
+
+  async saveProfile(repoRoot: string, profile: ProjectProfile, fingerprints: ProfileFingerprints, now: Date): Promise<void> {
+    const at = now.toISOString();
+    await this.database.db.transaction().execute(async (trx) => {
+      const repoId = await upsertRepository(trx, repoRoot, at);
+      await trx
+        .insertInto('project_profiles')
+        .values({ repo_id: repoId, profile_json: JSON.stringify(profile), fingerprints_json: JSON.stringify(fingerprints), scanned_at: profile.scannedAt, created_at: at, updated_at: at })
+        .onConflict((conflict) => conflict.column('repo_id').doUpdateSet({ profile_json: JSON.stringify(profile), fingerprints_json: JSON.stringify(fingerprints), scanned_at: profile.scannedAt, updated_at: at }))
+        .execute();
+    });
+  }
+
+  /** Repositories JERRY knows: from tasks, sessions, exclusions and profiles. */
+  async knownRepositories(): Promise<string[]> {
+    const rows = await this.database.db.selectFrom('repositories').select('root_path').orderBy('root_path').execute();
+    return rows.map((row) => row.root_path);
   }
 
   /** One-time import of the M0 JSON state into an empty database; the JSON file is kept, renamed. */

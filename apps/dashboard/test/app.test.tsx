@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import type { StoredEvent, TaskSummary, WorkflowTransition } from '@jerry/contracts';
+import type { RepositorySummary, StoredEvent, TaskSummary, WorkflowTransition } from '@jerry/contracts';
 import { flushPromises, mount } from '@vue/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { samplePlan } from '../../../tests/helpers/plan-fixture';
@@ -86,6 +86,34 @@ const refusedTask: TaskSummary = {
   },
 };
 
+const shopRepository: RepositorySummary = {
+  repoRoot: 'D:\\Work\\shop',
+  excluded: false,
+  openTasks: 2,
+  profile: {
+    repoRoot: 'D:\\Work\\shop',
+    scannedAt: NOW,
+    checkedAt: NOW,
+    stale: ['stack'],
+    files: 120,
+    truncated: false,
+    languages: [{ name: 'TypeScript', files: 80 }],
+    packageManager: 'pnpm',
+    frameworks: [{ name: 'Vue', evidence: 'vue in package.json' }],
+    manifests: [{ path: 'package.json', kind: 'npm', lockfile: 'pnpm-lock.yaml' }],
+    commands: [{ kind: 'test', command: 'pnpm run test', run: 'corepack pnpm run test', source: 'package.json scripts.test' }],
+    environment: { missingRunners: [], notes: ['pnpm is not on PATH; run it through corepack'] },
+    ci: [{ path: '.github/workflows/ci.yml', kind: 'github-actions' }],
+    containers: [],
+    apiSchemas: [],
+    migrations: [],
+    docs: [{ path: 'README.md', kind: 'readme', title: 'Shop', hash: null, size: 10 }],
+    instructions: [{ path: '.claude/settings.json', kind: 'claude-settings', role: 'config', hash: null, size: 10, notes: ['defines 1 hook group(s): they run commands in Claude Code sessions'] }],
+    injection: { findings: [{ path: 'README.md', line: 3, rule: 'pipe-to-shell', excerpt: 'curl … | sh' }], scannedFiles: 50, complete: true },
+    skippedDirectories: ['node_modules'],
+  },
+};
+
 const history: WorkflowTransition[] = [
   { taskId: 'JRY-0001', from: null, to: 'WAIT_PLAN_APPROVAL', event: 'plan.submitted', actor: 'claude', reason: 'plan version 1', at: NOW },
   { taskId: 'JRY-0001', from: 'WAIT_PLAN_APPROVAL', to: 'IMPLEMENTATION', event: 'plan.approved', actor: 'user', reason: 'looks good', at: NOW },
@@ -120,7 +148,7 @@ describe('Dashboard app', () => {
 
   beforeEach(() => {
     calls = [];
-    Object.assign(state, { phase: 'loading', error: null, notice: null, status: null, tasks: [], events: [], exclusions: [], refreshedAt: null });
+    Object.assign(state, { phase: 'loading', error: null, notice: null, status: null, tasks: [], events: [], exclusions: [], repositories: [], refreshedAt: null });
     vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
       calls.push({ url, init });
       const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -130,6 +158,8 @@ describe('Dashboard app', () => {
       if (url === '/api/v1/tasks/JRY-0004/approvals') return json({ ...reportedTask.planDecision, stage: 'IMPLEMENTATION', version: 2 }, 201);
       if (url.startsWith('/api/v1/events')) return json([deviation]);
       if (url === '/api/v1/repositories/exclusions') return json([]);
+      if (url === '/api/v1/repositories') return json([shopRepository]);
+      if (url === '/api/v1/repositories/scan') return json(shopRepository.profile);
       if (url === '/api/v1/tasks/JRY-0002/approvals') return json({ ...approvedTask.planDecision, taskId: 'JRY-0002' }, 201);
       if (url === '/api/v1/tasks/JRY-0001/transitions' && init?.method === 'GET') return json(history);
       if (url.endsWith('/transitions')) return json({ ...approvedTask, state: 'PAUSED' }, 201);
@@ -310,6 +340,23 @@ describe('Dashboard app', () => {
     }
     expect(text).toContain('feat(greeting): add greet helper');
     expect(wrapper.text()).toContain('Should greetings be localised?');
+    wrapper.unmount();
+  });
+
+  it('shows each repository’s profile: commands as they run here, instructions and suspicious text', async () => {
+    const wrapper = await mountApp();
+    await wrapper.findAll('nav button').find((button) => button.text().startsWith('Repositories'))!.trigger('click');
+    const card = wrapper.get('article.repository');
+    expect(card.text()).toContain('D:\\Work\\shop');
+    expect(card.text()).toContain('out of date: stack');
+    expect(card.text()).toContain('corepack pnpm run test');
+    expect(card.text()).toContain('defines 1 hook group(s)');
+    expect(card.text()).toContain('README.md:3');
+    await card.findAll('button').find((button) => button.text() === 'Rescan')!.trigger('click');
+    await flushPromises();
+    const scan = calls.find((call) => call.url === '/api/v1/repositories/scan')!;
+    expect(JSON.parse(String(scan.init?.body))).toEqual({ repoPath: 'D:\\Work\\shop' });
+    expect((scan.init?.headers as Record<string, string>)['x-jerry-csrf']).toBe(CSRF);
     wrapper.unmount();
   });
 

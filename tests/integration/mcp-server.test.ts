@@ -34,7 +34,7 @@ describe('JERRY MCP server (bundled)', () => {
     const mcp = await connect();
     const listed = (await mcp.request('tools/list'))['result'] as { tools: Array<{ name: string; annotations: { readOnlyHint: boolean } }> };
     const names = listed.tools.map((tool) => tool.name).sort();
-    expect(names).toEqual(['jerry_check_paths', 'jerry_get_state', 'jerry_list_deviations', 'jerry_save_checkpoint', 'jerry_submit_plan', 'jerry_submit_report']);
+    expect(names).toEqual(['jerry_check_paths', 'jerry_get_project_profile', 'jerry_get_state', 'jerry_list_deviations', 'jerry_save_checkpoint', 'jerry_submit_plan', 'jerry_submit_report']);
     expect(listed.tools.filter((tool) => !tool.annotations.readOnlyHint).map((tool) => tool.name)).toEqual(['jerry_submit_plan', 'jerry_submit_report', 'jerry_save_checkpoint']);
     expect(names.some((name) => /approve|accept|reject|exclude|pause|resume|cancel|done|complete/.test(name))).toBe(false);
   });

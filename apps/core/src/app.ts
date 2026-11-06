@@ -13,7 +13,9 @@ import {
   taskTransitionRequestSchema,
   checkpointRequestSchema,
   reportSubmitRequestSchema,
+  repositoryScanRequestSchema,
   type CoreState,
+  type RepositorySummary,
   type CoreStatus,
   type GateCheckRequest,
   type GateDecision,
@@ -30,6 +32,7 @@ import { buildEventEnvelope } from '@jerry/trace-engine';
 import type { z } from 'zod';
 import { BrowserSessions, clearedSessionCookie, CSRF_HEADER, readCookie, safeEqual, SESSION_COOKIE, sessionCookie, type BrowserSession } from './auth.js';
 import { evaluatePending, withRepoRoot } from './events.js';
+import { ProfileService } from './profiles.js';
 import { findGitRoot, realPathOfNearestExisting } from './repo-fs.js';
 import { StateError, type StateStore } from './state-store.js';
 import { readDashboardFile } from './static-files.js';
@@ -66,6 +69,8 @@ export interface CoreAppOptions {
   /** Short hash of the running core.mjs (see buildHash). */
   build?: string;
   onShutdownRequested: () => void;
+  /** Project profiles (ADR 0020); tests may pass one with a fake PATH lookup. */
+  profiles?: ProfileService;
 }
 
 export class HttpError extends Error {
@@ -103,6 +108,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   const { store } = options;
   const sessions = options.sessions ?? new BrowserSessions();
   const evaluate = gateEvaluator(store, options.protectedRoots);
+  const profiles = options.profiles ?? new ProfileService(store);
   const app = Fastify({ logger: false, bodyLimit: MAX_BODY_BYTES, return503OnClosing: true });
   const origins = (): string[] => [`http://127.0.0.1:${options.port()}`, `http://localhost:${options.port()}`];
 
@@ -322,10 +328,49 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
       approvedPlans: approvedPlans.map((plan) => ({ taskId: plan.taskId, planVersion: plan.planVersion, scope: [...plan.scope] })),
       openTasks: repoRoot === null || excluded ? [] : await openTasksFor(store, snapshot, repoRoot, registration.sessionId, new Set(approvedPlans.map((plan) => plan.taskId))),
     };
+    // Refresh the project profile in the background, so it is ready when Claude asks for it.
+    if (repoRoot !== null && !excluded) setImmediate(() => void profiles.get(repoRoot, 'auto').catch(() => undefined));
     return response;
   });
 
   app.get('/api/v1/repositories/exclusions', { config: TOKEN_OR_SESSION }, async () => store.snapshot().excludedRepos);
+
+  /** The project profile of the repository containing a path (ADR 0020); rescanned when stale. */
+  app.get('/api/v1/repositories/profile', { config: TOKEN_OR_SESSION }, async (request) => {
+    const query = request.query as Record<string, unknown>;
+    const target = query['path'];
+    if (typeof target !== 'string' || target === '') throw new HttpError(400, 'path is required');
+    const mode = query['refresh'] === 'force' || query['refresh'] === 'cached' ? query['refresh'] : 'auto';
+    const repoRoot = findGitRoot(realPathOfNearestExisting(target));
+    if (repoRoot === null) throw new HttpError(400, `${target} is not inside a Git repository`);
+    const profile = await profiles.get(repoRoot, mode);
+    if (profile === null) throw new HttpError(404, `No profile for ${repoRoot} yet`);
+    return profile;
+  });
+
+  /** Rescans a repository now (read-only; the dashboard's Refresh). */
+  app.post('/api/v1/repositories/scan', { config: TOKEN_OR_SESSION }, async (request) => {
+    const body = parse(repositoryScanRequestSchema, request.body);
+    const repoRoot = findGitRoot(realPathOfNearestExisting(body.repoPath));
+    if (repoRoot === null) throw new HttpError(400, `${body.repoPath} is not inside a Git repository`);
+    return profiles.get(repoRoot, 'force');
+  });
+
+  /** Repositories JERRY knows, with their cached profiles (no scan). */
+  app.get('/api/v1/repositories', { config: TOKEN_OR_SESSION }, async () => {
+    const snapshot = store.snapshot();
+    const known = await store.knownRepositories();
+    const summaries: RepositorySummary[] = [];
+    for (const repoRoot of known) {
+      summaries.push({
+        repoRoot,
+        excluded: isRepoExcluded(snapshot, repoRoot, process.platform),
+        openTasks: snapshot.tasks.filter((task) => sameRepo(task.repoRoot, repoRoot) && !isTerminal(task.state)).length,
+        profile: await profiles.get(repoRoot, 'cached'),
+      });
+    }
+    return summaries;
+  });
 
   app.post('/api/v1/repositories/exclusions', { config: TOKEN_OR_SESSION }, async (request) => {
     const body = parse(repositoryExclusionRequestSchema, request.body);

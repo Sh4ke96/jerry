@@ -6,7 +6,7 @@ import { doctor } from './doctor.js';
 import { showEvents } from './events-command.js';
 import { install, uninstall } from './install-commands.js';
 import { excludeRepository, includeRepository, listExcludedRepositories } from './repo-commands.js';
-import { scanCommand } from './scan-command.js';
+import { profileCommand, scanCommand } from './scan-command.js';
 import { showStatus } from './status-command.js';
 import { controlTask, createTask, decide, listTasks, revisePlan, showTask } from './task-commands.js';
 import { openDashboard } from './ui-command.js';
@@ -120,6 +120,12 @@ repo
   .description('Show what JERRY detects in a repository: languages, manifests, commands, CI, API schemas, migrations (read-only)')
   .option('--json', 'print the full scan as JSON', false)
   .action((target: string | undefined, options: { json: boolean }) => scanCommand(target ?? '.', options));
+repo
+  .command('profile [path]')
+  .description("Show the project profile JERRY keeps (rescanned when its sources changed); commands as they run on this machine")
+  .option('--refresh', 'rescan now', false)
+  .option('--json', 'print the full profile as JSON', false)
+  .action((target: string | undefined, options: { refresh: boolean; json: boolean }) => profileCommand(target ?? '.', options));
 
 program
   .command('events')

@@ -124,6 +124,16 @@ export interface GitSnapshotsTable {
   created_at: string;
 }
 
+/** The latest project profile of a repository and its freshness fingerprints. */
+export interface ProjectProfilesTable {
+  repo_id: string;
+  profile_json: string;
+  fingerprints_json: string;
+  scanned_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
 /** Runs of Core's final checks; DONE follows only a passing one. */
 export interface TaskCompletionChecksTable {
   id: Generated<number>;
@@ -202,6 +212,7 @@ export interface JerrySchema {
   implementation_reports: ImplementationReportsTable;
   task_completion_checks: TaskCompletionChecksTable;
   git_snapshots: GitSnapshotsTable;
+  project_profiles: ProjectProfilesTable;
   settings: SettingsTable;
   audit_log: AuditLogTable;
 }

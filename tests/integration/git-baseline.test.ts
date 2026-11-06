@@ -89,6 +89,7 @@ describe('Git baseline, user changes and Git-based evidence (bundled bridge + Co
     execFileSync('git', [...IDENTITY, '-C', repo, 'commit', '-q', '-m', 'user commit']);
     const result = runBridge('session-start', hook({ hook_event_name: 'SessionStart', source: 'startup', session_id: 'session-h' }), env);
     const context = JSON.parse(result.stdout).hookSpecificOutput.additionalContext as string;
-    expect(context).toMatch(/Since then: HEAD moved from [0-9a-f]{7} to [0-9a-f]{7}, \d+ file\(s\) changed \(check git log and git diff first\)\./);
+    expect(context).toMatch(/Since then: HEAD moved from [0-9a-f]{7} to [0-9a-f]{7}, \d+ file\(s\) changed \(check git log and git diff first\)\. /);
+    expect(context).not.toContain('first)..');
   });
 });

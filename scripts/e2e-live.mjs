@@ -33,6 +33,7 @@ const repo = path.join(base, 'repo');
 fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
 fs.writeFileSync(path.join(repo, 'README.md'), '# live fixture\n');
 fs.writeFileSync(path.join(repo, 'src', 'app.ts'), 'export const answer = 42;\n');
+fs.writeFileSync(path.join(repo, 'package.json'), `${JSON.stringify({ name: 'live-fixture', private: true, scripts: { test: 'node --test' } }, null, 2)}\n`);
 const git = (...args) =>
   spawnSync('git', ['-c', 'user.name=JERRY Test', '-c', 'user.email=jerry-test@example.invalid', '--no-optional-locks', '-C', repo, ...args], { encoding: 'utf8' });
 git('init', '-q', '-b', 'main');
@@ -251,6 +252,16 @@ expect(
 );
 const doneHistory = await coreApi(info, 'GET', `/api/v1/tasks/${task.taskId}/transitions`);
 expect('K: DONE was set by Core, not by a model or the user', doneHistory.at(-1)?.event === 'task.completed' && doneHistory.at(-1)?.actor === 'core', JSON.stringify(doneHistory.at(-1)));
+
+// M — project profile: Claude learns the project's own test command from JERRY, without searching.
+const m = runClaude(
+  'M: project profile',
+  'Call the jerry_get_project_profile tool and tell me the exact command that runs this project\'s tests, as the tool gives it. Do nothing else.',
+  ['mcp__plugin_jerry_jerry__jerry_get_project_profile'],
+);
+const mTools = (await sessionEvents(m.sessionId)).map((event) => event.toolName).filter(Boolean);
+expect('M: the session read the project profile', mTools.some((tool) => tool.endsWith('__jerry_get_project_profile')), mTools.join(', '));
+expect('M: Claude named the project’s own test command', /npm run test/.test(m.text), m.text.slice(0, 200));
 
 // L — Git baseline: the user's uncommitted work is protected, and Git sees what shell commands changed.
 fs.writeFileSync(path.join(repo, 'src', 'app.ts'), 'export const answer = 43; // user edit, uncommitted\n');

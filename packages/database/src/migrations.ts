@@ -263,4 +263,20 @@ export const MIGRATIONS: Readonly<Record<string, Migration>> = {
       await db.schema.createIndex('git_snapshots_task').on('git_snapshots').columns(['task_id', 'kind', 'id']).execute();
     },
   },
+
+  '0009_project_profiles': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // One profile per repository (ADR 0020): the latest scan plus the fingerprints that tell when
+      // it is stale. Paths, titles and hashes only.
+      await db.schema
+        .createTable('project_profiles')
+        .addColumn('repo_id', 'text', (column) => column.primaryKey().references('repositories.repo_id'))
+        .addColumn('profile_json', 'text', (column) => column.notNull())
+        .addColumn('fingerprints_json', 'text', (column) => column.notNull())
+        .addColumn('scanned_at', 'text', (column) => column.notNull())
+        .addColumn('created_at', 'text', (column) => column.notNull())
+        .addColumn('updated_at', 'text', (column) => column.notNull())
+        .execute();
+    },
+  },
 };

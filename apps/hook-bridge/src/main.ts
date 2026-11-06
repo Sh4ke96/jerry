@@ -278,7 +278,8 @@ function resumeContext(openTasks: readonly OpenTask[]): string[] {
       const since = task.sinceCheckpoint;
       if (since !== undefined && (since.headBefore !== since.headNow || since.changedFiles > 0)) {
         const head = since.headBefore !== since.headNow ? `HEAD moved from ${since.headBefore?.slice(0, 7) ?? 'none'} to ${since.headNow?.slice(0, 7) ?? 'none'}` : 'HEAD unchanged';
-        entry += ` Since then: ${head}, ${since.changedFiles} file(s) changed (check git log and git diff first).`;
+        // No trailing period: the list of open tasks ends with one.
+        entry += ` Since then: ${head}, ${since.changedFiles} file(s) changed (check git log and git diff first)`;
       }
     }
     return entry;
