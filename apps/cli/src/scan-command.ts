@@ -41,5 +41,13 @@ function printScan(scan: RepositoryScanResult): void {
   console.log(`  containers:  ${list(scan.containers.map((entry) => entry.path))}`);
   console.log(`  API schemas: ${list(scan.apiSchemas.map((entry) => `${entry.path} (${entry.kind})`))}`);
   console.log(`  migrations:  ${list(scan.migrations.map((entry) => `${entry.path} (${entry.kind}, ${entry.files})`))}`);
+  console.log(`  docs:        ${scan.docs.length === 0 ? 'none found' : `${scan.docs.length} (${[...new Set(scan.docs.map((doc) => doc.kind))].join(', ')})`}`);
+  console.log('  project instructions (read-only; rules rank below JERRY and you):');
+  if (scan.instructions.length === 0) console.log('    none found');
+  for (const entry of scan.instructions) console.log(`    ${entry.role.padEnd(6)} ${entry.path}${entry.notes.length === 0 ? '' : `  (${entry.notes.join('; ')})`}`);
+  const { findings, scannedFiles, complete } = scan.injection;
+  console.log(`  suspicious instructions in repository text (${scannedFiles} file(s) read${complete ? '' : ', scan stopped at a limit'}):`);
+  if (findings.length === 0) console.log('    none found');
+  for (const finding of findings) console.log(`    ${finding.path}:${finding.line}  [${finding.rule}]  ${finding.excerpt}`);
   if (scan.skippedDirectories.length > 0) console.log(`  not scanned: ${scan.skippedDirectories.slice(0, 10).join(', ')}${scan.skippedDirectories.length > 10 ? ', …' : ''}`);
 }

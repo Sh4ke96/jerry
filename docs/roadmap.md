@@ -20,15 +20,15 @@ to three implementers with disjoint scopes.
 - [x] Uncommitted changes inventory ([ADR 0017](decisions/0017-git-baseline.md)).
 - [x] Language/framework detectors ([ADR 0018](decisions/0018-repository-scanner.md)).
 - [x] Manifest/lockfile detection ([ADR 0018](decisions/0018-repository-scanner.md)).
-- [ ] Documentation indexer.
-- [ ] Project instructions inventory.
+- [x] Documentation indexer ([ADR 0019](decisions/0019-docs-instructions-injection.md)).
+- [x] Project instructions inventory ([ADR 0019](decisions/0019-docs-instructions-injection.md)).
 - [x] Existing tests/build/lint detection ([ADR 0018](decisions/0018-repository-scanner.md)).
 - [x] API schema detection ([ADR 0018](decisions/0018-repository-scanner.md)).
 - [x] Database migration detection ([ADR 0018](decisions/0018-repository-scanner.md)).
 - [ ] Multi-repo workspace graph.
 - [ ] Project profile storage outside project.
 - [ ] Profile freshness invalidation.
-- [ ] Prompt injection handling rules.
+- [x] Prompt injection handling rules ([ADR 0019](decisions/0019-docs-instructions-injection.md)).
 
 ## M4 — Analysis and Planning (three analysts)
 
