@@ -42,16 +42,23 @@ repositories, not to this one.
   which task. Claude saves progress notes with `jerry_save_checkpoint`. A new, resumed or compacted session
   starts knowing the open tasks, their state and the last checkpoint
   ([ADR 0013](docs/decisions/0013-session-task-correlation-and-recovery.md)).
+- `/jerry:report`: Claude reports the implementation. The report covers changed files, real check results
+  (NOT_RUN with a reason, never an assumed PASS), differences from the plan, risks, QA scenarios and commit
+  subjects. JERRY adds what it recorded itself: deviations, blocks, and edited files missing from the report.
+  You accept exactly that report version, or send it back with a comment, in the dashboard or with
+  `jerry approve|reject <id> --stage implementation`. `/jerry:commit-message` proposes commit messages in the
+  repository's convention; you commit ([ADR 0014](docs/decisions/0014-implementation-report-and-acceptance.md)).
 - JERRY Control Center at `http://127.0.0.1:47823` (open it with `jerry ui`): overview, tasks with their state,
   plan, history and the decisions their state allows, session timeline, repositories; installable as an app
   ([ADR 0009](docs/decisions/0009-dashboard.md)).
 - MCP server in the plugin: read-only tools for the live plan state, path checks and recorded deviations,
-  plus plan submission and progress checkpoints; nothing in it can approve, pause or complete anything
+  plus plan and report submission and progress checkpoints; nothing in it can approve, accept, pause or
+  complete anything
   ([ADR 0008](docs/decisions/0008-local-mcp-server.md)).
 - `jerry status` (quick summary) and `jerry doctor` (full diagnostics); the hook bridge loads no heavy
   dependencies, about 30 ms per guarded call ([ADR 0010](docs/decisions/0010-fast-bridge-cli-doctor.md)).
 - `jerry` CLI (Commander, `jerry --help`): `install`, `uninstall`, `doctor`, `ui`, `core start|stop|status`,
-  `task create|list|show|pause|resume|cancel`, `plan revise`, `approve`/`reject`, `repo exclude|include|list`,
+  `task create|list|show|pause|resume|cancel`, `plan revise`, `approve`/`reject --stage plan|implementation`, `repo exclude|include|list`,
   `events`, `db backup|backups|restore` (approve, reject, pause, resume, cancel, exclude and restore require an
   interactive terminal).
 

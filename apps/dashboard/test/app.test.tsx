@@ -3,6 +3,7 @@ import type { StoredEvent, TaskSummary, WorkflowTransition } from '@jerry/contra
 import { flushPromises, mount } from '@vue/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { samplePlan } from '../../../tests/helpers/plan-fixture';
+import { sampleReport } from '../../../tests/helpers/report-fixture';
 import { App } from '../src/App';
 import { startDashboard, state } from '../src/state';
 
@@ -19,6 +20,36 @@ const waitingTask: TaskSummary = {
   planDecision: null,
   activity: { sessionCount: 0, lastSessionId: null, lastActivityAt: null, lastSessionEndedAt: null },
   lastCheckpoint: null,
+  lastReport: null,
+  reportDecision: null,
+};
+
+/** Reported, waiting for acceptance; JERRY saw an edit the report does not list. */
+const reportedTask: TaskSummary = {
+  ...waitingTask,
+  taskId: 'JRY-0004',
+  title: 'Greeting helper',
+  state: 'WAIT_IMPLEMENTATION_ACCEPTANCE',
+  planDecision: { approvalId: 'apr_4', taskId: 'JRY-0004', stage: 'PLAN', version: 1, contentHash: waitingTask.plan.contentHash, decision: 'APPROVED', approvedBy: 'local-user', approvedAt: NOW, comment: '' },
+  lastReport: {
+    taskId: 'JRY-0004',
+    version: 2,
+    planVersion: 1,
+    contentHash: `sha256:${'b'.repeat(64)}`,
+    document: sampleReport(),
+    evidence: {
+      since: NOW,
+      deviations: [{ at: NOW, tool: 'Write', target: 'README.md', rule: 'monitor.out-of-scope' }],
+      deviationCount: 1,
+      blockedCount: 0,
+      observedEdits: ['README.md', 'src/greeting/greet.ts'],
+      unreportedEdits: ['README.md'],
+      failedOrNotRunChecks: 1,
+    },
+    submittedBy: 'claude',
+    sessionId: 's9',
+    createdAt: NOW,
+  },
 };
 
 const approvedTask: TaskSummary = {
@@ -73,7 +104,8 @@ describe('Dashboard app', () => {
       const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
       if (url === '/api/v1/ui/session') return json({ csrfToken: CSRF, expiresAt: NOW });
       if (url === '/api/v1/status') return json({ status: 'ok', version: '0.0.1', pid: 1, startedAt: NOW, jerryHome: 'C:/J', taskCount: 2, sessionCount: 3, database: { file: 'db', migration: '0002_hook_events' } });
-      if (url === '/api/v1/tasks') return json([approvedTask, waitingTask, cancelledTask]);
+      if (url === '/api/v1/tasks') return json([approvedTask, waitingTask, cancelledTask, reportedTask]);
+      if (url === '/api/v1/tasks/JRY-0004/approvals') return json({ ...reportedTask.planDecision, stage: 'IMPLEMENTATION', version: 2 }, 201);
       if (url.startsWith('/api/v1/events')) return json([deviation]);
       if (url === '/api/v1/repositories/exclusions') return json([]);
       if (url === '/api/v1/tasks/JRY-0002/approvals') return json({ ...approvedTask.planDecision, taskId: 'JRY-0002' }, 201);
@@ -96,7 +128,7 @@ describe('Dashboard app', () => {
     const text = wrapper.text();
     expect(text).toContain('GUARDED');
     expect(text).toContain('1 in implementation');
-    expect(text).toContain('1 waiting for your decision');
+    expect(text).toContain('2 waiting for your decision');
     expect(text).toContain('JRY-0002');
     expect(text).toContain('README.md');
     wrapper.unmount();
@@ -155,6 +187,40 @@ describe('Dashboard app', () => {
     const waiting = wrapper.findAll('article.task').find((candidate) => candidate.text().includes('JRY-0002'))!;
     expect(waiting.text()).toContain('No session has worked on it yet');
     expect(waiting.find('.checkpoint').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('shows the implementation report next to what JERRY recorded, with accept and request-changes', async () => {
+    const wrapper = await mountApp();
+    await openTasks(wrapper);
+    const card = wrapper.findAll('article.task').find((candidate) => candidate.text().includes('JRY-0004'))!;
+    const report = card.get('.report');
+    expect(report.text()).toContain('Implementation report v2');
+    expect(report.text()).toContain('Added greet(name) and its unit test.');
+    expect(report.get('.evidence').classes()).toContain('evidence--attention');
+    expect(report.get('.evidence').text()).toContain('Edited but not in the report: README.md');
+    expect(report.text()).toContain('1 check(s) failed or did not run.');
+    expect(report.text()).toContain('NOT_RUN');
+    expect(report.text()).toContain('QA-1 Greeting for a named user');
+    expect(button(wrapper, 'Approve plan v1', 'JRY-0004')).toBeUndefined();
+
+    await button(wrapper, 'Request changes', 'JRY-0004')!.trigger('click');
+    expect(wrapper.get('form.dialog h2').text()).toBe('Request changes to JRY-0004 report v2');
+    await wrapper.get('form.dialog textarea').setValue('Also handle empty names.');
+    await wrapper.get('form.dialog input').setValue('JRY-0004');
+    await wrapper.get('form.dialog').trigger('submit');
+    await flushPromises();
+    const decision = calls.find((call) => call.url === '/api/v1/tasks/JRY-0004/approvals')!;
+    expect(JSON.parse(String(decision.init?.body))).toEqual({ stage: 'IMPLEMENTATION', version: 2, decision: 'REJECTED', comment: 'Also handle empty names.', confirmTaskId: 'JRY-0004' });
+    expect(state.notice).toBe('Requested changes to JRY-0004 report v2.');
+
+    await button(wrapper, 'Accept implementation', 'JRY-0004')!.trigger('click');
+    expect(wrapper.find('form.dialog textarea').exists()).toBe(false);
+    await wrapper.get('form.dialog input').setValue('JRY-0004');
+    await wrapper.get('form.dialog').trigger('submit');
+    await flushPromises();
+    const accepted = calls.filter((call) => call.url === '/api/v1/tasks/JRY-0004/approvals').at(-1)!;
+    expect(JSON.parse(String(accepted.init?.body))).toMatchObject({ stage: 'IMPLEMENTATION', version: 2, decision: 'APPROVED' });
     wrapper.unmount();
   });
 

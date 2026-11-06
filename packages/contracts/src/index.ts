@@ -193,7 +193,93 @@ export const planSchema = z.object({
 });
 export type Plan = z.infer<typeof planSchema>;
 
-export const approvalStageSchema = z.enum(['PLAN']);
+/** A manual QA scenario (spec §15.1). */
+export const qaScenarioSchema = z.object({
+  id: text,
+  priority: z.enum(['P1', 'P2', 'P3']),
+  title: text,
+  /** Module and exact location: UI path, screen, endpoint or command. */
+  location: text,
+  roles: z.array(text).default([]),
+  preconditions: z.string().default(''),
+  testData: z.string().default(''),
+  steps: z.array(text).min(1),
+  expected: text,
+  /** What must not happen, or the negative variant to try. */
+  negative: z.string().default(''),
+  /** Related API calls or events, if any. */
+  related: z.string().default(''),
+  kind: z.enum(['new', 'regression']),
+});
+export type QaScenario = z.infer<typeof qaScenarioSchema>;
+
+/**
+ * Claude's implementation report (spec §7.2 Phase 5). Results are reported as they were, never
+ * assumed: a check that did not run is NOT_RUN with the reason, never PASS (spec §19).
+ */
+export const implementationReportSchema = z.object({
+  /** What was done, in a few sentences. */
+  summary: text,
+  /** What actually changed: repo-relative paths per repository. */
+  changes: z.array(z.object({ repository: z.string().default(''), path: text, kind: z.enum(['added', 'modified', 'deleted', 'renamed']), description: text })).min(1),
+  /** Work done by each agent or subagent, when more than one took part. */
+  agents: z.array(z.object({ agent: text, work: text })).default([]),
+  /** Skills that were required and whether they were used. */
+  skills: z.array(z.object({ name: text, used: z.boolean(), note: z.string().default('') })).default([]),
+  /** Tests, build, lint and typecheck with their real results. */
+  checks: z
+    .array(
+      z
+        .object({ kind: z.enum(['test', 'build', 'lint', 'typecheck', 'other']), command: text, result: z.enum(['PASS', 'FAIL', 'NOT_RUN']), details: z.string().default('') })
+        .refine((check) => check.result !== 'NOT_RUN' || check.details.trim() !== '', { message: 'a check that did not run needs the reason in details', path: ['details'] }),
+    )
+    .min(1),
+  /** Differences from the approved plan, with the reason for each. */
+  planDeviations: z.array(z.object({ description: text, reason: text })).default([]),
+  /** Findings and unresolved risks. */
+  risks: z.array(z.object({ risk: text, severity: z.enum(['low', 'medium', 'high', 'critical']), mitigation: z.string().default('') })).default([]),
+  /** Proposed commit subjects in the repository's convention; the user commits. */
+  commitSubjects: z.array(text).min(1),
+  qaScenarios: z.array(qaScenarioSchema).min(1),
+  /** Optional artifact (demo, presentation); never written into the repository. */
+  artifact: z.string().default(''),
+});
+export type ImplementationReport = z.infer<typeof implementationReportSchema>;
+
+/**
+ * What JERRY itself recorded between the plan approval and the report: the report's claims are
+ * shown next to these facts. Shell commands can change files without JERRY seeing which, so
+ * observed edits cover the file tools only.
+ */
+export const reportEvidenceSchema = z.object({
+  since: z.iso.datetime(),
+  deviations: z.array(z.object({ at: z.iso.datetime(), tool: z.string().nullable(), target: z.string().nullable(), rule: z.string().nullable() })),
+  deviationCount: z.number().int().nonnegative(),
+  blockedCount: z.number().int().nonnegative(),
+  /** Repo-relative paths edited with the file tools (Write, Edit, MultiEdit, NotebookEdit). */
+  observedEdits: z.array(z.string()),
+  /** Observed edits the report does not mention. */
+  unreportedEdits: z.array(z.string()),
+  /** Checks the report marks FAIL or NOT_RUN. */
+  failedOrNotRunChecks: z.number().int().nonnegative(),
+});
+export type ReportEvidence = z.infer<typeof reportEvidenceSchema>;
+
+export const implementationReportRecordSchema = z.object({
+  taskId: taskIdSchema,
+  version: z.number().int().positive(),
+  planVersion: z.number().int().positive(),
+  contentHash: contentHashSchema,
+  document: implementationReportSchema,
+  evidence: reportEvidenceSchema,
+  submittedBy: z.enum(['user', 'claude']),
+  sessionId: z.string().nullable(),
+  createdAt: z.iso.datetime(),
+});
+export type ImplementationReportRecord = z.infer<typeof implementationReportRecordSchema>;
+
+/** PLAN binds to a plan version and hash; IMPLEMENTATION to a report version and hash. */
+export const approvalStageSchema = z.enum(['PLAN', 'IMPLEMENTATION']);
 export const approvalDecisionSchema = z.enum(['APPROVED', 'REJECTED']);
 
 export const approvalRecordSchema = z.object({
@@ -273,6 +359,12 @@ export const planReviseRequestSchema = z.object({
   scope: planScopeSchema,
   document: planDocumentSchema.optional(),
   submittedBy: z.enum(['user', 'claude']).default('user'),
+  origin: callOriginSchema.optional(),
+});
+
+export const reportSubmitRequestSchema = z.object({
+  report: implementationReportSchema,
+  submittedBy: z.enum(['user', 'claude']).default('claude'),
   origin: callOriginSchema.optional(),
 });
 export type PlanReviseRequest = z.infer<typeof planReviseRequestSchema>;
@@ -425,10 +517,13 @@ export const taskActivitySchema = z.object({
 });
 export type TaskActivity = z.infer<typeof taskActivitySchema>;
 
-/** A task as lists show it: decision, session activity and the latest checkpoint. */
+/** A task as lists show it: decisions, session activity, the latest checkpoint and report. */
 export const taskSummarySchema = taskWithDecisionSchema.extend({
   activity: taskActivitySchema,
   lastCheckpoint: checkpointSchema.nullable(),
+  lastReport: implementationReportRecordSchema.nullable(),
+  /** The user's latest decision on exactly the latest report (version and hash). */
+  reportDecision: approvalRecordSchema.nullable(),
 });
 export type TaskSummary = z.infer<typeof taskSummarySchema>;
 
@@ -447,6 +542,8 @@ export const taskDetailSchema = taskSummarySchema.extend({
   sessions: z.array(taskSessionSchema),
   /** Newest first. */
   checkpoints: z.array(checkpointSchema),
+  /** Every implementation report version, newest first. */
+  reports: z.array(implementationReportRecordSchema),
 });
 export type TaskDetail = z.infer<typeof taskDetailSchema>;
 

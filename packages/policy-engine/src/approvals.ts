@@ -27,6 +27,12 @@ export function computePlanHash(input: { taskId: string; title: string; repoRoot
   return `sha256:${createHash('sha256').update(canonical, 'utf8').digest('hex')}`;
 }
 
+/** Hash of an implementation report version; the user's acceptance binds to it (ADR 0014). */
+export function computeReportHash(input: { taskId: string; version: number; planVersion: number; document: unknown }): string {
+  const canonical = JSON.stringify({ kind: 'implementation-report', taskId: input.taskId, version: input.version, planVersion: input.planVersion, document: canonicalize(input.document) });
+  return `sha256:${createHash('sha256').update(canonical, 'utf8').digest('hex')}`;
+}
+
 /** Sorted object keys, so the same document always hashes the same however it was assembled. */
 function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalize);
@@ -40,16 +46,17 @@ function canonicalize(value: unknown): unknown {
   return value;
 }
 
-/** The latest decision for the task's current plan version and hash, if any. */
-export function currentPlanDecision(task: Task, approvals: readonly ApprovalRecord[]): ApprovalRecord | null {
+/** The latest decision bound to exactly this stage, version and hash, if any. */
+export function decisionFor(approvals: readonly ApprovalRecord[], subject: { taskId: string; stage: ApprovalRecord['stage']; version: number; contentHash: string }): ApprovalRecord | null {
   const matching = approvals.filter(
-    (approval) =>
-      approval.taskId === task.taskId &&
-      approval.stage === 'PLAN' &&
-      approval.version === task.plan.version &&
-      approval.contentHash === task.plan.contentHash,
+    (approval) => approval.taskId === subject.taskId && approval.stage === subject.stage && approval.version === subject.version && approval.contentHash === subject.contentHash,
   );
   return matching.at(-1) ?? null;
+}
+
+/** The latest decision for the task's current plan version and hash, if any. */
+export function currentPlanDecision(task: Task, approvals: readonly ApprovalRecord[]): ApprovalRecord | null {
+  return decisionFor(approvals, { taskId: task.taskId, stage: 'PLAN', version: task.plan.version, contentHash: task.plan.contentHash });
 }
 
 export function isRepoExcluded(state: CoreState, repoRoot: string, platform: NodeJS.Platform): boolean {

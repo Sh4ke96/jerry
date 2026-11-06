@@ -389,6 +389,37 @@ code {
   color: var(--muted);
 }
 
+.report h3 {
+  margin: 12px 0 6px;
+  font-size: 1rem;
+}
+
+.evidence {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: var(--surface-muted);
+}
+
+.evidence--attention {
+  background: var(--warn-bg);
+}
+
+.evidence h4 {
+  margin: 0 0 4px;
+  font-size: 0.9rem;
+}
+
+.evidence p {
+  margin: 0 0 4px;
+}
+
+.dialog textarea {
+  width: 100%;
+  font: inherit;
+  resize: vertical;
+}
+
 .checkpoint {
   margin-top: 12px;
   padding: 10px 12px;

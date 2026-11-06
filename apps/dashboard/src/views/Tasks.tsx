@@ -4,19 +4,20 @@ import { defineComponent, reactive, ref } from 'vue';
 import { api } from '../api';
 import { Badge } from '../components/Badge';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { ImplementationReportView } from '../components/ImplementationReport';
 import { PlanDocumentView } from '../components/PlanDocument';
 import { formatTime, isOpen, stateTone } from '../format';
 import { handleError, perform, state } from '../state';
 
 /** Decisions that need the task ID typed, like their CLI prompts. Pause and resume are one click. */
-type ConfirmedAction = 'approve' | 'reject' | 'cancel';
+type ConfirmedAction = 'approve' | 'reject' | 'accept' | 'request-changes' | 'cancel';
 
 interface PendingAction {
   task: TaskSummary;
   action: ConfirmedAction;
 }
 
-const DIALOG: Record<ConfirmedAction, { title: string; confirm: string; tone: 'primary' | 'danger'; note: string }> = {
+const DIALOG: Record<ConfirmedAction, { title: string; confirm: string; tone: 'primary' | 'danger'; note: string; comment?: string }> = {
   approve: {
     title: 'Approve',
     confirm: 'Approve plan',
@@ -29,6 +30,19 @@ const DIALOG: Record<ConfirmedAction, { title: string; confirm: string; tone: 'p
     tone: 'danger',
     note: 'The plan goes back to Claude for changes. Until a plan is approved, edits in this repository are recorded as deviations.',
   },
+  accept: {
+    title: 'Accept',
+    confirm: 'Accept implementation',
+    tone: 'primary',
+    note: 'You accept exactly this report. The task moves to its final checks; Claude makes no further changes for it. Committing stays with you.',
+  },
+  'request-changes': {
+    title: 'Request changes to',
+    confirm: 'Request changes',
+    tone: 'danger',
+    note: 'The task goes back to implementation under the same approved plan; Claude sees your comment and submits a new report.',
+    comment: 'What should change (Claude sees this)',
+  },
   cancel: {
     title: 'Cancel',
     confirm: 'Cancel task',
@@ -36,6 +50,12 @@ const DIALOG: Record<ConfirmedAction, { title: string; confirm: string; tone: 'p
     note: 'Cancelling cannot be undone. The task and its history stay on record; its plan no longer covers any edits.',
   },
 };
+
+function subjectOf(pending: PendingAction): string {
+  if (pending.action === 'cancel') return pending.task.taskId;
+  if (pending.action === 'accept' || pending.action === 'request-changes') return `${pending.task.taskId} report v${pending.task.lastReport?.version ?? '?'}`;
+  return `${pending.task.taskId} plan v${pending.task.plan.version}`;
+}
 
 /** How many Claude Code sessions worked on the task, and whether the last one has ended. */
 function sessionsText(task: TaskSummary): string {
@@ -54,15 +74,29 @@ export const Tasks = defineComponent({
     /** Loaded on demand; null while loading. */
     const histories = reactive<Record<string, WorkflowTransition[] | null>>({});
 
-    const confirm = async (typed: string): Promise<void> => {
+    const run = (task: TaskSummary, action: ConfirmedAction, typed: string, comment: string): Promise<boolean> => {
+      const report = task.lastReport;
+      switch (action) {
+        case 'cancel':
+          return perform(() => api.control(task.taskId, 'task.cancelled', typed), `Cancelled ${task.taskId}.`);
+        case 'accept':
+        case 'request-changes':
+          if (report === null) return Promise.resolve(false);
+          return perform(
+            () => api.decideReport(task, report.version, action === 'accept' ? 'APPROVED' : 'REJECTED', typed, comment),
+            `${action === 'accept' ? 'Accepted' : 'Requested changes to'} ${task.taskId} report v${report.version}.`,
+          );
+        default:
+          return perform(() => api.decide(task, action === 'approve' ? 'APPROVED' : 'REJECTED', typed), `${action === 'approve' ? 'Approved' : 'Rejected'} ${task.taskId} plan v${task.plan.version}.`);
+      }
+    };
+
+    const confirm = async (typed: string, comment: string): Promise<void> => {
       const current = pending.value;
       if (current === null) return;
       const { task, action } = current;
       busy.value = true;
-      const done =
-        action === 'cancel'
-          ? await perform(() => api.control(task.taskId, 'task.cancelled', typed), `Cancelled ${task.taskId}.`)
-          : await perform(() => api.decide(task, action === 'approve' ? 'APPROVED' : 'REJECTED', typed), `${action === 'approve' ? 'Approved' : 'Rejected'} ${task.taskId} plan v${task.plan.version}.`);
+      const done = await run(task, action, typed, comment);
       busy.value = false;
       if (done) {
         pending.value = null;
@@ -96,6 +130,20 @@ export const Tasks = defineComponent({
       const allowed = availableEvents(task.state, 'user');
       const ask = (action: ConfirmedAction) => () => (pending.value = { task, action });
       const buttons = [];
+      if (allowed.includes('implementation.accepted') && task.lastReport !== null) {
+        buttons.push(
+          <button key="accept" class="button button--primary" onClick={ask('accept')}>
+            Accept implementation
+          </button>,
+        );
+      }
+      if (allowed.includes('changes.requested') && task.lastReport !== null) {
+        buttons.push(
+          <button key="request-changes" class="button" onClick={ask('request-changes')}>
+            Request changes
+          </button>,
+        );
+      }
       if (allowed.includes('plan.approved')) {
         buttons.push(
           <button key="approve" class="button button--primary" onClick={ask('approve')}>
@@ -196,6 +244,14 @@ export const Tasks = defineComponent({
           ]}
           <dt>Sessions</dt>
           <dd>{sessionsText(task)}</dd>
+          {task.lastReport !== null && [
+            <dt key="report-label">Report</dt>,
+            <dd key="report-value">
+              version {task.lastReport.version} · {formatTime(task.lastReport.createdAt)} ·{' '}
+              {task.reportDecision === null ? 'waiting for your decision' : task.reportDecision.decision === 'APPROVED' ? `accepted ${formatTime(task.reportDecision.approvedAt)}` : `changes requested ${formatTime(task.reportDecision.approvedAt)}`}
+              {task.reportDecision !== null && task.reportDecision.comment !== '' && <span class="muted"> · {task.reportDecision.comment}</span>}
+            </dd>,
+          ]}
         </dl>
         {task.lastCheckpoint !== null && (
           <section class="checkpoint">
@@ -212,7 +268,25 @@ export const Tasks = defineComponent({
             )}
           </section>
         )}
-        {isOpen(task) && task.plan.document !== undefined && <PlanDocumentView plan={task.plan.document} />}
+        {task.lastReport !== null &&
+          (task.state === 'WAIT_IMPLEMENTATION_ACCEPTANCE' ? (
+            <ImplementationReportView report={task.lastReport} />
+          ) : (
+            <details class="plan-section">
+              <summary>Implementation report v{task.lastReport.version}</summary>
+              <ImplementationReportView report={task.lastReport} />
+            </details>
+          ))}
+        {isOpen(task) &&
+          task.plan.document !== undefined &&
+          (task.lastReport === null ? (
+            <PlanDocumentView plan={task.plan.document} />
+          ) : (
+            <details class="plan-section">
+              <summary>Approved plan v{task.plan.version}</summary>
+              <PlanDocumentView plan={task.plan.document} />
+            </details>
+          ))}
         {actions(task)}
         {history(task.taskId)}
       </article>
@@ -242,11 +316,12 @@ export const Tasks = defineComponent({
 
           {pending.value !== null && (
             <ConfirmDialog
-              title={`${DIALOG[pending.value.action].title} ${pending.value.task.taskId}${pending.value.action === 'cancel' ? '' : ` plan v${pending.value.task.plan.version}`}`}
+              title={`${DIALOG[pending.value.action].title} ${subjectOf(pending.value)}`}
               expected={pending.value.task.taskId}
               confirmLabel={DIALOG[pending.value.action].confirm}
               tone={DIALOG[pending.value.action].tone}
               busy={busy.value}
+              commentLabel={DIALOG[pending.value.action].comment}
               onConfirm={confirm}
               onCancel={() => (pending.value = null)}
             >

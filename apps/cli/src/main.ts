@@ -7,7 +7,7 @@ import { showEvents } from './events-command.js';
 import { install, uninstall } from './install-commands.js';
 import { excludeRepository, includeRepository, listExcludedRepositories } from './repo-commands.js';
 import { showStatus } from './status-command.js';
-import { controlTask, createTask, decidePlan, listTasks, revisePlan, showTask } from './task-commands.js';
+import { controlTask, createTask, decide, listTasks, revisePlan, showTask } from './task-commands.js';
 import { openDashboard } from './ui-command.js';
 
 /** Repeatable option without a default, so a required one is really required. */
@@ -19,9 +19,11 @@ function positiveInteger(value: string): number {
   return parsed;
 }
 
-function stage(value: string): string {
-  if (value.toLowerCase() !== 'plan') throw new InvalidArgumentError('only "plan" is supported for now');
-  return value;
+function stage(value: string): 'PLAN' | 'IMPLEMENTATION' {
+  const normalized = value.toLowerCase();
+  if (normalized === 'plan') return 'PLAN';
+  if (normalized === 'implementation') return 'IMPLEMENTATION';
+  throw new InvalidArgumentError('must be "plan" or "implementation"');
 }
 
 const program = new Command()
@@ -95,12 +97,16 @@ program
 for (const decision of ['approve', 'reject'] as const) {
   program
     .command(`${decision} <taskId>`)
-    .description(`${decision === 'approve' ? 'Approve' : 'Reject'} a plan version (interactive: you type the task ID)`)
-    .requiredOption('--stage <stage>', 'what is decided: plan', stage)
-    .requiredOption('--version <n>', 'the plan version you reviewed', positiveInteger)
-    .option('--comment <text>', 'note stored with the decision', '')
-    .action((taskId: string, options: { stage: string; version: number; comment: string }) =>
-      decidePlan({ taskId, stage: options.stage, version: options.version, decision: decision === 'approve' ? 'APPROVED' : 'REJECTED', comment: options.comment }),
+    .description(
+      decision === 'approve'
+        ? 'Approve a plan version, or accept an implementation report (interactive: you type the task ID)'
+        : 'Reject a plan version, or request changes to an implementation report (interactive: you type the task ID)',
+    )
+    .requiredOption('--stage <stage>', 'what is decided: plan or implementation', stage)
+    .requiredOption('--version <n>', 'the plan or report version you reviewed', positiveInteger)
+    .option('--comment <text>', decision === 'approve' ? 'note stored with the decision' : 'what should change (stored with the decision and shown to Claude)', '')
+    .action((taskId: string, options: { stage: 'PLAN' | 'IMPLEMENTATION'; version: number; comment: string }) =>
+      decide({ taskId, stage: options.stage, version: options.version, decision: decision === 'approve' ? 'APPROVED' : 'REJECTED', comment: options.comment }),
     );
 }
 

@@ -12,6 +12,7 @@ import {
   taskIdSchema,
   taskTransitionRequestSchema,
   checkpointRequestSchema,
+  reportSubmitRequestSchema,
   type CoreState,
   type CoreStatus,
   type GateCheckRequest,
@@ -338,8 +339,16 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     const task = store.snapshot().tasks.find((candidate) => candidate.taskId === taskId);
     if (task === undefined) throw new HttpError(404, `Unknown task ${taskId}`);
     const [summary] = await summarize(store, [task]);
-    const detail: TaskDetail = { ...summary!, ...(await store.taskHistory(taskId)) };
+    const detail: TaskDetail = { ...summary!, ...(await store.taskHistory(taskId)), reports: await store.reportsOf(taskId) };
     return detail;
+  });
+
+  /** Claude's implementation report (through MCP): moves the task to the user's acceptance. */
+  app.post('/api/v1/tasks/:taskId/reports', { config: TOKEN_ONLY }, async (request, reply) => {
+    const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId);
+    const body = parse(reportSubmitRequestSchema, request.body);
+    const sessionId = await store.resolveOrigin(body.origin);
+    return reply.code(201).send(await store.submitReport(taskId, body.report, body.submittedBy, sessionId, new Date()));
   });
 
   app.post('/api/v1/tasks', { config: TOKEN_ONLY }, async (request, reply) => {
@@ -435,8 +444,17 @@ function sameRepo(a: string, b: string): boolean {
 const NO_ACTIVITY = { activity: { sessionCount: 0, lastSessionId: null, lastActivityAt: null, lastSessionEndedAt: null }, lastCheckpoint: null };
 
 async function summarize(store: StateStore, tasks: readonly Task[]): Promise<TaskSummary[]> {
-  const activity = await store.taskActivity();
-  return tasks.map((task) => ({ ...task, planDecision: store.planDecision(task.taskId), ...(activity.get(task.taskId) ?? NO_ACTIVITY) }));
+  const [activity, reports] = await Promise.all([store.taskActivity(), store.latestReports()]);
+  return tasks.map((task) => {
+    const report = reports.get(task.taskId) ?? null;
+    return {
+      ...task,
+      planDecision: store.planDecision(task.taskId),
+      ...(activity.get(task.taskId) ?? NO_ACTIVITY),
+      lastReport: report,
+      reportDecision: report === null ? null : store.reportDecision(report),
+    };
+  });
 }
 
 /** At most this many open tasks go into a session's start context. */

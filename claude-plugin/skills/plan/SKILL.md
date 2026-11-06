@@ -57,7 +57,7 @@ Fill every section of the plan document (spec §7.2):
 ## 4. Hand over to the user
 
 Tell the user the task ID and plan version, summarise the plan in a few lines (goal, scope, main risks, open
-questions), and say how to approve it: in the JERRY dashboard (Plans tab, `jerry ui`) or with
+questions), and say how to approve it: in the JERRY dashboard (Tasks tab, `jerry ui`) or with
 `jerry approve <taskId> --stage plan --version <n>`.
 
 Then wait for the user. Never approve a plan yourself, and never run `jerry approve`. Edits made before

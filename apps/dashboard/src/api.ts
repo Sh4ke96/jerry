@@ -60,6 +60,15 @@ export const api = {
       decision,
       confirmTaskId,
     }),
+  /** Accept the latest implementation report, or send it back with what should change. */
+  decideReport: (task: TaskSummary, reportVersion: number, decision: 'APPROVED' | 'REJECTED', confirmTaskId: string, comment: string) =>
+    request<ApprovalRecord>('POST', `/api/v1/tasks/${encodeURIComponent(task.taskId)}/approvals`, {
+      stage: 'IMPLEMENTATION',
+      version: reportVersion,
+      decision,
+      comment,
+      confirmTaskId,
+    }),
   transitions: (taskId: string) => request<WorkflowTransition[]>('GET', `/api/v1/tasks/${encodeURIComponent(taskId)}/transitions`),
   /** Pause, resume or cancel; cancelling needs the typed task ID. */
   control: (taskId: string, event: TaskControlEvent, confirmTaskId?: string) =>

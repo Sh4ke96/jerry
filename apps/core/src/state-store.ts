@@ -8,6 +8,10 @@ import {
   type CallOrigin,
   type Checkpoint,
   type CoreState,
+  type ImplementationReport,
+  type ImplementationReportRecord,
+  type ReportEvidence,
+  implementationReportRecordSchema,
   type TaskActivity,
   type TaskSession,
   type EventEnvelope,
@@ -24,9 +28,9 @@ import {
   workflowTransitionSchema,
 } from '@jerry/contracts';
 import { backupDatabase, openJerryDatabase, type JerryDatabase, type JerrySchema } from '@jerry/database';
-import { comparablePath, computePlanHash, currentPlanDecision } from '@jerry/policy-engine';
+import { absolutePath, comparablePath, computePlanHash, computeReportHash, currentPlanDecision, decisionFor, relativeInside } from '@jerry/policy-engine';
 import { applyEvent, isTerminal } from '@jerry/workflow';
-import { sql, type Kysely, type Transaction } from 'kysely';
+import { sql, type Kysely, type Selectable, type Transaction } from 'kysely';
 import { z } from 'zod';
 
 /** Sessions kept in the in-memory snapshot; older ones stay in the database. */
@@ -37,7 +41,12 @@ const NEXT_TASK_NUMBER = 'next_task_number';
 export type Channel = 'cli' | 'dashboard';
 
 /** What a session last did for a task. */
-export type SessionActivity = 'plan.submitted' | 'plan.revised' | 'edit' | 'checkpoint';
+export type SessionActivity = 'plan.submitted' | 'plan.revised' | 'edit' | 'checkpoint' | 'report';
+
+/** Tools whose target path JERRY sees, so their edits count as observed. */
+const FILE_TOOLS: ReadonlySet<string> = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
+/** Deviations listed in a report's evidence; the count covers all of them. */
+const MAX_EVIDENCE_DEVIATIONS = 50;
 
 /** User decisions about a whole task (approvals and plans have their own methods). */
 export type TaskControlEvent = Extract<WorkflowEvent, 'task.paused' | 'task.resumed' | 'task.cancelled'>;
@@ -147,26 +156,34 @@ export class StateStore {
     return this.requireTask(taskId);
   }
 
+  /**
+   * A user decision bound to exactly what the user saw: the current plan (stage PLAN) or the latest
+   * implementation report (stage IMPLEMENTATION), by version and hash.
+   */
   async recordApproval(taskId: string, request: ApprovalRequest, now: Date, channel: Channel = 'cli'): Promise<ApprovalRecord> {
     const task = this.requireTask(taskId);
-    if (request.version !== task.plan.version) {
-      throw new StateError(409, `${taskId} plan is at version ${task.plan.version}; refusing a decision for version ${request.version}`);
-    }
     const at = now.toISOString();
-    const record: ApprovalRecord = {
-      approvalId: `apr_${randomUUID()}`,
-      taskId,
-      stage: request.stage,
-      version: task.plan.version,
-      contentHash: task.plan.contentHash,
-      decision: request.decision,
-      approvedBy: 'local-user',
-      approvedAt: at,
-      comment: request.comment,
-    };
-    await this.database.db.transaction().execute(async (trx) => {
-      const event = record.decision === 'APPROVED' ? 'plan.approved' : 'plan.rejected';
-      await this.transition(trx, taskId, event, 'user', record.comment === '' ? `plan version ${record.version}` : record.comment, at);
+    const record = await this.database.db.transaction().execute(async (trx) => {
+      const label = request.stage === 'PLAN' ? 'plan' : 'implementation report';
+      const subject = request.stage === 'PLAN' ? { version: task.plan.version, contentHash: task.plan.contentHash } : await latestReportSubject(trx, taskId);
+      if (subject === null) throw new StateError(409, `${taskId} has no implementation report to decide on`);
+      if (request.version !== subject.version) {
+        throw new StateError(409, `${taskId} ${label} is at version ${subject.version}; refusing a decision for version ${request.version}`);
+      }
+      const record: ApprovalRecord = {
+        approvalId: `apr_${randomUUID()}`,
+        taskId,
+        stage: request.stage,
+        version: subject.version,
+        contentHash: subject.contentHash,
+        decision: request.decision,
+        approvedBy: 'local-user',
+        approvedAt: at,
+        comment: request.comment,
+      };
+      const event: WorkflowEvent =
+        request.stage === 'PLAN' ? (record.decision === 'APPROVED' ? 'plan.approved' : 'plan.rejected') : record.decision === 'APPROVED' ? 'implementation.accepted' : 'changes.requested';
+      await this.transition(trx, taskId, event, 'user', record.comment === '' ? `${label} version ${record.version}` : record.comment, at);
       await trx
         .insertInto('approvals')
         .values({
@@ -183,9 +200,77 @@ export class StateStore {
         })
         .execute();
       await audit(trx, at, `approval.${record.decision.toLowerCase()}`, taskId, { stage: record.stage, version: record.version, contentHash: record.contentHash, channel });
+      return record;
     });
     await this.reload();
     return record;
+  }
+
+  /**
+   * Claude's implementation report (ADR 0014): the next report version, with what JERRY recorded
+   * itself since the plan was approved. Only a task in implementation can report.
+   */
+  async submitReport(taskId: string, document: ImplementationReport, submittedBy: 'user' | 'claude', sessionId: string | null, now: Date): Promise<ImplementationReportRecord> {
+    const task = this.requireTask(taskId);
+    const at = now.toISOString();
+    const record = await this.database.db.transaction().execute(async (trx) => {
+      const previous = await latestReportSubject(trx, taskId);
+      const version = (previous?.version ?? 0) + 1;
+      await this.transition(trx, taskId, 'report.submitted', submittedBy, `implementation report version ${version}`, at);
+      const evidence = await collectEvidence(trx, task, document, at);
+      const record: ImplementationReportRecord = {
+        taskId,
+        version,
+        planVersion: task.plan.version,
+        contentHash: computeReportHash({ taskId, version, planVersion: task.plan.version, document }),
+        document,
+        evidence,
+        submittedBy,
+        sessionId,
+        createdAt: at,
+      };
+      await trx
+        .insertInto('implementation_reports')
+        .values({
+          task_id: taskId,
+          version,
+          plan_version: record.planVersion,
+          content_hash: record.contentHash,
+          document_json: JSON.stringify(document),
+          evidence_json: JSON.stringify(evidence),
+          submitted_by: submittedBy,
+          session_id: sessionId,
+          created_at: at,
+        })
+        .execute();
+      if (sessionId !== null) await linkSession(trx, sessionId, taskId, 'report', at);
+      await audit(trx, at, 'report.submit', taskId, { version, contentHash: record.contentHash, deviations: evidence.deviationCount, unreportedEdits: evidence.unreportedEdits.length }, actorOf(submittedBy));
+      return record;
+    });
+    await this.reload();
+    return record;
+  }
+
+  /** The latest report of every task that has one. */
+  async latestReports(): Promise<Map<string, ImplementationReportRecord>> {
+    const rows = await this.database.db
+      .selectFrom('implementation_reports as r')
+      .selectAll()
+      .where('r.version', '=', (eb) => eb.selectFrom('implementation_reports as latest').select((inner) => inner.fn.max('latest.version').as('version')).whereRef('latest.task_id', '=', 'r.task_id'))
+      .execute();
+    return new Map(rows.map((row) => [row.task_id, reportFromRow(row)]));
+  }
+
+  /** Every report version of a task, newest first. */
+  async reportsOf(taskId: string): Promise<ImplementationReportRecord[]> {
+    this.requireTask(taskId);
+    const rows = await this.database.db.selectFrom('implementation_reports').selectAll().where('task_id', '=', taskId).orderBy('version', 'desc').execute();
+    return rows.map(reportFromRow);
+  }
+
+  /** The user's decision on exactly this report version and hash. */
+  reportDecision(report: ImplementationReportRecord): ApprovalRecord | null {
+    return decisionFor(this.state.approvals, { taskId: report.taskId, stage: 'IMPLEMENTATION', version: report.version, contentHash: report.contentHash });
   }
 
   /** Pause, resume or cancel a task; only the user does this (CLI or dashboard). */
@@ -626,7 +711,83 @@ async function linkSession(trx: Transaction<JerrySchema> | Kysely<JerrySchema>, 
     .execute();
 }
 
-function checkpointFromRow(row: { task_id: string; session_id: string | null; summary: string; next_steps_json: string; created_at: string }): Checkpoint {
+async function latestReportSubject(trx: Transaction<JerrySchema>, taskId: string): Promise<{ version: number; contentHash: string } | null> {
+  const row = await trx.selectFrom('implementation_reports').select(['version', 'content_hash']).where('task_id', '=', taskId).orderBy('version', 'desc').limit(1).executeTakeFirst();
+  return row === undefined ? null : { version: row.version, contentHash: row.content_hash };
+}
+
+function reportFromRow(row: Selectable<JerrySchema['implementation_reports']>): ImplementationReportRecord {
+  return implementationReportRecordSchema.parse({
+    taskId: row.task_id,
+    version: row.version,
+    planVersion: row.plan_version,
+    contentHash: row.content_hash,
+    document: JSON.parse(row.document_json),
+    evidence: JSON.parse(row.evidence_json),
+    submittedBy: row.submitted_by,
+    sessionId: row.session_id,
+    createdAt: row.created_at,
+  });
+}
+
+/**
+ * What JERRY recorded in the task's repository since its plan was last approved: deviations,
+ * blocks and the files edited with the file tools, compared with the files the report lists.
+ */
+async function collectEvidence(trx: Transaction<JerrySchema>, task: Task, document: ImplementationReport, until: string): Promise<ReportEvidence> {
+  const platform = process.platform;
+  const approved = await trx.selectFrom('workflow_transitions').select('at').where('task_id', '=', task.taskId).where('event', '=', 'plan.approved').orderBy('id', 'desc').limit(1).executeTakeFirst();
+  const since = approved?.at ?? task.createdAt;
+  let query = trx
+    .selectFrom('hook_events')
+    .select(['occurred_at', 'tool_name', 'verdict', 'rule_id', 'payload_json', 'cwd', 'repo_root'])
+    .where('event_type', '=', 'PreToolUse')
+    .where('occurred_at', '>=', since)
+    .where('occurred_at', '<=', until)
+    .orderBy('occurred_at');
+  // Hard-rule blocks are decided before the repository is resolved, so they carry no repo_root;
+  // they count when their working directory lies inside the repository.
+  query = query.where((eb) =>
+    eb.or([
+      platform === 'win32' ? eb(sql`lower(repo_root)`, '=', task.repoRoot.toLowerCase()) : eb('repo_root', '=', task.repoRoot),
+      eb.and([eb('repo_root', 'is', null), eb('verdict', '=', 'DENY')]),
+    ]),
+  );
+  const events = (await query.execute()).filter((event) => event.repo_root !== null || (event.cwd !== null && relativeInside(event.cwd, task.repoRoot, platform) !== null));
+
+  const key = (relative: string): string => (platform === 'win32' ? relative.toLowerCase() : relative);
+  const deviations: ReportEvidence['deviations'] = [];
+  let deviationCount = 0;
+  let blockedCount = 0;
+  const observed = new Map<string, string>();
+  for (const event of events) {
+    const input = ((JSON.parse(event.payload_json) as Record<string, unknown>)['input'] ?? {}) as Record<string, unknown>;
+    const target = typeof input['path'] === 'string' ? input['path'] : typeof input['command'] === 'string' ? input['command'] : null;
+    if (event.verdict === 'WARN') {
+      deviationCount += 1;
+      if (deviations.length < MAX_EVIDENCE_DEVIATIONS) deviations.push({ at: event.occurred_at, tool: event.tool_name, target, rule: event.rule_id });
+    }
+    if (event.verdict === 'DENY') blockedCount += 1;
+    if (event.verdict !== 'DENY' && event.tool_name !== null && FILE_TOOLS.has(event.tool_name) && typeof input['path'] === 'string') {
+      const relative = relativeInside(absolutePath(input['path'], event.cwd ?? task.repoRoot, platform), task.repoRoot, platform);
+      if (relative !== null && relative !== '') observed.set(key(relative), relative);
+    }
+  }
+  const sameRepo = (repository: string): boolean => repository.trim() === '' || comparablePath(repository, task.repoRoot, platform) === comparablePath(task.repoRoot, task.repoRoot, platform);
+  const reported = new Set(document.changes.filter((change) => sameRepo(change.repository)).map((change) => key(change.path.trim().replaceAll('\\', '/').replace(/^\.\//, ''))));
+  const observedEdits = [...observed.values()].sort();
+  return {
+    since,
+    deviations,
+    deviationCount,
+    blockedCount,
+    observedEdits,
+    unreportedEdits: observedEdits.filter((relative) => !reported.has(key(relative))),
+    failedOrNotRunChecks: document.checks.filter((check) => check.result !== 'PASS').length,
+  };
+}
+
+function checkpointFromRow(row:{ task_id: string; session_id: string | null; summary: string; next_steps_json: string; created_at: string }): Checkpoint {
   return { taskId: row.task_id, sessionId: row.session_id, summary: row.summary, nextSteps: JSON.parse(row.next_steps_json) as string[], at: row.created_at };
 }
 

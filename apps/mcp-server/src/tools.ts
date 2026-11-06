@@ -3,6 +3,8 @@ import {
   checkpointSchema,
   coreStatusSchema,
   gatePreviewResponseSchema,
+  implementationReportRecordSchema,
+  implementationReportSchema,
   planDocumentSchema,
   repositoryStateSchema,
   storedEventSchema,
@@ -21,9 +23,9 @@ import type { CallContext, ToolDefinition, ToolResult } from './protocol.js';
 
 /**
  * JERRY tools for Claude (spec §4.2 E). They read state, preview gate decisions, submit plans and
- * save progress checkpoints. There is deliberately no tool that approves, rejects, excludes, pauses
- * or completes anything: those are user actions in the CLI or dashboard. Submitting a plan only
- * ever creates a version waiting for the user; a checkpoint is a note and changes no state.
+ * implementation reports, and save progress checkpoints. There is deliberately no tool that
+ * approves, accepts, rejects, excludes, pauses or completes anything: those are user actions in the
+ * CLI or dashboard. A submitted plan or report only ever waits for the user; a checkpoint is a note.
  */
 
 const DEFAULT_DEVIATION_WINDOW_MINUTES = 480;
@@ -32,6 +34,12 @@ const DEFAULT_DEVIATION_WINDOW_MINUTES = 480;
 const PLAN_JSON_SCHEMA = (() => {
   const { $schema: _ignored, ...schema } = z.toJSONSchema(planDocumentSchema, { io: 'input' }) as Record<string, unknown>;
   return { ...schema, description: 'The plan (spec §7.2). scope.include lists the repo-relative globs JERRY checks edits against.' };
+})();
+
+/** The report's JSON Schema, generated from the Zod schema Core validates with. */
+const REPORT_JSON_SCHEMA = (() => {
+  const { $schema: _ignored, ...schema } = z.toJSONSchema(implementationReportSchema, { io: 'input' }) as Record<string, unknown>;
+  return { ...schema, description: 'The implementation report (spec §7.2 Phase 5). Real results only: a check that did not run is NOT_RUN with the reason.' };
 })();
 
 function projectDir(): string {
@@ -252,6 +260,44 @@ export const TOOLS: readonly ToolDefinition[] = [
       }),
   },
   {
+    name: 'jerry_submit_report',
+    title: 'Submit the implementation report',
+    description:
+      "Submit the implementation report of a task in implementation (use the /jerry:report skill to write it). The task then waits for the user's acceptance; JERRY adds what it recorded itself (deviations, edited files). It never accepts anything.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        taskId: { type: 'string', description: 'The task the report is for (JRY-…).' },
+        report: REPORT_JSON_SCHEMA,
+      },
+      required: ['taskId', 'report'],
+      additionalProperties: false,
+    },
+    readOnly: false,
+    handler: (args, call) =>
+      withCore(async () => {
+        const taskId = typeof args['taskId'] === 'string' ? args['taskId'].trim().toUpperCase() : '';
+        if (taskId === '') return { content: [{ type: 'text', text: 'The report needs the taskId of the task in implementation.' }], isError: true };
+        const report = implementationReportSchema.safeParse(args['report']);
+        if (!report.success) return { content: [{ type: 'text', text: `The report is incomplete or malformed; fix it and submit again:\n${z.prettifyError(report.error)}` }], isError: true };
+        const saved = implementationReportRecordSchema.parse(await core('POST', `/api/v1/tasks/${encodeURIComponent(taskId)}/reports`, { report: report.data, submittedBy: 'claude', origin: origin(call) }));
+        const { evidence } = saved;
+        const attention = [
+          evidence.deviationCount > 0 ? `${evidence.deviationCount} recorded deviation(s)` : null,
+          evidence.unreportedEdits.length > 0 ? `edited but not in the report: ${evidence.unreportedEdits.slice(0, 10).join(', ')}` : null,
+          evidence.failedOrNotRunChecks > 0 ? `${evidence.failedOrNotRunChecks} check(s) failed or not run` : null,
+        ].filter((item) => item !== null);
+        return ok({
+          taskId: saved.taskId,
+          reportVersion: saved.version,
+          contentHash: saved.contentHash,
+          state: 'WAIT_IMPLEMENTATION_ACCEPTANCE',
+          jerryRecorded: { deviations: evidence.deviationCount, blocked: evidence.blockedCount, observedEdits: evidence.observedEdits.length, unreportedEdits: evidence.unreportedEdits },
+          nextStep: `Tell the user that ${saved.taskId} report v${saved.version} waits for their acceptance in the JERRY dashboard (Tasks) or with "jerry approve ${saved.taskId} --stage implementation --version ${saved.version}" (or "jerry reject … --comment" to request changes).${attention.length > 0 ? ` Point out what JERRY recorded: ${attention.join('; ')}.` : ''} Do not accept it yourself, and do not change code until the user decides; Git operations stay with the user.`,
+        });
+      }),
+  },
+  {
     name: 'jerry_save_checkpoint',
     title: 'Save a progress checkpoint',
     description:
@@ -295,17 +341,31 @@ export function nextAction(state: RepositoryState): { action: string; details: s
       .join(', ');
 
   const approved = open.filter(coversEdits);
+  // The user sent the latest report back: say what they asked for.
+  const sentBack = approved.filter((task) => task.reportDecision?.decision === 'REJECTED');
+  if (sentBack.length > 0) {
+    const requests = sentBack.map((task) => `${task.taskId} report v${task.lastReport?.version}: ${task.reportDecision?.comment === '' ? 'no comment, ask the user what to change' : `"${task.reportDecision?.comment}"`}`).join('; ');
+    return { action: 'apply-requested-changes', details: `The user requested changes to the implementation (${requests}). Make them within the approved scope, run the checks again, then submit a new report with /jerry:report.` };
+  }
   if (approved.length > 0) {
     const plans = approved.map((task) => `${task.taskId} v${task.plan.version} (${task.plan.scope.join(', ')})`).join('; ');
-    return { action: 'work-within-approved-scope', details: `Work within the approved scope of ${plans}. Edits outside it are recorded as deviations. Leave all Git operations to the user.` };
+    return { action: 'work-within-approved-scope', details: `Work within the approved scope of ${plans}. Edits outside it are recorded as deviations. When the work is done, report it with /jerry:report. Leave all Git operations to the user.` };
   }
   const waiting = ids(['WAIT_PLAN_APPROVAL']);
   if (waiting !== '') {
     return { action: 'wait-for-approval', details: `Plan ${waiting} is waiting for the user's approval (jerry approve or the dashboard). Do not treat it as approved; edits now are recorded as deviations.` };
   }
-  const accepting = ids(['WAIT_IMPLEMENTATION_ACCEPTANCE', 'FINAL_REPORT']);
-  if (accepting !== '') {
-    return { action: 'wait-for-acceptance', details: `The implementation of ${accepting} is with the user for acceptance. Change code only if they ask for changes; edits now are recorded as deviations.` };
+  const accepting = open.filter((task) => task.state === 'WAIT_IMPLEMENTATION_ACCEPTANCE');
+  if (accepting.length > 0) {
+    const reports = accepting.map((task) => `${task.taskId} report v${task.lastReport?.version ?? '?'}`).join(', ');
+    return {
+      action: 'wait-for-acceptance',
+      details: `The implementation report ${reports} waits for the user's acceptance (JERRY dashboard, or jerry approve <taskId> --stage implementation --version <n>). Do not accept it yourself; change code only if they ask for changes; edits now are recorded as deviations.`,
+    };
+  }
+  const finishing = ids(['FINAL_REPORT']);
+  if (finishing !== '') {
+    return { action: 'final-checks', details: `The user accepted the implementation of ${finishing}; JERRY completes the task after its final checks. Do not change code for it; edits now are recorded as deviations.` };
   }
   const paused = ids(['PAUSED']);
   if (paused !== '') {

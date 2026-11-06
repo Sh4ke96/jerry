@@ -89,6 +89,20 @@ export interface SessionTasksTable {
   updated_at: string;
 }
 
+/** Implementation reports; every version is kept, acceptance binds to version and hash. */
+export interface ImplementationReportsTable {
+  task_id: string;
+  version: number;
+  plan_version: number;
+  content_hash: string;
+  document_json: string;
+  /** What JERRY recorded itself between plan approval and report (deviations, observed edits). */
+  evidence_json: string;
+  submitted_by: string;
+  session_id: string | null;
+  created_at: string;
+}
+
 /** Claude's progress notes on a task, for the next session. */
 export interface TaskCheckpointsTable {
   id: Generated<number>;
@@ -152,6 +166,7 @@ export interface JerrySchema {
   sessions: SessionsTable;
   session_tasks: SessionTasksTable;
   task_checkpoints: TaskCheckpointsTable;
+  implementation_reports: ImplementationReportsTable;
   settings: SettingsTable;
   audit_log: AuditLogTable;
 }

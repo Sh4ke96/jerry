@@ -31,7 +31,7 @@ describe('jerry CLI (Commander)', () => {
   });
 
   it('validates arguments before doing anything', () => {
-    expect(jerry(['approve', 'JRY-0001', '--stage', 'review', '--version', '1']).stderr).toContain('only "plan" is supported');
+    expect(jerry(['approve', 'JRY-0001', '--stage', 'review', '--version', '1']).stderr).toContain('must be "plan" or "implementation"');
     expect(jerry(['approve', 'JRY-0001', '--stage', 'plan', '--version', 'two']).stderr).toContain('must be a positive integer');
     expect(jerry(['task', 'create', '--repo', '.', '--title', 'x']).stderr).toContain("required option '--scope <glob>' not specified");
     expect(jerry(['events', '--limit', '0']).stderr).toContain('must be a positive integer');

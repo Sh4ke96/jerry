@@ -23,7 +23,7 @@ describe('ConfirmDialog', () => {
     await wrapper.get('input').setValue('JRY-0007');
     expect(confirm.attributes('disabled')).toBeUndefined();
     await wrapper.get('form').trigger('submit');
-    expect(wrapper.emitted('confirm')).toEqual([['JRY-0007']]);
+    expect(wrapper.emitted('confirm')).toEqual([['JRY-0007', '']]);
   });
 
   it('cancels with the button or Escape', async () => {

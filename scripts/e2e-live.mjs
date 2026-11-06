@@ -227,6 +227,23 @@ const j2 = runClaude(
 );
 expect('J2: the new session knew the task and the next step', j2.text.includes(task.taskId) && /progress2/.test(j2.text), j2.text.slice(0, 200));
 
+// K — /jerry:report and /jerry:commit-message: Claude reports, JERRY adds its own record, the user decides.
+const k1 = runClaude(
+  'K1: /jerry:report',
+  `/jerry:report The work on ${task.taskId} is finished. This fixture repository has no test, build or lint tooling.`,
+  ['Read', 'Glob', 'Grep', 'Bash(git status:*)', 'Bash(git diff:*)', 'Bash(git log:*)', 'mcp__plugin_jerry_jerry__jerry_get_state', 'mcp__plugin_jerry_jerry__jerry_list_deviations', 'mcp__plugin_jerry_jerry__jerry_submit_report'],
+);
+const reported = await coreApi(info, 'GET', `/api/v1/tasks/${task.taskId}`);
+expect('K1: the report was submitted and waits for the user', reported.state === 'WAIT_IMPLEMENTATION_ACCEPTANCE' && reported.lastReport?.version === 1, `${reported.state} ${reported.lastReport?.version ?? 'no report'}`);
+expect('K1: JERRY tied the report to the session and added its own record', reported.lastReport?.sessionId === k1.sessionId && Array.isArray(reported.lastReport?.evidence?.observedEdits) && reported.lastReport.evidence.observedEdits.length > 0, JSON.stringify(reported.lastReport?.evidence ?? {}).slice(0, 200));
+expect('K1: no check is claimed as passed without tooling', (reported.lastReport?.document?.checks ?? []).every((check) => check.result !== 'PASS'), JSON.stringify(reported.lastReport?.document?.checks ?? []).slice(0, 200));
+expect('K1: Claude told the user how to accept it', k1.text.includes(task.taskId) && /--stage implementation/.test(k1.text), k1.text.slice(0, 200));
+const k2 = runClaude('K2: /jerry:commit-message', '/jerry:commit-message', ['Read', 'Bash(git status:*)', 'Bash(git diff:*)', 'Bash(git log:*)', 'mcp__plugin_jerry_jerry__jerry_get_state']);
+expect('K2: Claude proposed a commit message and left Git alone', /```/.test(k2.text) && gitUntouched(), k2.text.slice(0, 200));
+const accepted = await coreApi(info, 'POST', `/api/v1/tasks/${task.taskId}/approvals`, { stage: 'IMPLEMENTATION', version: 1, decision: 'APPROVED', comment: 'live check' });
+const final = await coreApi(info, 'GET', `/api/v1/tasks/${task.taskId}`);
+expect('K: the user accepted exactly report v1; the task moved to its final checks', accepted.version === 1 && final.state === 'FINAL_REPORT', `${accepted.decision ?? accepted.error} → ${final.state}`);
+
 // H — /jerry:plan: the model studies the repository, drafts a full plan and submits it; nothing is approved.
 const h = runClaude(
   'H: /jerry:plan',

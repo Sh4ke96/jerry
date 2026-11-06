@@ -1,6 +1,6 @@
 import type { CoreState, GateCheckRequest, Task, WorkflowState } from '@jerry/contracts';
 import { describe, expect, it } from 'vitest';
-import { approvedPlansForRepo, computePlanHash, isRepoExcluded } from '../src/approvals.js';
+import { approvedPlansForRepo, computePlanHash, computeReportHash, isRepoExcluded } from '../src/approvals.js';
 import { evaluateGate, type GateContext } from '../src/gate.js';
 
 const REPO = 'D:/Work/Repo';
@@ -249,6 +249,21 @@ describe('computePlanHash', () => {
     expect(computePlanHash({ ...base, document })).toBe(computePlanHash({ ...base, document: reordered }));
     expect(computePlanHash({ ...base, document })).not.toBe(computePlanHash(base));
     expect(computePlanHash({ ...base, document })).not.toBe(computePlanHash({ ...base, document: { ...document, goal: 'other' } }));
+  });
+});
+
+describe('computeReportHash', () => {
+  const base = { taskId: 'JRY-0001', version: 1, planVersion: 2, document: { summary: 's', checks: [{ command: 'npm test', result: 'PASS' }] } };
+
+  it('binds an acceptance to the report version, its plan version and its whole content', () => {
+    const reordered = { ...base, document: { checks: [{ result: 'PASS', command: 'npm test' }], summary: 's' } };
+    expect(computeReportHash(base)).toBe(computeReportHash(reordered));
+    expect(computeReportHash(base)).toMatch(/^sha256:[0-9a-f]{64}$/);
+    for (const changed of [{ ...base, version: 2 }, { ...base, planVersion: 3 }, { ...base, document: { ...base.document, summary: 'other' } }]) {
+      expect(computeReportHash(changed)).not.toBe(computeReportHash(base));
+    }
+    // Never equal to a plan hash of the same task, even with the same document.
+    expect(computeReportHash(base)).not.toBe(computePlanHash({ taskId: 'JRY-0001', title: 's', repoRoot: REPO, version: 1, scope: ['x'], document: base.document }));
   });
 });
 

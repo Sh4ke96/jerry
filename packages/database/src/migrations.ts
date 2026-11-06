@@ -200,4 +200,24 @@ export const MIGRATIONS: Readonly<Record<string, Migration>> = {
       await db.schema.createIndex('task_checkpoints_task').on('task_checkpoints').columns(['task_id', 'id']).execute();
     },
   },
+
+  '0006_implementation_reports': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Every report version is kept; the user's acceptance binds to (task_id, version, content_hash)
+      // through the approvals table, stage IMPLEMENTATION (ADR 0014).
+      await db.schema
+        .createTable('implementation_reports')
+        .addColumn('task_id', 'text', (column) => column.notNull().references('tasks.task_id'))
+        .addColumn('version', 'integer', (column) => column.notNull())
+        .addColumn('plan_version', 'integer', (column) => column.notNull())
+        .addColumn('content_hash', 'text', (column) => column.notNull())
+        .addColumn('document_json', 'text', (column) => column.notNull())
+        .addColumn('evidence_json', 'text', (column) => column.notNull())
+        .addColumn('submitted_by', 'text', (column) => column.notNull())
+        .addColumn('session_id', 'text')
+        .addColumn('created_at', 'text', (column) => column.notNull())
+        .addPrimaryKeyConstraint('implementation_reports_pk', ['task_id', 'version'])
+        .execute();
+    },
+  },
 };

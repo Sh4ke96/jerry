@@ -1,6 +1,6 @@
 import path from 'node:path';
 import readline from 'node:readline/promises';
-import { approvalRecordSchema, taskDetailSchema, taskSchema, taskWithDecisionSchema, workflowTransitionSchema, type ApprovalRecord, type Task } from '@jerry/contracts';
+import { approvalRecordSchema, taskDetailSchema, taskSchema, taskWithDecisionSchema, workflowTransitionSchema, type ApprovalRecord, type ImplementationReportRecord, type Task } from '@jerry/contracts';
 import { readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
 import { isTerminal, STATE_LABELS } from '@jerry/workflow';
 import { z } from 'zod';
@@ -63,6 +63,12 @@ export async function showTask(taskId: string): Promise<void> {
     console.log(`  ${session.sessionId}  ${session.firstAt} .. ${session.lastAt}  last: ${session.lastActivity}, ${ended}`);
   }
 
+  if (task.lastReport !== null) {
+    const decision = task.reportDecision;
+    console.log(`\nImplementation report (${task.reports.length} version(s); decision on the latest: ${decision === null ? 'none yet' : `${decision.decision}${decision.comment === '' ? '' : ` "${decision.comment}"`}`}):`);
+    printReport(task.lastReport);
+  }
+
   const [checkpoint] = task.checkpoints;
   if (checkpoint !== undefined) {
     console.log(`\nLast checkpoint (${checkpoint.at}, written by Claude${task.checkpoints.length > 1 ? `; ${task.checkpoints.length - 1} earlier` : ''}):`);
@@ -105,28 +111,36 @@ async function fetchTask(taskId: string): Promise<z.infer<typeof taskWithDecisio
 }
 
 /**
- * Approval is a deliberate user gesture: it requires an interactive terminal and typing the
- * task ID. Claude Code's shell tools have no TTY, so an agent cannot complete this command.
+ * Approving a plan and accepting an implementation are deliberate user gestures: they require an
+ * interactive terminal and typing the task ID. Claude Code's shell tools have no TTY, so an agent
+ * cannot complete this command (and the hard rules block it before it starts).
  */
-export async function decidePlan(options: { taskId: string; stage: string; version: number; decision: ApprovalRecord['decision']; comment: string }): Promise<void> {
-  if (options.stage.toLowerCase() !== 'plan') {
-    throw new Error(`Unsupported stage "${options.stage}". M0 supports only --stage plan.`);
-  }
+export async function decide(options: { taskId: string; stage: 'PLAN' | 'IMPLEMENTATION'; version: number; decision: ApprovalRecord['decision']; comment: string }): Promise<void> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     throw new Error('Approvals require an interactive terminal (PowerShell or the VS Code terminal). In Git Bash/mintty run it via "winpty".');
   }
 
-  const tasks = z.array(taskWithDecisionSchema).parse(await callCore('GET', '/api/v1/tasks'));
-  const task = tasks.find((candidate) => candidate.taskId === options.taskId);
-  if (task === undefined) throw new Error(`Unknown task ${options.taskId}`);
-  if (task.plan.version !== options.version) {
-    throw new Error(`${task.taskId} plan is at version ${task.plan.version}, not ${options.version}. Review the current version before deciding.`);
+  const task = taskDetailSchema.parse(await callCore('GET', `/api/v1/tasks/${encodeURIComponent(options.taskId.toUpperCase())}`));
+  let label: string;
+  if (options.stage === 'PLAN') {
+    if (task.plan.version !== options.version) {
+      throw new Error(`${task.taskId} plan is at version ${task.plan.version}, not ${options.version}. Review the current version before deciding.`);
+    }
+    printPlan(task);
+    label = `plan v${task.plan.version}`;
+  } else {
+    const report = task.lastReport;
+    if (report === null) throw new Error(`${task.taskId} has no implementation report yet.`);
+    if (report.version !== options.version) {
+      throw new Error(`${task.taskId} implementation report is at version ${report.version}, not ${options.version}. Review the current version before deciding.`);
+    }
+    printReport(report);
+    label = `implementation report v${report.version}`;
   }
-  printPlan(task);
 
-  const verb = options.decision === 'APPROVED' ? 'approve' : 'reject';
+  const verb = options.decision === 'APPROVED' ? (options.stage === 'PLAN' ? 'approve' : 'accept') : options.stage === 'PLAN' ? 'reject' : 'request changes to';
   const prompt = readline.createInterface({ input: process.stdin, output: process.stdout });
-  const typed = (await prompt.question(`\nType ${task.taskId} to ${verb} plan v${task.plan.version}: `)).trim();
+  const typed = (await prompt.question(`\nType ${task.taskId} to ${verb} ${label}: `)).trim();
   prompt.close();
   if (typed !== task.taskId) {
     console.log('Confirmation did not match. Nothing was recorded.');
@@ -136,13 +150,37 @@ export async function decidePlan(options: { taskId: string; stage: string; versi
 
   const record = approvalRecordSchema.parse(
     await callCore('POST', `/api/v1/tasks/${encodeURIComponent(task.taskId)}/approvals`, {
-      stage: 'PLAN',
+      stage: options.stage,
       version: options.version,
       decision: options.decision,
       comment: options.comment,
     }),
   );
-  console.log(`${record.decision}: ${record.taskId} plan v${record.version} (${record.contentHash}) as ${record.approvalId}`);
+  console.log(`${record.decision}: ${record.taskId} ${label} (${record.contentHash}) as ${record.approvalId}`);
+}
+
+/** The report as the user reviews it in a terminal: claims next to what JERRY recorded. */
+function printReport(report: ImplementationReportRecord): void {
+  const { document, evidence } = report;
+  console.log(`  report:  v${report.version} for plan v${report.planVersion}  ${report.contentHash}  (${report.createdAt})`);
+  console.log(`  summary: ${document.summary}`);
+  console.log(`  changes: ${document.changes.length} file(s)`);
+  for (const change of document.changes) console.log(`    ${change.kind.padEnd(8)} ${change.repository === '' ? '' : `${change.repository}: `}${change.path}  ${change.description}`);
+  console.log('  checks:');
+  for (const check of document.checks) console.log(`    ${check.result.padEnd(7)} ${check.kind.padEnd(9)} ${check.command}${check.details === '' ? '' : `  (${check.details})`}`);
+  if (document.planDeviations.length > 0) {
+    console.log('  differences from the plan:');
+    for (const deviation of document.planDeviations) console.log(`    - ${deviation.description} (${deviation.reason})`);
+  }
+  if (document.risks.length > 0) {
+    console.log('  risks:');
+    for (const risk of document.risks) console.log(`    - [${risk.severity}] ${risk.risk}${risk.mitigation === '' ? '' : ` → ${risk.mitigation}`}`);
+  }
+  console.log(`  QA scenarios: ${document.qaScenarios.map((scenario) => `${scenario.id} ${scenario.title}`).join('; ')}`);
+  console.log(`  commit subjects: ${document.commitSubjects.join(' | ')}`);
+  console.log(`  JERRY recorded since the plan approval (${evidence.since}): ${evidence.deviationCount} deviation(s), ${evidence.blockedCount} blocked, ${evidence.observedEdits.length} file(s) edited`);
+  if (evidence.unreportedEdits.length > 0) console.log(`  ! edited but not in the report: ${evidence.unreportedEdits.join(', ')}`);
+  if (evidence.failedOrNotRunChecks > 0) console.log(`  ! ${evidence.failedOrNotRunChecks} check(s) failed or did not run`);
 }
 
 function printPlan(task: Task): void {
