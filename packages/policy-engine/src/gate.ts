@@ -31,7 +31,7 @@ export interface GateContext {
 }
 
 /** Commands only the user may run. Read-only ones (status, doctor, task/repo list, core status) stay available. */
-const USER_ONLY_JERRY_COMMAND = /\bjerry(?:\.mjs|\.cmd|\.ps1)?\s+(?:approve|reject|install|uninstall|repo\s+(?:exclude|include)|core\s+(?:start|stop))\b/i;
+const USER_ONLY_JERRY_COMMAND = /\bjerry(?:\.mjs|\.cmd|\.ps1)?\s+(?:approve|reject|install|uninstall|repo\s+(?:exclude|include)|core\s+(?:start|stop)|db\s+restore)\b/i;
 const CORE_API_PATTERN = /\/api\/v1\//i;
 /**
  * Catches %LOCALAPPDATA%\JERRY, $env:LOCALAPPDATA\JERRY and references to the JERRY_HOME variable

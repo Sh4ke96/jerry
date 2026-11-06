@@ -119,6 +119,7 @@ function assessJerry(args: string[]): ShellAssessment {
   const readOnly =
     (args.length === 1 && command !== undefined && JERRY_READ_ONLY_COMMANDS.has(command)) ||
     (args.length === 2 && (command === 'task' || command === 'repo') && subcommand === 'list') ||
+    (args.length === 2 && command === 'db' && subcommand === 'backups') ||
     (args.length === 2 && command === 'core' && subcommand === 'status');
   return readOnly ? { readOnly: true, reason: `jerry ${args.join(' ')} only reads JERRY state` } : writeCapable(`jerry ${args.join(' ')} changes JERRY state`);
 }

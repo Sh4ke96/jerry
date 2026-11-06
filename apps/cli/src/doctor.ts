@@ -61,6 +61,7 @@ export async function doctor(): Promise<void> {
     const { info, status } = await getCoreStatus(home);
     coreHealthy = true;
     add('core', 'PASS', `JERRY Core ${status.version} pid ${info.pid} on 127.0.0.1:${info.port}, ${status.taskCount} task(s)`);
+    add('database', status.database.migration === null ? 'FAIL' : 'PASS', `${status.database.file} (schema ${status.database.migration ?? 'not migrated'})`);
     const expectedPort = resolveCorePort();
     if (expectedPort !== 0 && info.port !== expectedPort) {
       add('core-port', 'WARN', `Core runs on port ${info.port} instead of ${expectedPort} (port in use by another program, or Core started before this setting); the dashboard origin depends on a stable port`);

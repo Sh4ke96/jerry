@@ -6,8 +6,10 @@
   "main": "./src/main.ts",
   "dependencies": {
     "@jerry/contracts": "workspace:*",
+    "@jerry/database": "workspace:*",
     "@jerry/platform": "workspace:*",
     "@jerry/policy-engine": "workspace:*",
+    "kysely": "0.29.8",
     "zod": "4.6.7"
   }
 }

@@ -30,7 +30,13 @@ async function main(): Promise<void> {
   }
   const releaseLock = lock.release;
 
-  const store = new StateStore(paths.stateFile);
+  let store: StateStore;
+  try {
+    store = await StateStore.open({ databaseFile: paths.databaseFile, backupsDir: paths.backupsDir, legacyStateFile: paths.stateFile });
+  } catch (error) {
+    releaseLock();
+    throw error;
+  }
   const token = randomBytes(32).toString('hex');
   const startedAt = new Date();
   const configuredPort = resolveCorePort();
@@ -76,8 +82,13 @@ async function main(): Promise<void> {
     stopping = true;
     process.stdout.write(`JERRY Core stopping: ${reason}\n`);
     cleanUp();
-    server.close(() => process.exit(0));
-    setTimeout(() => process.exit(0), 2000).unref();
+    server.close(() => {
+      store
+        .close()
+        .catch((error: unknown) => process.stderr.write(`Closing the database failed: ${String(error)}\n`))
+        .finally(() => process.exit(0));
+    });
+    setTimeout(() => process.exit(0), 3000).unref();
   }
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));

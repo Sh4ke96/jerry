@@ -1,0 +1,11 @@
+{
+  "name": "@jerry/database",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@jerry/contracts": "workspace:*",
+    "kysely": "0.29.8"
+  }
+}

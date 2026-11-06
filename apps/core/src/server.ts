@@ -86,7 +86,8 @@ async function handle(
       startedAt: options.startedAt.toISOString(),
       jerryHome: options.jerryHome,
       taskCount: snapshot.tasks.length,
-      sessionCount: snapshot.sessions.length,
+      sessionCount: store.sessionCount,
+      database: { file: store.databaseFile, migration: store.migration },
     };
     return { status: 200, body: status };
   }
@@ -108,7 +109,7 @@ async function handle(
 
   if (method === 'POST' && url.pathname === '/api/v1/sessions') {
     const registration = parse(sessionRegistrationSchema, await readJson(request));
-    store.registerSession(registration, now);
+    await store.registerSession(registration, now);
     const repoRoot = findGitRoot(realPathOfNearestExisting(registration.cwd));
     const snapshot = store.snapshot();
     const response: SessionRegistrationResponse = {
@@ -133,7 +134,7 @@ async function handle(
     if (repoRoot === null) {
       throw new HttpError(400, `${body.repoPath} is not inside a Git repository`);
     }
-    store.setExcluded(repoRoot, body.excluded, now);
+    await store.setExcluded(repoRoot, body.excluded, now);
     return { status: 200, body: { repoRoot, excluded: body.excluded } };
   }
 
@@ -152,7 +153,7 @@ async function handle(
     if (repoRoot === null) {
       throw new HttpError(400, `${body.repoPath} is not inside a Git repository`);
     }
-    return { status: 201, body: store.createTask({ repoRoot, title: body.title, scope: body.scope }, now) };
+    return { status: 201, body: await store.createTask({ repoRoot, title: body.title, scope: body.scope }, now) };
   }
 
   const taskRoute = /^\/api\/v1\/tasks\/([^/]+)\/(plan|approvals)$/.exec(url.pathname);
@@ -160,10 +161,14 @@ async function handle(
     const taskId = parse(taskIdSchema, decodeURIComponent(taskRoute[1]!));
     if (taskRoute[2] === 'plan') {
       const body = parse(planReviseRequestSchema, await readJson(request));
-      return { status: 200, body: store.revisePlan(taskId, body.scope, now) };
+      return { status: 200, body: await store.revisePlan(taskId, body.scope, now) };
     }
     const body = parse(approvalRequestSchema, await readJson(request));
-    return { status: 201, body: store.recordApproval(taskId, body, now) };
+    return { status: 201, body: await store.recordApproval(taskId, body, now) };
+  }
+
+  if (method === 'POST' && url.pathname === '/api/v1/database/backups') {
+    return { status: 201, body: { file: await store.backup('manual') } };
   }
 
   if (method === 'POST' && url.pathname === '/api/v1/shutdown') {

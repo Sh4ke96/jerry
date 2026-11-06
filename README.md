@@ -24,8 +24,11 @@ repositories, not to this one.
 - Core starts automatically from Claude Code sessions and listens on `127.0.0.1:47823` (`JERRY_CORE_PORT`);
   `jerry core stop` pauses it until `jerry core start` ([ADR 0004](docs/decisions/0004-core-autostart-fixed-port.md)).
 - JERRY never modifies any repository ([ADR 0002](docs/decisions/0002-jerry-never-modifies-repositories.md)).
+- State in SQLite (`JERRY_HOME/database/jerry.sqlite`) with in-code migrations, a backup before every migration,
+  automatic restore when a migration fails, and full plan history ([ADR 0005](docs/decisions/0005-sqlite-node-builtin-kysely.md)).
 - `jerry` CLI: `install`, `uninstall`, `doctor`, `core start|stop|status`, `task`, `plan revise`,
-  `approve`/`reject`, `repo exclude|include|list` (approve, reject and exclude require an interactive terminal).
+  `approve`/`reject`, `repo exclude|include|list`, `db backup|backups|restore` (approve, reject, exclude and
+  restore require an interactive terminal).
 
 ## Layout
 
@@ -34,6 +37,7 @@ apps/core               JERRY Core (HTTP API, state, gate decisions)
 apps/hook-bridge        Claude Code hook adapter → Core (bundled into the plugin)
 apps/cli                jerry CLI
 packages/contracts      Zod schemas shared across processes
+packages/database       SQLite (node:sqlite + Kysely): schema, migrations, backup and restore
 packages/platform       JERRY_HOME, Core client, claude.exe discovery, atomic writes, home safety
 packages/policy-engine  pure gate logic: paths, shell classification, approvals
 claude-plugin/          static plugin files (manifest, hooks.json)
@@ -44,7 +48,7 @@ docs/                   spikes and architecture decision records (ADR)
 
 ## Development
 
-Requires Node ≥ 22.12 and corepack (pnpm is fetched by corepack; no global install needed).
+Requires Node ≥ 22.13 (built-in `node:sqlite`) and corepack (pnpm is fetched by corepack; no global install needed).
 
 ```powershell
 corepack pnpm install

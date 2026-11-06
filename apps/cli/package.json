@@ -6,6 +6,7 @@
   "main": "./src/main.ts",
   "dependencies": {
     "@jerry/contracts": "workspace:*",
+    "@jerry/database": "workspace:*",
     "@jerry/platform": "workspace:*",
     "zod": "4.6.7"
   }

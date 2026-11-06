@@ -6,7 +6,7 @@
   "description": "JERRY — local development guardian for Claude Code (source repository).",
   "packageManager": "pnpm@10.34.9",
   "engines": {
-    "node": ">=22.12"
+    "node": ">=22.13"
   },
   "scripts": {
     "build": "node scripts/build.mjs",
@@ -19,9 +19,12 @@
   },
   "devDependencies": {
     "@jerry/contracts": "workspace:*",
+    "@jerry/database": "workspace:*",
     "@jerry/platform": "workspace:*",
+    "@jerry/policy-engine": "workspace:*",
     "@types/node": "22.20.5",
     "esbuild": "0.28.2",
+    "kysely": "0.29.8",
     "typescript": "7.0.2",
     "vitest": "5.1.0"
   }

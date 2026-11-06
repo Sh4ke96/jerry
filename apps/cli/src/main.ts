@@ -1,6 +1,7 @@
 import { parseArgs } from 'node:util';
 import { JERRY_VERSION } from '@jerry/contracts';
 import { getCoreStatus, startCore, stopCore } from './core-commands.js';
+import { backupNow, restoreFromBackup, showBackups } from './db-commands.js';
 import { doctor } from './doctor.js';
 import { install, uninstall } from './install-commands.js';
 import { excludeRepository, includeRepository, listExcludedRepositories } from './repo-commands.js';
@@ -21,6 +22,9 @@ Usage:
   jerry repo exclude <path>           Stop monitoring a repository (hard rules still apply)
   jerry repo include <path>           Monitor an excluded repository again
   jerry repo list                     List excluded repositories
+  jerry db backup                     Back up the JERRY database (Core must be running)
+  jerry db backups                    List database backups
+  jerry db restore <file>             Replace the database with a backup (Core must be stopped)
 `;
 
 async function run(argv: string[]): Promise<void> {
@@ -48,6 +52,13 @@ async function run(argv: string[]): Promise<void> {
       if (positionals[0] !== 'revise' || positionals[1] === undefined || values.scope === undefined) throw new UsageError();
       await revisePlan(positionals[1], values.scope);
       return;
+    }
+    case 'db': {
+      const [subcommand, target] = rest;
+      if (subcommand === 'backup') return backupNow();
+      if (subcommand === 'backups') return showBackups();
+      if (subcommand === 'restore' && target !== undefined) return restoreFromBackup(target);
+      throw new UsageError();
     }
     case 'repo': {
       const [subcommand, target] = rest;

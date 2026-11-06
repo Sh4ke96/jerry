@@ -35,6 +35,9 @@ export interface JerryPaths {
   runtimeCoreFile: string;
   stateDir: string;
   stateFile: string;
+  databaseDir: string;
+  databaseFile: string;
+  backupsDir: string;
   logsDir: string;
   gateLogFile: string;
   configDir: string;
@@ -59,6 +62,9 @@ export function jerryPaths(home: string): JerryPaths {
     runtimeCoreFile: path.join(runtimeDir, 'core', 'core.mjs'),
     stateDir,
     stateFile: path.join(stateDir, 'core-state.json'),
+    databaseDir: path.join(home, 'database'),
+    databaseFile: path.join(home, 'database', 'jerry.sqlite'),
+    backupsDir: path.join(home, 'backups'),
     logsDir,
     gateLogFile: path.join(logsDir, 'gate-decisions.jsonl'),
     configDir,

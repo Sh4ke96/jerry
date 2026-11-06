@@ -211,8 +211,15 @@ export const coreStatusSchema = z.object({
   jerryHome: z.string(),
   taskCount: z.number().int().nonnegative(),
   sessionCount: z.number().int().nonnegative(),
+  database: z.object({
+    file: z.string(),
+    /** Latest applied migration. */
+    migration: z.string().nullable(),
+  }),
 });
 export type CoreStatus = z.infer<typeof coreStatusSchema>;
+
+export const databaseBackupResultSchema = z.object({ file: z.string().min(1) });
 
 export const apiErrorSchema = z.object({
   error: z.string(),

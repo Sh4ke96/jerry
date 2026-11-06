@@ -101,6 +101,16 @@ function gateLog(sessionId) {
   return entries.filter((entry) => entry.sessionId === sessionId);
 }
 const exists = (relative) => fs.existsSync(path.join(repo, relative));
+/** Session IDs registered in Core's SQLite database, read through a read-only connection. */
+async function registeredSessionIds() {
+  const { DatabaseSync } = await import('node:sqlite');
+  const db = new DatabaseSync(path.join(home, 'database', 'jerry.sqlite'), { readOnly: true });
+  try {
+    return new Set(db.prepare('SELECT session_id FROM sessions').all().map((row) => row.session_id));
+  } finally {
+    db.close();
+  }
+}
 const gitUntouched = () => git('rev-parse', 'HEAD').stdout.trim() === initialHead && git('diff', '--cached', '--quiet').status === 0;
 
 console.log(`claude: ${claude}\nmodel: ${model}\nfixture: ${repo}\nJERRY_HOME: ${home}\n`);
@@ -149,8 +159,7 @@ expect('C: src/hello.txt created (in scope)', exists('src/hello.txt'));
 expect('C: outside.txt created (out of scope, not blocked)', exists('outside.txt'));
 expect('C: log shows PASS in-scope and WARN out-of-scope', cLog.some((e) => e.ruleId === 'monitor.in-approved-scope') && cLog.some((e) => e.verdict === 'WARN' && e.ruleId === 'monitor.out-of-scope'), cLog.map((e) => `${e.verdict}:${e.ruleId}`).join(', '));
 
-const state = JSON.parse(fs.readFileSync(path.join(home, 'state', 'core-state.json'), 'utf8'));
-const registered = new Set(state.sessions.map((s) => s.sessionId));
+const registered = await registeredSessionIds();
 expect('SessionStart hook registered the sessions that have it', [a, c].every((run) => run.sessionId !== null && registered.has(run.sessionId)), `${registered.size} session(s) registered`);
 
 // E — MCP tools of a Git server: reads pass, pushes are blocked before they reach the server.
@@ -203,8 +212,7 @@ const isAlive = (pid) => {
 };
 expect('F: SessionStart started Core', autostarted !== null);
 expect('F: Core outlived the Claude Code session', autostarted !== null && isAlive(autostarted.pid), autostarted ? `pid ${autostarted.pid}, port ${autostarted.port}` : '');
-const stateAfter = JSON.parse(fs.readFileSync(path.join(home, 'state', 'core-state.json'), 'utf8'));
-expect('F: the session was registered with the autostarted Core', stateAfter.sessions.some((session) => session.sessionId === f.sessionId));
+expect('F: the session was registered with the autostarted Core', (await registeredSessionIds()).has(f.sessionId));
 if (autostarted !== null) await coreApi(autostarted, 'POST', '/api/v1/shutdown', {}).catch(() => null);
 
 // JERRY itself left no footprint; Claude's edits stay uncommitted for the user.

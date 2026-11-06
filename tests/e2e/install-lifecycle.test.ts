@@ -130,7 +130,7 @@ describe.skipIf(claude === null)('jerry install / doctor / uninstall (isolated C
     expect(plugins.map((plugin) => plugin.id)).not.toContain('jerry@jerry-local');
     expect(fs.existsSync(path.join(jerryHome, 'marketplace'))).toBe(false);
     expect(fs.existsSync(path.join(jerryHome, 'runtime'))).toBe(false);
-    expect(fs.existsSync(path.join(jerryHome, 'state'))).toBe(true);
+    expect(fs.existsSync(path.join(jerryHome, 'database', 'jerry.sqlite'))).toBe(true);
 
     const { enabledPlugins, extraKnownMarketplaces, ...rest } = settings();
     const { enabledPlugins: originalPlugins, ...originalRest } = EXISTING_SETTINGS;
@@ -151,7 +151,7 @@ describe.skipIf(claude === null)('jerry install / doctor / uninstall (isolated C
     expect(result.exitCode, result.output).toBe(0);
     expect(result.output).toContain('JERRY did not create');
     expect(fs.existsSync(foreign)).toBe(true);
-    for (const entry of ['run', 'state', 'logs', 'config', 'marketplace', 'runtime']) {
+    for (const entry of ['run', 'state', 'database', 'backups', 'logs', 'config', 'marketplace', 'runtime']) {
       expect(fs.existsSync(path.join(jerryHome, entry))).toBe(false);
     }
   });
