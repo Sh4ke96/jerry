@@ -1,52 +1,63 @@
 # JERRY
 
-Lokalny Agent Harness / Development Guardian dla Claude Code i VS Code.
+A local agent harness and development guardian for Claude Code and VS Code.
 **One installation. Every project. Zero project footprint.**
 
-To repozytorium zawiera kod samego produktu JERRY. Wymóg zero footprint dotyczy repozytoriów użytkownika, nie tego repozytorium.
+This repository contains the source of JERRY itself. The zero-footprint requirement applies to the user's
+repositories, not to this one.
 
-**Status:** M0 Feasibility Spike. Wyniki i luki są w [docs/spikes/M0-feasibility.md](docs/spikes/M0-feasibility.md).
+**Status:** M0 feasibility spike. Results and known gaps: [docs/spikes/M0-feasibility.md](docs/spikes/M0-feasibility.md).
 
-## Co działa w M0
+## What works in M0
 
-- Plugin Claude Code (`claude-plugin/`) z hookami `SessionStart` i `PreToolUse` (Write/Edit/MultiEdit/NotebookEdit/Bash/PowerShell/Monitor).
-- JERRY Core: lokalny proces HTTP na `127.0.0.1` z tokenem. Trzyma zadania, wersjonowane plany (hash) i approvals w `JERRY_HOME`.
-- Approval gate: zapis w repozytorium Git przechodzi tylko w zakresie zatwierdzonej, aktualnej wersji planu. Działa fail-closed.
-- `jerry` CLI: `install`, `uninstall`, `doctor`, `core start|stop|status`, `task`, `plan revise`, `approve`/`reject` (approve/reject wymagają TTY).
+- A Claude Code plugin (`claude-plugin/`) with `SessionStart` and `PreToolUse` hooks
+  (Write/Edit/MultiEdit/NotebookEdit/Bash/PowerShell/Monitor).
+- JERRY Core: a local HTTP process on `127.0.0.1` with a per-start token. It stores tasks, versioned plans
+  (content hash) and approvals in `JERRY_HOME`.
+- Monitoring, not blocking ([ADR 0003](docs/decisions/0003-monitor-not-block.md)): edits without an approved
+  plan, or outside the approved plan's scope, proceed but are recorded as deviations, and Claude and the user
+  are warned.
+- Hard rules, always blocked, also while Core is down: Git state changes (the user does all Git operations),
+  writes inside `.git`, tampering with JERRY data or the Claude Code settings that enable it.
+- `jerry repo exclude <path>` turns monitoring off for a repository; hard rules still apply there.
+- JERRY never modifies any repository ([ADR 0002](docs/decisions/0002-jerry-never-modifies-repositories.md)).
+- `jerry` CLI: `install`, `uninstall`, `doctor`, `core start|stop|status`, `task`, `plan revise`,
+  `approve`/`reject`, `repo exclude|include|list` (approve, reject and exclude require an interactive terminal).
 
-## Struktura
+## Layout
 
 ```text
-apps/core           JERRY Core (HTTP API, stan, decyzje bramki)
-apps/hook-bridge    adapter hooków Claude Code → Core (bundlowany do pluginu)
-apps/cli            jerry CLI
-packages/contracts  schematy Zod współdzielone przez procesy
-packages/platform   JERRY_HOME, klient Core, lokalizacja claude.exe, zapis atomowy
-packages/policy-engine  czysta logika bramki: ścieżki, klasyfikacja shell, approvals
-claude-plugin/      statyczna część pluginu (manifest, hooks.json)
-tests/              integracja (bridge + Core) i E2E instalacji
-scripts/            build, benchmark hooka, test na żywej sesji Claude Code
-docs/               spike'i i decyzje architektoniczne (ADR)
+apps/core               JERRY Core (HTTP API, state, gate decisions)
+apps/hook-bridge        Claude Code hook adapter → Core (bundled into the plugin)
+apps/cli                jerry CLI
+packages/contracts      Zod schemas shared across processes
+packages/platform       JERRY_HOME, Core client, claude.exe discovery, atomic writes, home safety
+packages/policy-engine  pure gate logic: paths, shell classification, approvals
+claude-plugin/          static plugin files (manifest, hooks.json)
+tests/                  integration (bridge + Core) and install E2E
+scripts/                build, hook benchmark, live Claude Code check
+docs/                   spikes and architecture decision records (ADR)
 ```
 
 ## Development
 
-Wymagane: Node ≥ 22.12, corepack (pnpm jest pobierany przez corepack, bez globalnej instalacji).
+Requires Node ≥ 22.12 and corepack (pnpm is fetched by corepack; no global install needed).
 
 ```powershell
 corepack pnpm install
 corepack pnpm build          # dist/plugin, dist/core, dist/cli
-corepack pnpm check          # typecheck + wszystkie testy
+corepack pnpm check          # typecheck + all tests
 node dist/cli/jerry.mjs help
 ```
 
-Testy instalacji używają izolowanego `CLAUDE_CONFIG_DIR` i sprawdzają, że prawdziwy `~/.claude` się nie zmienia.
-`scripts/e2e-live.mjs` uruchamia prawdziwe sesje Claude Code na zalogowanym koncie (model haiku) z pluginem
-załadowanym przez `--plugin-dir`, bez zmian w ustawieniach.
+Install tests use an isolated `CLAUDE_CONFIG_DIR` and assert that the real `~/.claude` does not change.
+`scripts/e2e-live.mjs` runs real Claude Code sessions on the signed-in account (haiku model) with the plugin
+loaded through `--plugin-dir`, without changing any settings.
 
-## Zasady pracy
+## Working rules
 
-- Specyfikacja jest źródłem wymagań; zmiany wymagają uzasadnienia i wersjonowania (ADR w `docs/decisions/`).
-- Nie przechodzimy do kolejnej fazy bez zaliczenia krytycznych testów poprzedniej.
-- Bez prawdziwych tokenów OAuth Claude Code w testach i kodzie; bez zewnętrznej telemetrii.
-- Commit, push i merge tylko za jawną zgodą.
+- The specification is the source of requirements; changes need a rationale and a version (ADR in `docs/decisions/`).
+- Do not start the next phase before the critical tests of the current one pass.
+- No real Claude Code OAuth tokens in tests or code; no external telemetry.
+- Commit, push and merge only with explicit approval.
+- READMEs, code comments and ADRs are written in English.

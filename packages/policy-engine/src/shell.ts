@@ -1,11 +1,13 @@
 /**
- * Conservative read-only classifier for shell commands.
+ * Conservative classifiers for shell commands.
  *
- * It answers one question: "can this command be run without an approved plan because it
- * cannot modify files?". It is an allowlist: anything it does not positively recognise as
- * read-only is treated as write-capable. False "write-capable" answers only cost an approval
- * prompt; false "read-only" answers would bypass the gate, so ambiguity always resolves to
- * write-capable. This is a policy layer, not an OS sandbox.
+ * assessShellCommand answers "can this command modify files?". It is an allowlist: anything it
+ * does not positively recognise as read-only is treated as write-capable, which only costs a
+ * deviation warning.
+ *
+ * assessGitUsage answers "does this command change Git state?". Git changes are the user's job
+ * alone (ADR 0003), so this check blocks; it stays strict but only looks at commands that
+ * actually invoke Git tooling. Neither check is an OS sandbox.
  */
 
 export type ShellDialect = 'bash' | 'powershell';
@@ -200,4 +202,74 @@ function splitTopLevel(command: string): Segment[] | null {
   if (quote !== null) return null;
   endSegment();
   return segments.filter((segment) => segment.words.length > 0 || segment.redirectsOutput);
+}
+
+// ---------------------------------------------------------------------------
+// Git usage (hard rule: only the user changes Git state)
+// ---------------------------------------------------------------------------
+
+export interface GitAssessment {
+  /** True when the command changes, or may change, Git state (commits, refs, index, remotes, working tree via git). */
+  mutating: boolean;
+  reason: string;
+}
+
+/** Cheap pre-filter on raw text; ".git", "github" and "ghost" do not match. */
+const GIT_TOOL_MENTION = /(?:^|[^a-z0-9_.-])(?:git(?:-[a-z0-9-]+)?|gh)(?:\.exe)?(?=$|[^a-z0-9_.-])/i;
+const PACKAGE_MANAGER_VERSION = /\b(?:npm|pnpm|yarn)(?:\.cmd)?\s+version\b/i;
+
+const GH_READ_ONLY_VERBS = new Set(['view', 'list', 'status', 'diff', 'checks']);
+const GH_READ_ONLY_NOUNS = new Set(['pr', 'issue', 'repo', 'run', 'release', 'workflow']);
+
+export function assessGitUsage(command: string, dialect: ShellDialect): GitAssessment {
+  const trimmed = command.trim();
+  const mentionsGit = GIT_TOOL_MENTION.test(trimmed);
+  if (PACKAGE_MANAGER_VERSION.test(trimmed)) return gitMutation('"<package manager> version" creates a Git commit and tag');
+  if (!mentionsGit) return { mutating: false, reason: 'no Git tooling invoked' };
+
+  if (/[\r\n]/.test(trimmed)) return gitMutation('multi-line command invoking Git cannot be verified');
+  if (trimmed.includes('$(') || trimmed.includes('`')) return gitMutation('Git invoked inside a command substitution');
+
+  const segments = splitTopLevel(trimmed);
+  if (segments === null) return gitMutation('Git command with unbalanced quotes cannot be verified');
+
+  for (const { words } of segments) {
+    const [first, ...args] = words;
+    if (first === undefined) continue;
+    const name = toolName(first);
+    if (name === 'git') {
+      const verdict = assessGit(args);
+      if (!verdict.readOnly) return gitMutation(verdict.reason);
+    } else if (name.startsWith('git-')) {
+      return gitMutation(`${name} is a Git extension that can change repository state`);
+    } else if (name === 'gh') {
+      if (!isReadOnlyGh(args)) return gitMutation(`gh ${args.slice(0, 2).join(' ')} can change remote or local Git state`);
+    } else if (words.slice(1).some((word) => word.split(/\s+/).some((token) => isGitToolToken(token)))) {
+      return gitMutation(`Git invoked indirectly through "${first}"`);
+    }
+  }
+  return { mutating: false, reason: `read-only Git usage (${dialect})` };
+}
+
+function gitMutation(reason: string): GitAssessment {
+  return { mutating: true, reason };
+}
+
+/** Executable name of a word: basename, lower-case, without .exe and surrounding punctuation. */
+function toolName(word: string): string {
+  const stripped = word.replace(/^[({[@&$;,]+|[)}\];,]+$/g, '');
+  const base = stripped.split(/[\\/]/).at(-1) ?? stripped;
+  return base.toLowerCase().replace(/\.exe$/, '');
+}
+
+function isGitToolToken(token: string): boolean {
+  const name = toolName(token);
+  return name === 'git' || name === 'gh' || /^git-[a-z0-9-]+$/.test(name);
+}
+
+function isReadOnlyGh(args: string[]): boolean {
+  const [noun, verb] = args;
+  if (noun === '--version' || noun === 'version') return true;
+  if (noun === 'auth' && verb === 'status') return true;
+  return noun !== undefined && verb !== undefined && GH_READ_ONLY_NOUNS.has(noun) && GH_READ_ONLY_VERBS.has(verb);
 }

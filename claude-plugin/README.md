@@ -2,11 +2,16 @@
 
 JERRY is a local development guardian. This plugin connects Claude Code to the JERRY Core
 process running on the same machine. Before every file edit (Write, Edit, NotebookEdit) and
-every shell command (Bash, PowerShell, Monitor), the plugin asks JERRY Core whether the
-operation is covered by a plan that the user has approved. Edits inside Git repositories
-without an approved plan are blocked. When JERRY Core is not running, edits are blocked as
-well (fail-closed), while read-only shell commands continue to work.
+every shell command (Bash, PowerShell, Monitor), the plugin asks JERRY Core how the operation
+relates to the plan the user approved.
 
-The plugin stores nothing in your projects. All JERRY data lives in `%LOCALAPPDATA%\JERRY`
-(or `JERRY_HOME`). Install, update and remove it with the `jerry` CLI (`jerry install`,
-`jerry uninstall`, `jerry doctor`), never by editing files by hand.
+JERRY monitors; it does not stop Claude's work. An edit without an approved plan, or outside
+its scope, proceeds, is recorded as a deviation, and both Claude and the user are warned.
+JERRY blocks only its hard rules: any Git command that changes repository state (the user runs
+all Git operations), writes inside `.git`, and attempts to modify JERRY data or the Claude Code
+settings that keep JERRY enabled. The hard rules are checked locally, so they hold even when
+JERRY Core is not running.
+
+The plugin stores nothing in your projects and JERRY never modifies a repository. All JERRY
+data lives in `%LOCALAPPDATA%\JERRY` (or `JERRY_HOME`). Install, update and remove it with the
+`jerry` CLI (`jerry install`, `jerry uninstall`, `jerry doctor`).

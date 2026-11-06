@@ -5,6 +5,7 @@ import {
   gateCheckRequestSchema,
   JERRY_VERSION,
   planReviseRequestSchema,
+  repositoryExclusionRequestSchema,
   sessionRegistrationSchema,
   taskCreateRequestSchema,
   taskIdSchema,
@@ -13,7 +14,7 @@ import {
   type SessionRegistrationResponse,
 } from '@jerry/contracts';
 import { appendJsonLine } from '@jerry/platform';
-import { approvedPlansForRepo, classifyToolCall, evaluateGate } from '@jerry/policy-engine';
+import { approvedPlansForRepo, classifyToolCall, evaluateGate, isRepoExcluded } from '@jerry/policy-engine';
 import type { z } from 'zod';
 import { findGitRoot, realPathOfNearestExisting } from './repo-fs.js';
 import { StateError, type StateStore } from './state-store.js';
@@ -99,6 +100,7 @@ async function handle(
       realPath: realPathOfNearestExisting,
       findRepoRoot: findGitRoot,
       approvedPlans: (repoRoot) => approvedPlansForRepo(snapshot, repoRoot, process.platform),
+      isExcluded: (repoRoot) => isRepoExcluded(snapshot, repoRoot, process.platform),
     });
     logGateDecision(options.gateLogFile, now, gateRequest, decision);
     return { status: 200, body: decision };
@@ -108,15 +110,31 @@ async function handle(
     const registration = parse(sessionRegistrationSchema, await readJson(request));
     store.registerSession(registration, now);
     const repoRoot = findGitRoot(realPathOfNearestExisting(registration.cwd));
+    const snapshot = store.snapshot();
     const response: SessionRegistrationResponse = {
       registered: true,
       repoRoot,
+      excluded: repoRoot !== null && isRepoExcluded(snapshot, repoRoot, process.platform),
       approvedPlans:
         repoRoot === null
           ? []
-          : approvedPlansForRepo(store.snapshot(), repoRoot, process.platform).map((plan) => ({ taskId: plan.taskId, planVersion: plan.planVersion, scope: [...plan.scope] })),
+          : approvedPlansForRepo(snapshot, repoRoot, process.platform).map((plan) => ({ taskId: plan.taskId, planVersion: plan.planVersion, scope: [...plan.scope] })),
     };
     return { status: 200, body: response };
+  }
+
+  if (method === 'GET' && url.pathname === '/api/v1/repositories/exclusions') {
+    return { status: 200, body: store.snapshot().excludedRepos };
+  }
+
+  if (method === 'POST' && url.pathname === '/api/v1/repositories/exclusions') {
+    const body = parse(repositoryExclusionRequestSchema, await readJson(request));
+    const repoRoot = findGitRoot(realPathOfNearestExisting(body.repoPath));
+    if (repoRoot === null) {
+      throw new HttpError(400, `${body.repoPath} is not inside a Git repository`);
+    }
+    store.setExcluded(repoRoot, body.excluded, now);
+    return { status: 200, body: { repoRoot, excluded: body.excluded } };
   }
 
   if (method === 'GET' && url.pathname === '/api/v1/tasks') {

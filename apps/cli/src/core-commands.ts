@@ -2,7 +2,14 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { coreStatusSchema, type CoreRuntimeInfo, type CoreStatus } from '@jerry/contracts';
-import { CoreUnavailableError, jerryPaths, readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
+import {
+  assertJerryHomeOutsideRepositories,
+  CoreUnavailableError,
+  jerryPaths,
+  readCoreRuntimeInfo,
+  requestCore,
+  resolveJerryHome,
+} from '@jerry/platform';
 
 const CORE_BUNDLE = fileURLToPath(new URL('../core/core.mjs', import.meta.url));
 
@@ -23,10 +30,14 @@ export async function startCore(): Promise<void> {
   }
   if (!fs.existsSync(CORE_BUNDLE)) throw new Error(`Core bundle not found at ${CORE_BUNDLE}. Run "pnpm build" first.`);
 
+  assertJerryHomeOutsideRepositories(home);
   const paths = jerryPaths(home);
   fs.mkdirSync(paths.logsDir, { recursive: true });
   const log = fs.openSync(`${paths.logsDir}/core.log`, 'a');
   const child = spawn(process.execPath, [CORE_BUNDLE], {
+    // Never inherit a repository as working directory: on Windows a running process's cwd
+    // cannot be deleted or renamed, so Core would lock the user's project folder.
+    cwd: home,
     detached: true,
     stdio: ['ignore', log, log],
     windowsHide: true,

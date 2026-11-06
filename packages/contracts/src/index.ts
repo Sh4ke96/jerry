@@ -54,12 +54,13 @@ export const gateCheckRequestSchema = z.object({
 export type GateCheckRequest = z.infer<typeof gateCheckRequestSchema>;
 
 /**
- * PASS: JERRY has no objection; Claude Code's own permission system decides.
- *       JERRY never grants permissions, it only restricts them.
- * ASK:  escalate to the user (permissionDecision "ask").
- * DENY: block the tool call.
+ * JERRY monitors; it blocks only hard rules (ADR 0003).
+ * PASS: nothing to report; Claude Code's own permission system decides.
+ *       JERRY never grants permissions.
+ * WARN: the action proceeds, is recorded as a deviation, and Claude and the user are told.
+ * DENY: hard rule (Git state changes, .git, JERRY data and guard configuration): the call is blocked.
  */
-export const gateVerdictSchema = z.enum(['PASS', 'ASK', 'DENY']);
+export const gateVerdictSchema = z.enum(['PASS', 'WARN', 'DENY']);
 export type GateVerdict = z.infer<typeof gateVerdictSchema>;
 
 export const gateDecisionSchema = z.object({
@@ -156,6 +157,7 @@ export type ApprovedPlanSummary = z.infer<typeof approvedPlanSummarySchema>;
 export const sessionRegistrationResponseSchema = z.object({
   registered: z.literal(true),
   repoRoot: z.string().nullable(),
+  excluded: z.boolean(),
   approvedPlans: z.array(approvedPlanSummarySchema),
 });
 export type SessionRegistrationResponse = z.infer<typeof sessionRegistrationResponseSchema>;
@@ -166,12 +168,26 @@ export const sessionRecordSchema = sessionRegistrationSchema.extend({
 });
 export type SessionRecord = z.infer<typeof sessionRecordSchema>;
 
+/** A repository the user excluded from monitoring. Hard rules still apply there. */
+export const repositoryExclusionSchema = z.object({
+  repoRoot: z.string().min(1),
+  excludedAt: z.iso.datetime(),
+});
+export type RepositoryExclusion = z.infer<typeof repositoryExclusionSchema>;
+
+export const repositoryExclusionRequestSchema = z.object({
+  repoPath: z.string().min(1),
+  excluded: z.boolean(),
+});
+export type RepositoryExclusionRequest = z.infer<typeof repositoryExclusionRequestSchema>;
+
 export const coreStateSchema = z.object({
   schemaVersion: z.literal(1),
   nextTaskNumber: z.number().int().positive(),
   tasks: z.array(taskSchema),
   approvals: z.array(approvalRecordSchema),
   sessions: z.array(sessionRecordSchema),
+  excludedRepos: z.array(repositoryExclusionSchema).default([]),
 });
 export type CoreState = z.infer<typeof coreStateSchema>;
 

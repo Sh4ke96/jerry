@@ -1,5 +1,63 @@
 import { describe, expect, it } from 'vitest';
-import { assessShellCommand } from '../src/shell.js';
+import { assessGitUsage, assessShellCommand } from '../src/shell.js';
+
+describe('assessGitUsage', () => {
+  it.each([
+    ['git status', 'bash'],
+    ['git diff --stat', 'bash'],
+    ['git log --oneline -5 | head -3', 'bash'],
+    ['git -C ../other show HEAD:README.md', 'bash'],
+    ['git branch --show-current', 'powershell'],
+    ['git config --get user.name', 'bash'],
+    ['git diff > changes.patch', 'bash'],
+    ['ls .git', 'bash'],
+    ['cat .github/workflows/ci.yml', 'bash'],
+    ['npm test', 'bash'],
+    ['gh pr view 12', 'bash'],
+    ['gh --version', 'bash'],
+  ] as const)('%s does not change Git state', (command, dialect) => {
+    expect(assessGitUsage(command, dialect)).toMatchObject({ mutating: false });
+  });
+
+  it.each([
+    ['git commit -m x', 'not read-only'],
+    ['git push', 'not read-only'],
+    ['git add .', 'not read-only'],
+    ['git fetch origin', 'not read-only'],
+    ['git pull', 'not read-only'],
+    ['git stash', 'not read-only'],
+    ['git switch -c feature', 'not read-only'],
+    ['git restore src', 'not read-only'],
+    ['git tag v1', 'not read-only'],
+    ['git branch -D old', 'create or delete'],
+    ['git config user.email x', 'without --get'],
+    ['git -c alias.x=!rm log', 'global option'],
+    ['ls && git commit -m x', 'not read-only'],
+    ['/usr/bin/git push', 'not read-only'],
+    ['xargs git push', 'indirectly'],
+    ['bash -c "git push"', 'indirectly'],
+    ['GIT_DIR=x git commit', 'indirectly'],
+    ['echo $(git commit -m x)', 'substitution'],
+    ['git-lfs push origin', 'Git extension'],
+    ['gh pr create --fill', 'can change'],
+    ['gh pr merge 12', 'can change'],
+    ['pnpm version minor', 'creates a Git commit'],
+  ])('%s changes Git state (%s)', (command, reason) => {
+    const result = assessGitUsage(command, 'bash');
+    expect(result.mutating).toBe(true);
+    expect(result.reason).toContain(reason);
+  });
+
+  it.each([
+    "& 'C:\\Program Files\\Git\\cmd\\git.exe' push",
+    'Start-Process git -ArgumentList push',
+    'Invoke-Expression "git push"',
+    'Get-ChildItem | ForEach-Object { git add $_ }',
+    '(git commit -m x)',
+  ])('PowerShell: %s changes Git state', (command) => {
+    expect(assessGitUsage(command, 'powershell').mutating).toBe(true);
+  });
+});
 
 const readOnlyBash = [
   'git status',

@@ -1,5 +1,5 @@
 {
-  "description": "JERRY guard: registers sessions and blocks file edits and write-capable shell commands that are not covered by a user-approved plan. Fails closed.",
+  "description": "JERRY guard: registers sessions, records and warns about edits outside a user-approved plan, and blocks only hard rules (Git state changes, .git writes, tampering with JERRY).",
   "hooks": {
     "SessionStart": [
       {

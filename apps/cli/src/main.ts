@@ -3,6 +3,7 @@ import { JERRY_VERSION } from '@jerry/contracts';
 import { getCoreStatus, startCore, stopCore } from './core-commands.js';
 import { doctor } from './doctor.js';
 import { install, uninstall } from './install-commands.js';
+import { excludeRepository, includeRepository, listExcludedRepositories } from './repo-commands.js';
 import { createTask, decidePlan, listTasks, revisePlan } from './task-commands.js';
 
 const USAGE = `jerry ${JERRY_VERSION} — M0 feasibility spike
@@ -17,6 +18,9 @@ Usage:
   jerry plan revise <taskId> --scope <glob> [--scope <glob>...]
   jerry approve <taskId> --stage plan --version <n> [--comment <text>]
   jerry reject  <taskId> --stage plan --version <n> [--comment <text>]
+  jerry repo exclude <path>           Stop monitoring a repository (hard rules still apply)
+  jerry repo include <path>           Monitor an excluded repository again
+  jerry repo list                     List excluded repositories
 `;
 
 async function run(argv: string[]): Promise<void> {
@@ -44,6 +48,13 @@ async function run(argv: string[]): Promise<void> {
       if (positionals[0] !== 'revise' || positionals[1] === undefined || values.scope === undefined) throw new UsageError();
       await revisePlan(positionals[1], values.scope);
       return;
+    }
+    case 'repo': {
+      const [subcommand, target] = rest;
+      if (subcommand === 'list') return listExcludedRepositories();
+      if (subcommand === 'exclude' && target !== undefined) return excludeRepository(target);
+      if (subcommand === 'include' && target !== undefined) return includeRepository(target);
+      throw new UsageError();
     }
     case 'approve':
     case 'reject': {

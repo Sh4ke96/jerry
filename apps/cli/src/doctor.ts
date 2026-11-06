@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { CoreUnavailableError, findClaudeBinary, jerryPaths, resolveJerryHome } from '@jerry/platform';
+import { assertJerryHomeOutsideRepositories, CoreUnavailableError, findClaudeBinary, jerryPaths, resolveJerryHome } from '@jerry/platform';
 import { claudeVersion, listInstalledPlugins, PLUGIN_ID } from './claude-cli.js';
 import { getCoreStatus } from './core-commands.js';
 
@@ -25,11 +25,12 @@ export async function doctor(): Promise<void> {
 
   const home = resolveJerryHome();
   try {
+    assertJerryHomeOutsideRepositories(home);
     fs.mkdirSync(home, { recursive: true });
     fs.accessSync(home, fs.constants.W_OK);
     add('jerry-home', 'PASS', home);
   } catch (error) {
-    add('jerry-home', 'FAIL', `${home} is not writable: ${error instanceof Error ? error.message : String(error)}`);
+    add('jerry-home', 'FAIL', error instanceof Error ? error.message : String(error));
   }
 
   let pluginActive = false;
@@ -74,7 +75,11 @@ export async function doctor(): Promise<void> {
   for (const check of checks) {
     console.log(`${check.status.padEnd(4)}  ${check.name.padEnd(18)} ${check.detail}`);
   }
-  const guard = pluginActive && coreHealthy ? 'GUARDED' : pluginActive ? 'DEGRADED (writes blocked: Core down)' : 'UNGUARDED';
+  const guard = pluginActive && coreHealthy
+    ? 'GUARDED (monitoring on, hard rules enforced)'
+    : pluginActive
+      ? 'DEGRADED (Core down: monitoring off, hard rules still enforced)'
+      : 'UNGUARDED (plugin not active: nothing is monitored or enforced)';
   console.log(`\nGuard status: ${guard}`);
   if (checks.some((check) => check.status === 'FAIL')) process.exitCode = 1;
 }

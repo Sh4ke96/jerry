@@ -9,21 +9,26 @@ import {
   type SessionRegistrationResponse,
 } from '@jerry/contracts';
 import { protectedRoots, readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
-import { evaluateGate } from '@jerry/policy-engine';
+import { classifyToolCall, evaluateHardRules } from '@jerry/policy-engine';
 
 /**
- * Claude Code command-hook adapter. Thin by design: parse stdin, ask Core, translate the
- * answer into the hook protocol. Workflow logic lives in Core.
+ * Claude Code command-hook adapter (ADR 0003: JERRY monitors, and blocks only hard rules).
  *
- * PreToolUse protocol used here:
- *   exit 2 + reason on stderr  -> tool call blocked (works even if JSON parsing changes)
- *   exit 0 + JSON "ask"        -> user must confirm
- *   exit 0, no output          -> no objection; Claude Code permissions decide
- * Any unexpected failure exits 2 (fail-closed). hooks.json also sets onFailure: "block"
- * for crashes that happen before this code runs (e.g. node missing).
+ * PreToolUse flow:
+ *   1. Parse stdin and evaluate the hard rules locally (Git state changes, .git, JERRY data).
+ *      These need no Core, so they hold while Core is down. If the input cannot be parsed,
+ *      the hard rules cannot be checked and the call is blocked.
+ *   2. Ask Core for the monitoring verdict (recorded in the gate log).
+ *      Once the hard rules passed, any Core problem lets the call proceed: an outage costs
+ *      monitoring, never Claude's ability to work.
+ *
+ * Output protocol:
+ *   exit 2 + reason on stderr                       -> blocked (hard rule)
+ *   exit 0 + JSON systemMessage/additionalContext   -> proceeds, user and Claude are warned
+ *   exit 0, no output                               -> proceeds; Claude Code permissions decide
  */
 
-const CORE_TIMEOUT_MS = 3000;
+const CORE_TIMEOUT_MS = 1500;
 const WATCHDOG_MS = 8000;
 const MAX_STDIN_BYTES = 64 * 1024 * 1024;
 /** Only these tool_input fields are forwarded to Core: never file contents or edit payloads. */
@@ -31,14 +36,27 @@ const FORWARDED_TOOL_INPUT_FIELDS = ['file_path', 'notebook_path', 'command'] as
 
 type BridgeEvent = 'pre-tool-use' | 'session-start';
 
+/** Set once the hard rules passed; from then on every failure lets the tool call proceed. */
+let hardRulesCleared = false;
+
 /** Synchronous fd writes: process.stdout/stderr can be asynchronous pipes on Windows and lose data on exit. */
 function writeOut(text: string): void {
   fs.writeSync(1, text);
 }
 
 function block(reason: string): never {
-  fs.writeSync(2, `JERRY guard: ${reason}\n`);
+  fs.writeSync(2, `JERRY: ${reason}\n`);
   process.exit(2);
+}
+
+function proceed(): never {
+  process.exit(0);
+}
+
+/** Called on unexpected failures: block only while the hard rules have not been verified. */
+function onFailure(reason: string): never {
+  if (process.argv[2] === 'session-start' || hardRulesCleared) proceed();
+  block(`${reason}; the hard rules could not be checked, so the call is blocked`);
 }
 
 async function readStdin(): Promise<string> {
@@ -55,7 +73,7 @@ async function readStdin(): Promise<string> {
 
 async function preToolUse(raw: string): Promise<void> {
   const parsed = preToolUseInputSchema.safeParse(JSON.parse(raw));
-  if (!parsed.success) block(`unrecognised PreToolUse input (${parsed.error.issues[0]?.message ?? 'invalid'}); blocking by default`);
+  if (!parsed.success) onFailure(`unrecognised PreToolUse input (${parsed.error.issues[0]?.message ?? 'invalid'})`);
   const input = parsed.data;
 
   const forwardedInput: Record<string, unknown> = {};
@@ -71,87 +89,73 @@ async function preToolUse(raw: string): Promise<void> {
     agentId: input.agent_id ?? null,
   };
 
-  const decision = await decideWithCore(request).catch((error: unknown) => decideOffline(request, error));
-  emitPreToolUse(decision);
+  const hardRule = evaluateHardRules(classifyToolCall(request.toolName, request.toolInput), request.cwd, {
+    platform: process.platform,
+    protectedRoots: protectedRoots(),
+    realPath: (target) => target,
+  });
+  if (hardRule !== null) {
+    // Best effort: record the blocked attempt in Core's gate log; never wait long for it.
+    await askCore(request).catch(() => null);
+    block(`${hardRule.reason} [${hardRule.ruleId}]`);
+  }
+  hardRulesCleared = true;
+
+  const decision = await askCore(request).catch(() => null);
+  if (decision === null) proceed(); // Core unavailable: monitoring is off, work continues.
+  emit(decision);
 }
 
-async function decideWithCore(request: GateCheckRequest): Promise<GateDecision> {
+async function askCore(request: GateCheckRequest): Promise<GateDecision> {
   const info = readCoreRuntimeInfo(resolveJerryHome());
   const body = await requestCore(info, { method: 'POST', path: '/api/v1/gate/check', body: request, timeoutMs: CORE_TIMEOUT_MS });
   return gateDecisionSchema.parse(body);
 }
 
-/**
- * Core unreachable: only commands the local classifier proves read-only may run.
- * Everything else fails closed (JR-018: a safety gate outage blocks writes, not safe reads).
- */
-function decideOffline(request: GateCheckRequest, error: unknown): GateDecision {
-  const cause = error instanceof Error ? error.message : String(error);
-  const local = evaluateGate(request, {
-    platform: process.platform,
-    protectedRoots: protectedRoots(),
-    realPath: (target) => target,
-    findRepoRoot: () => null,
-    approvedPlans: () => [],
-  });
-  if (local.verdict === 'PASS' && local.ruleId === 'shell.read-only') {
-    return { ...local, ruleId: 'core.unavailable.read-only-allowed' };
-  }
-  if (local.verdict === 'PASS' && local.ruleId === 'tool.not-guarded') {
-    return local;
-  }
-  return {
-    verdict: 'DENY',
-    ruleId: 'core.unavailable',
-    reason: `JERRY Core is unavailable (${cause}); writes are blocked until Core is running again (fail-closed). Ask the user to run "jerry core start".`,
-    taskId: null,
-    repoRoot: null,
-  };
-}
-
-function emitPreToolUse(decision: GateDecision): void {
+function emit(decision: GateDecision): never {
   switch (decision.verdict) {
     case 'DENY':
+      // Core also enforces hard rules, e.g. a .git write reached through a link that only
+      // Core can resolve on disk.
       block(`${decision.reason} [${decision.ruleId}]`);
       break;
-    case 'ASK':
+    case 'WARN':
       writeOut(
         JSON.stringify({
+          systemMessage: `JERRY: ${decision.reason} [${decision.ruleId}]`,
           hookSpecificOutput: {
             hookEventName: 'PreToolUse',
-            permissionDecision: 'ask',
-            permissionDecisionReason: `JERRY: ${decision.reason} [${decision.ruleId}]`,
+            additionalContext: `JERRY warning: ${decision.reason} [${decision.ruleId}] Mention this deviation to the user in your summary; JERRY does not block it.`,
           },
         }),
       );
-      process.exit(0);
+      proceed();
       break;
     case 'PASS':
-      process.exit(0);
+      proceed();
   }
 }
 
+const HARD_RULES_TEXT =
+  'Hard rules, always enforced: you may not run any Git command that changes anything (commit, push, merge, rebase, checkout, switch, reset, restore, stash, fetch, pull, tag, branch changes, config changes, gh/npm version and similar); the user does all Git operations manually. Read-only Git (status, diff, log, show, blame) is fine. You may not write inside .git, modify JERRY data or the Claude Code settings that enable JERRY, or run "jerry approve/reject/repo/install/uninstall/core" or call the JERRY API.';
+
 /**
- * Tells the model what is actually approved right now. A generic "edits need approval" message
- * made models refuse even in-scope edits of an already approved plan (M0 live finding).
+ * Tells the model what is actually approved right now. A generic message made models refuse
+ * even in-scope edits of an already approved plan (M0 live finding).
  */
-function guardedSessionContext(registration: SessionRegistrationResponse): string {
-  const lines = ['JERRY guard: GUARDED.'];
+function monitoredSessionContext(registration: SessionRegistrationResponse): string {
+  const lines = ['JERRY: monitoring this session. JERRY does not block your edits; it records deviations from the user-approved plan and warns you about them.'];
   if (registration.repoRoot === null) {
-    lines.push('The working directory is not inside a Git repository. JERRY blocks edits inside Git repositories that are not covered by an approved plan.');
+    lines.push('The working directory is not inside a Git repository.');
+  } else if (registration.excluded) {
+    lines.push(`The user excluded ${registration.repoRoot} from JERRY monitoring.`);
   } else if (registration.approvedPlans.length === 0) {
-    lines.push(
-      `There is no approved JERRY plan for the repository ${registration.repoRoot} yet. File edits and write-capable shell commands there will be blocked; read-only work is fine.`,
-      'To change code, prepare a plan and ask the user to approve it in JERRY.',
-    );
+    lines.push(`There is no approved JERRY plan for ${registration.repoRoot}; edits there will be recorded as deviations.`);
   } else {
     const plans = registration.approvedPlans.map((plan) => `${plan.taskId} v${plan.planVersion} (scope: ${plan.scope.join(', ')})`).join('; ');
-    lines.push(
-      `Approved JERRY plan(s) for the repository ${registration.repoRoot}: ${plans}.`,
-      'You may edit files inside that scope. Edits outside it are blocked and need a new plan version approved by the user.',
-    );
+    lines.push(`Approved JERRY plan(s) for ${registration.repoRoot}: ${plans}. Edits outside that scope are recorded as deviations.`);
   }
-  lines.push('Never run "jerry approve" or call the JERRY API yourself. If JERRY blocks an action, report the reason to the user instead of working around it.');
+  lines.push(HARD_RULES_TEXT, 'If JERRY blocks an action, report the reason to the user instead of working around it.');
   return lines.join(' ');
 }
 
@@ -165,16 +169,16 @@ async function sessionStart(raw: string): Promise<void> {
         method: 'POST',
         path: '/api/v1/sessions',
         body: { sessionId: input.session_id, cwd: input.cwd, source: input.source ?? null },
-        timeoutMs: 1500,
+        timeoutMs: CORE_TIMEOUT_MS,
       }),
     );
-    context = guardedSessionContext(registration);
+    context = monitoredSessionContext(registration);
   } catch (error) {
     const cause = error instanceof Error ? error.message : String(error);
-    context = `JERRY guard: Core unavailable (${cause}). File edits in repositories will be blocked (fail-closed) until the user runs "jerry core start". Read-only work can continue.`;
+    context = `JERRY: Core unavailable (${cause}); monitoring is off and actions are not recorded until the user runs "jerry core start". ${HARD_RULES_TEXT}`;
   }
   writeOut(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: context } }));
-  process.exit(0);
+  proceed();
 }
 
 async function main(): Promise<void> {
@@ -182,10 +186,7 @@ async function main(): Promise<void> {
   if (event !== 'pre-tool-use' && event !== 'session-start') {
     block(`bridge invoked with unknown event "${String(event)}"`);
   }
-  const watchdog = setTimeout(() => {
-    if (event === 'pre-tool-use') block(`bridge exceeded ${WATCHDOG_MS} ms; blocking by default`);
-    process.exit(0);
-  }, WATCHDOG_MS);
+  const watchdog = setTimeout(() => onFailure(`bridge exceeded ${WATCHDOG_MS} ms`), WATCHDOG_MS);
   watchdog.unref();
 
   const raw = await readStdin();
@@ -196,12 +197,6 @@ async function main(): Promise<void> {
   }
 }
 
-process.on('uncaughtException', (error) => {
-  if (process.argv[2] === 'session-start') process.exit(0);
-  block(`bridge crashed (${error.message}); blocking by default`);
-});
+process.on('uncaughtException', (error) => onFailure(`bridge crashed (${error.message})`));
 
-main().catch((error: unknown) => {
-  if (process.argv[2] === 'session-start') process.exit(0);
-  block(`bridge failed (${error instanceof Error ? error.message : String(error)}); blocking by default`);
-});
+main().catch((error: unknown) => onFailure(`bridge failed (${error instanceof Error ? error.message : String(error)})`));

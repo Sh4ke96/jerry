@@ -140,6 +140,19 @@ describe.skipIf(claude === null)('jerry install / doctor / uninstall (isolated C
     expect(jerry(['uninstall']).exitCode).toBe(0);
   });
 
+  it('--purge-data deletes only what JERRY created in JERRY_HOME', () => {
+    const foreign = path.join(jerryHome, 'not-created-by-jerry.txt');
+    fs.writeFileSync(foreign, 'keep me');
+
+    const result = jerry(['uninstall', '--purge-data']);
+    expect(result.exitCode, result.output).toBe(0);
+    expect(result.output).toContain('JERRY did not create');
+    expect(fs.existsSync(foreign)).toBe(true);
+    for (const entry of ['run', 'state', 'logs', 'config', 'marketplace']) {
+      expect(fs.existsSync(path.join(jerryHome, entry))).toBe(false);
+    }
+  });
+
   it('never touched the project repository or the real Claude profile', () => {
     expect(snapshotRepo(repo)).toEqual(repoBefore);
     expect(fingerprintRealProfile()).toBe(realProfileBefore);

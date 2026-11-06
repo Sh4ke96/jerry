@@ -2,7 +2,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { JERRY_VERSION } from '@jerry/contracts';
-import { jerryPaths, resolveClaudeConfigDir, resolveJerryHome, writeFileAtomic } from '@jerry/platform';
+import {
+  assertJerryHomeOutsideRepositories,
+  JERRY_HOME_ENTRIES,
+  jerryPaths,
+  resolveClaudeConfigDir,
+  resolveJerryHome,
+  writeFileAtomic,
+} from '@jerry/platform';
 import {
   claudeVersion,
   listInstalledPlugins,
@@ -31,6 +38,7 @@ export function install(): void {
   }
 
   const home = resolveJerryHome();
+  assertJerryHomeOutsideRepositories(home);
   const paths = jerryPaths(home);
   const pluginDir = path.join(paths.marketplaceDir, 'plugins', PLUGIN_NAME);
 
@@ -103,12 +111,23 @@ export function uninstall(options: { purgeData: boolean }): void {
   const removeResult = runClaude(claude, ['plugin', 'marketplace', 'remove', MARKETPLACE_NAME, '--json']);
   reportIdempotent(removeResult, 'not_configured', `Removed marketplace ${MARKETPLACE_NAME}`, `Marketplace ${MARKETPLACE_NAME} was not configured`);
 
+  assertJerryHomeOutsideRepositories(home);
   fs.rmSync(paths.marketplaceDir, { recursive: true, force: true });
   fs.rmSync(paths.installManifestFile, { force: true });
 
   if (options.purgeData) {
-    fs.rmSync(home, { recursive: true, force: true });
-    console.log(`Deleted JERRY data directory ${home}.`);
+    // Delete only what JERRY created, never the whole directory tree: a misconfigured
+    // JERRY_HOME (e.g. "D:\") must not take anything else with it.
+    for (const entry of JERRY_HOME_ENTRIES) {
+      fs.rmSync(path.join(home, entry), { recursive: true, force: true });
+    }
+    const leftovers = fs.existsSync(home) ? fs.readdirSync(home) : [];
+    if (leftovers.length === 0) {
+      fs.rmSync(home, { recursive: true, force: true });
+      console.log(`Deleted JERRY data directory ${home}.`);
+    } else {
+      console.log(`Deleted JERRY data in ${home}; left ${leftovers.length} entr${leftovers.length === 1 ? 'y' : 'ies'} JERRY did not create: ${leftovers.join(', ')}`);
+    }
   } else {
     console.log(`Kept JERRY data (state, logs) in ${home}. Use --purge-data to delete it.`);
   }

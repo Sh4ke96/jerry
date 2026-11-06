@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import { JERRY_VERSION, type CoreRuntimeInfo } from '@jerry/contracts';
 import {
+  assertJerryHomeOutsideRepositories,
   CoreUnavailableError,
   jerryPaths,
   protectedRoots,
@@ -15,6 +16,7 @@ import { StateStore } from './state-store.js';
 
 async function main(): Promise<void> {
   const home = resolveJerryHome();
+  assertJerryHomeOutsideRepositories(home);
   const paths = jerryPaths(home);
   for (const dir of [paths.runDir, paths.stateDir, paths.logsDir]) {
     fs.mkdirSync(dir, { recursive: true });

@@ -35,6 +35,11 @@ export function currentPlanDecision(task: Task, approvals: readonly ApprovalReco
   return matching.at(-1) ?? null;
 }
 
+export function isRepoExcluded(state: CoreState, repoRoot: string, platform: NodeJS.Platform): boolean {
+  const repoKey = comparablePath(repoRoot, repoRoot, platform);
+  return state.excludedRepos.some((exclusion) => comparablePath(exclusion.repoRoot, exclusion.repoRoot, platform) === repoKey);
+}
+
 export function approvedPlansForRepo(state: CoreState, repoRoot: string, platform: NodeJS.Platform): ApprovedPlan[] {
   const repoKey = comparablePath(repoRoot, repoRoot, platform);
   return state.tasks

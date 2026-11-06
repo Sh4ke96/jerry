@@ -36,7 +36,7 @@ export class StateStore {
 
   private static load(filePath: string): CoreState {
     if (!fs.existsSync(filePath)) {
-      return { schemaVersion: 1, nextTaskNumber: 1, tasks: [], approvals: [], sessions: [] };
+      return { schemaVersion: 1, nextTaskNumber: 1, tasks: [], approvals: [], sessions: [], excludedRepos: [] };
     }
     const parsed = coreStateSchema.safeParse(JSON.parse(fs.readFileSync(filePath, 'utf8')));
     if (!parsed.success) {
@@ -124,6 +124,15 @@ export class StateStore {
         existing.lastSeenAt = timestamp;
       }
       state.sessions = state.sessions.slice(-MAX_SESSIONS);
+    });
+  }
+
+  /** Excluding stops monitoring for the repository; hard rules keep applying there. */
+  setExcluded(repoRoot: string, excluded: boolean, now: Date): void {
+    this.mutate((state) => {
+      const key = (root: string): string => (process.platform === 'win32' ? root.toLowerCase() : root);
+      state.excludedRepos = state.excludedRepos.filter((exclusion) => key(exclusion.repoRoot) !== key(repoRoot));
+      if (excluded) state.excludedRepos.push({ repoRoot, excludedAt: now.toISOString() });
     });
   }
 
