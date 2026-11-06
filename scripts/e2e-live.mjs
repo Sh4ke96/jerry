@@ -6,6 +6,7 @@
 // approved plan; it blocks only hard rules such as Git state changes, with or without Core.
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -60,13 +61,38 @@ async function stopCore() {
   await new Promise((r) => coreProcess.once('exit', r));
   fs.rmSync(path.join(home, 'run', 'core.json'), { force: true });
 }
-async function coreApi(info, method, apiPath, body) {
-  const response = await fetch(`http://127.0.0.1:${info.port}${apiPath}`, {
-    method,
-    headers: { authorization: `Bearer ${info.token}`, 'content-type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
+/**
+ * One fresh connection per call (agent: false). fetch kept the connection alive across the long
+ * Claude sessions between calls and reused a socket Core had already closed (ECONNRESET).
+ */
+function coreApi(info, method, apiPath, body) {
+  const payload = body === undefined ? undefined : JSON.stringify(body);
+  return new Promise((resolve, reject) => {
+    const request = http.request(
+      {
+        host: '127.0.0.1',
+        port: info.port,
+        method,
+        path: apiPath,
+        agent: false,
+        headers: { authorization: `Bearer ${info.token}`, ...(payload === undefined ? {} : { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) }) },
+      },
+      (response) => {
+        const chunks = [];
+        response.on('data', (chunk) => chunks.push(chunk));
+        response.on('end', () => {
+          try {
+            resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+          } catch (error) {
+            reject(error);
+          }
+        });
+      },
+    );
+    request.on('error', reject);
+    if (payload !== undefined) request.write(payload);
+    request.end();
   });
-  return response.json();
 }
 
 // The model follows the hard rules it is told about at SessionStart and never even attempts
@@ -262,6 +288,26 @@ const m = runClaude(
 const mTools = (await sessionEvents(m.sessionId)).map((event) => event.toolName).filter(Boolean);
 expect('M: the session read the project profile', mTools.some((tool) => tool.endsWith('__jerry_get_project_profile')), mTools.join(', '));
 expect('M: Claude named the project’s own test command', /npm run test/.test(m.text), m.text.slice(0, 200));
+
+// N — plugin subagents: Claude Code loads JERRY's read-only analysts from the plugin, and they only read.
+const n = runClaude(
+  'N: JERRY analyst subagent',
+  'Use the jerry-risk-analyst subagent (from the jerry plugin) to look at src/app.ts and name one risk with its file:line evidence. Do nothing else yourself.',
+  ['Task', 'Agent', 'Read', 'Grep', 'Glob'],
+);
+const nRows = await (async () => {
+  const { DatabaseSync } = await import('node:sqlite');
+  const db = new DatabaseSync(path.join(home, 'database', 'jerry.sqlite'), { readOnly: true });
+  try {
+    return db.prepare('SELECT event_type, agent_type, agent_id, tool_name FROM hook_events WHERE session_id = ?').all(n.sessionId);
+  } finally {
+    db.close();
+  }
+})();
+const analystStarts = nRows.filter((row) => row.event_type === 'SubagentStart' && /jerry-risk-analyst/.test(row.agent_type ?? ''));
+expect('N: Claude Code ran the jerry-risk-analyst subagent from the plugin', analystStarts.length > 0, nRows.map((row) => `${row.event_type}:${row.agent_type ?? ''}:${row.tool_name ?? ''}`).join(', ').slice(0, 240));
+const analystIds = new Set(analystStarts.map((row) => row.agent_id));
+expect('N: the analyst only read (no write or shell tool)', !nRows.some((row) => analystIds.has(row.agent_id) && /^(Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell)$/.test(row.tool_name ?? '')));
 
 // L — Git baseline: the user's uncommitted work is protected, and Git sees what shell commands changed.
 fs.writeFileSync(path.join(repo, 'src', 'app.ts'), 'export const answer = 43; // user edit, uncommitted\n');

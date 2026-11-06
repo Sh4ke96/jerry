@@ -9,6 +9,7 @@ import { CORE_TOKEN_PATTERN, EVENT_SCHEMA_VERSION, GATE_VERDICTS, HOOK_EVENT_TYP
  */
 
 export * from './constants.js';
+export * from './agents.js';
 
 // ---------------------------------------------------------------------------
 // Claude Code hook input (stdin of a command hook)

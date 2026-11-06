@@ -54,6 +54,11 @@ export interface CoreRequestOptions {
 /**
  * Minimal JSON-over-loopback client. Uses node:http instead of fetch because the
  * hook bridge runs on every guarded tool call and must start fast.
+ *
+ * Every request opens its own connection (`agent: false`). Node's global agent keeps connections
+ * alive, and a long-lived caller (the MCP server, the dashboard's Core) could reuse a socket that
+ * Core closed after its keep-alive timeout: the request then fails with ECONNRESET. On loopback a
+ * fresh connection costs next to nothing.
  */
 export function requestCore(info: CoreRuntimeInfo, options: CoreRequestOptions): Promise<unknown> {
   const payload = options.body === undefined ? undefined : JSON.stringify(options.body);
@@ -62,6 +67,7 @@ export function requestCore(info: CoreRuntimeInfo, options: CoreRequestOptions):
       {
         host: '127.0.0.1',
         port: info.port,
+        agent: false,
         method: options.method,
         path: options.path,
         headers: {

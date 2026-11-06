@@ -16,7 +16,7 @@ to three implementers with disjoint scopes.
 
 ## M4 — Analysis and Planning (three analysts)
 
-- [ ] Agent registry: the three analysts, the three reviewers and the implementer role (ADR 0015).
+- [x] Agent registry: the three analysts, the three reviewers and the implementer role ([ADR 0022](decisions/0022-agent-registry.md)).
 - [ ] Analysis orchestrator: at most three analysts in parallel; repository discovery within their scope.
 - [ ] Architecture and contracts analyst: architecture and impact, API, database, cross-repository integration.
 - [ ] Risk analyst: security and threats, devil's advocate.

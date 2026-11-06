@@ -5,7 +5,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { JERRY_VERSION } from '@jerry/contracts';
+import { AGENT_ROLES, JERRY_VERSION } from '@jerry/contracts';
 import {
   assertJerryHomeOutsideRepositories,
   buildHash,
@@ -176,6 +176,9 @@ export async function doctor(): Promise<void> {
 }
 
 /** Version, plugin state, hook files, marketplace and whether the installed plugin matches this build. */
+/** Files of the installed plugin: hooks, MCP server and one subagent definition per role (ADR 0022). */
+const PLUGIN_FILES: readonly string[] = ['hooks/hooks.json', 'hooks/bridge.mjs', 'mcp/server.mjs', '.mcp.json', ...AGENT_ROLES.map((role) => `agents/${role.id}.md`)];
+
 function checkClaude(claude: ClaudeBinary, add: (name: string, status: CheckStatus, detail: string) => void): string | null {
   try {
     const version = claudeVersion(claude);
@@ -195,7 +198,7 @@ function checkClaude(claude: ClaudeBinary, add: (name: string, status: CheckStat
       add('plugin', 'FAIL', `${PLUGIN_ID} is installed but disabled`);
     } else {
       root = plugin.readFromFolder ?? plugin.installPath ?? null;
-      const missing = ['hooks/hooks.json', 'hooks/bridge.mjs', 'mcp/server.mjs', '.mcp.json'].filter((file) => root === null || !fs.existsSync(path.join(root, file)));
+      const missing = PLUGIN_FILES.filter((file) => root === null || !fs.existsSync(path.join(root, file)));
       add('plugin', missing.length === 0 ? 'PASS' : 'FAIL', `${PLUGIN_ID} enabled (${plugin.scope ?? '?'} scope) at ${root}${missing.length === 0 ? '' : `; missing ${missing.join(', ')}`}`);
       if (missing.length > 0) root = null;
     }
@@ -215,7 +218,7 @@ function checkClaude(claude: ClaudeBinary, add: (name: string, status: CheckStat
   }
 
   if (root !== null && fs.existsSync(SIBLING_PLUGIN)) {
-    const stale = ['hooks/hooks.json', 'hooks/bridge.mjs', 'mcp/server.mjs', '.mcp.json'].filter((file) => fileHash(path.join(root!, file)) !== fileHash(path.join(SIBLING_PLUGIN, file)));
+    const stale = PLUGIN_FILES.filter((file) => fileHash(path.join(root!, file)) !== fileHash(path.join(SIBLING_PLUGIN, file)));
     add('plugin-build', stale.length === 0 ? 'PASS' : 'WARN', stale.length === 0 ? 'the installed plugin matches this build' : `the installed plugin differs from this build (${stale.join(', ')}): run "jerry install" and reload Claude Code`);
   }
   return root;
