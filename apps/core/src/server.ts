@@ -2,6 +2,7 @@ import { timingSafeEqual } from 'node:crypto';
 import http from 'node:http';
 import {
   approvalRequestSchema,
+  eventIngestRequestSchema,
   gateCheckRequestSchema,
   JERRY_VERSION,
   planReviseRequestSchema,
@@ -9,23 +10,26 @@ import {
   sessionRegistrationSchema,
   taskCreateRequestSchema,
   taskIdSchema,
+  type CoreState,
   type CoreStatus,
+  type GateCheckRequest,
   type GateDecision,
   type SessionRegistrationResponse,
 } from '@jerry/contracts';
-import { appendJsonLine } from '@jerry/platform';
-import { approvedPlansForRepo, classifyToolCall, evaluateGate, isRepoExcluded } from '@jerry/policy-engine';
+import { approvedPlansForRepo, evaluateGate, isRepoExcluded } from '@jerry/policy-engine';
+import { buildEventEnvelope } from '@jerry/trace-engine';
 import type { z } from 'zod';
+import { evaluatePending } from './events.js';
 import { findGitRoot, realPathOfNearestExisting } from './repo-fs.js';
 import { StateError, type StateStore } from './state-store.js';
 
 const MAX_BODY_BYTES = 1024 * 1024;
+const MAX_EVENTS_PAGE = 500;
 
 export interface CoreServerOptions {
   token: string;
   store: StateStore;
   jerryHome: string;
-  gateLogFile: string;
   protectedRoots: readonly string[];
   startedAt: Date;
   onShutdownRequested: () => void;
@@ -41,10 +45,26 @@ class HttpError extends Error {
   }
 }
 
+/** The gate as Core evaluates it: real filesystem lookups plus the current state snapshot. */
+export function gateEvaluator(store: StateStore, protectedRoots: readonly string[]): (request: GateCheckRequest) => GateDecision {
+  return (request) => {
+    const snapshot: CoreState = store.snapshot();
+    return evaluateGate(request, {
+      platform: process.platform,
+      protectedRoots,
+      realPath: realPathOfNearestExisting,
+      findRepoRoot: findGitRoot,
+      approvedPlans: (repoRoot) => approvedPlansForRepo(snapshot, repoRoot, process.platform),
+      isExcluded: (repoRoot) => isRepoExcluded(snapshot, repoRoot, process.platform),
+    });
+  };
+}
+
 export function createCoreServer(options: CoreServerOptions): http.Server {
   const tokenBuffer = Buffer.from(options.token, 'utf8');
+  const evaluate = gateEvaluator(options.store, options.protectedRoots);
   const server = http.createServer((request, response) => {
-    handle(request, options, tokenBuffer, server)
+    handle(request, options, evaluate, tokenBuffer, server)
       .then((result) => send(response, result.status, result.body))
       .catch((error: unknown) => {
         if (error instanceof HttpError) {
@@ -62,6 +82,7 @@ export function createCoreServer(options: CoreServerOptions): http.Server {
 async function handle(
   request: http.IncomingMessage,
   options: CoreServerOptions,
+  evaluate: (request: GateCheckRequest) => GateDecision,
   tokenBuffer: Buffer,
   server: http.Server,
 ): Promise<{ status: number; body: unknown }> {
@@ -94,22 +115,53 @@ async function handle(
 
   if (method === 'POST' && url.pathname === '/api/v1/gate/check') {
     const gateRequest = parse(gateCheckRequestSchema, await readJson(request));
-    const snapshot = store.snapshot();
-    const decision = evaluateGate(gateRequest, {
-      platform: process.platform,
-      protectedRoots: options.protectedRoots,
-      realPath: realPathOfNearestExisting,
-      findRepoRoot: findGitRoot,
-      approvedPlans: (repoRoot) => approvedPlansForRepo(snapshot, repoRoot, process.platform),
-      isExcluded: (repoRoot) => isRepoExcluded(snapshot, repoRoot, process.platform),
-    });
-    logGateDecision(options.gateLogFile, now, gateRequest, decision);
+    const decision = evaluate(gateRequest);
+    const event = buildEventEnvelope(
+      {
+        hook_event_name: 'PreToolUse',
+        session_id: gateRequest.sessionId,
+        cwd: gateRequest.cwd,
+        tool_name: gateRequest.toolName,
+        tool_input: gateRequest.toolInput,
+        tool_use_id: gateRequest.toolUseId,
+        agent_id: gateRequest.agentId,
+      },
+      {
+        ...(gateRequest.eventId === undefined ? {} : { eventId: gateRequest.eventId }),
+        timestamp: now,
+        verdict: decision.verdict,
+        ruleId: decision.ruleId,
+        taskId: decision.taskId,
+        repoRoot: decision.repoRoot,
+        extraPayload: { reason: decision.reason },
+      },
+    );
+    if (event !== null) await store.recordEvents([event], now, false);
     return { status: 200, body: decision };
+  }
+
+  if (method === 'POST' && url.pathname === '/api/v1/events') {
+    const body = parse(eventIngestRequestSchema, await readJson(request));
+    const inserted = await store.recordEvents(body.events.map((event) => evaluatePending(event, evaluate)), now, false);
+    return { status: 202, body: { accepted: body.events.length, inserted } };
+  }
+
+  if (method === 'GET' && url.pathname === '/api/v1/events') {
+    const limit = Math.min(Number(url.searchParams.get('limit') ?? '100') || 100, MAX_EVENTS_PAGE);
+    const sessionId = url.searchParams.get('sessionId');
+    const verdict = url.searchParams.get('verdict');
+    const events = await store.listEvents({ limit, ...(sessionId === null ? {} : { sessionId }), ...(verdict === null ? {} : { verdict }) });
+    return { status: 200, body: events };
   }
 
   if (method === 'POST' && url.pathname === '/api/v1/sessions') {
     const registration = parse(sessionRegistrationSchema, await readJson(request));
     await store.registerSession(registration, now);
+    const sessionEvent = buildEventEnvelope(
+      { hook_event_name: 'SessionStart', session_id: registration.sessionId, cwd: registration.cwd, source: registration.source },
+      { timestamp: now },
+    );
+    if (sessionEvent !== null) await store.recordEvents([sessionEvent], now, false);
     const repoRoot = findGitRoot(realPathOfNearestExisting(registration.cwd));
     const snapshot = store.snapshot();
     const response: SessionRegistrationResponse = {
@@ -179,7 +231,7 @@ async function handle(
   throw new HttpError(404, `No route for ${method} ${url.pathname}`);
 }
 
-/** Blocks DNS-rebinding and browser-originated requests; there is no dashboard in M0. */
+/** Blocks DNS-rebinding and browser-originated requests; there is no dashboard yet. */
 function assertLoopbackRequest(request: http.IncomingMessage, server: http.Server): void {
   const address = server.address();
   const port = typeof address === 'object' && address !== null ? address.port : -1;
@@ -240,33 +292,4 @@ function send(response: http.ServerResponse, status: number, body: unknown): voi
     'cache-control': 'no-store',
   });
   response.end(payload);
-}
-
-/**
- * Audit trail of every gate decision. Data minimization: file paths are logged, but
- * never file contents, and shell commands only by their first word and length.
- */
-function logGateDecision(
-  logFile: string,
-  now: Date,
-  request: z.infer<typeof gateCheckRequestSchema>,
-  decision: GateDecision,
-): void {
-  const action = classifyToolCall(request.toolName, request.toolInput);
-  const target =
-    action.kind === 'file-write'
-      ? { paths: action.paths }
-      : action.kind === 'shell' || action.kind === 'shell-opaque'
-        ? { commandHead: action.command.trim().split(/\s+/)[0] ?? '', commandLength: action.command.length }
-        : {};
-  appendJsonLine(logFile, {
-    at: now.toISOString(),
-    sessionId: request.sessionId,
-    agentId: request.agentId,
-    toolUseId: request.toolUseId,
-    toolName: request.toolName,
-    cwd: request.cwd,
-    ...target,
-    ...decision,
-  });
 }

@@ -8,8 +8,9 @@ import { asKyselyDatabase, loadSqlite, type DatabaseSync } from './sqlite.js';
 
 export const MIGRATION_TABLE = 'schema_migrations';
 export const MIGRATION_LOCK_TABLE = 'schema_migrations_lock';
-/** Backups kept in JERRY_HOME/backups; older ones are pruned. */
+/** Backups kept in JERRY_HOME/backups: at most this many and this many bytes; the newest one always stays. */
 export const BACKUPS_TO_KEEP = 20;
+export const BACKUPS_MAX_BYTES = 512 * 1024 * 1024;
 
 export interface JerryDatabase {
   db: Kysely<JerrySchema>;
@@ -96,11 +97,13 @@ export function listBackups(backupsDir: string): Array<{ file: string; size: num
     .sort((a, b) => a.file.localeCompare(b.file));
 }
 
-function pruneBackups(backupsDir: string): void {
-  const backups = listBackups(backupsDir);
-  for (const old of backups.slice(0, Math.max(0, backups.length - BACKUPS_TO_KEEP))) {
-    fs.rmSync(old.file, { force: true });
-  }
+export function pruneBackups(backupsDir: string, maxCount = BACKUPS_TO_KEEP, maxBytes = BACKUPS_MAX_BYTES): void {
+  const newestFirst = listBackups(backupsDir).reverse();
+  let total = 0;
+  newestFirst.forEach((backup, index) => {
+    total += backup.size;
+    if (index > 0 && (index >= maxCount || total > maxBytes)) fs.rmSync(backup.file, { force: true });
+  });
 }
 
 /**

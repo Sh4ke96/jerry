@@ -145,12 +145,13 @@ describe('JERRY guard (bundled bridge + Core)', () => {
     expect(sessionContext(path.join(repo, 'src'))).toContain(`${taskId} v2 (scope: src/**, test/**)`);
   });
 
-  it('logs warnings and blocked attempts without file contents', () => {
-    const entries = fs.readFileSync(path.join(home, 'logs', 'gate-decisions.jsonl'), 'utf8').trim().split('\n');
-    expect(entries.join('\n')).not.toContain('SECRET-CONTENT-MUST-NOT-BE-LOGGED');
-    const parsed = entries.map((line) => JSON.parse(line) as { verdict: string; ruleId: string });
-    expect(parsed.some((entry) => entry.verdict === 'WARN' && entry.ruleId === 'monitor.out-of-scope')).toBe(true);
-    expect(parsed.some((entry) => entry.verdict === 'DENY' && entry.ruleId === 'hard.git-mutation')).toBe(true);
+  it('records warnings and blocked attempts as events without file contents', async () => {
+    const response = await api(core, 'GET', '/api/v1/events?limit=500');
+    const events = response.body as Array<{ eventType: string; verdict: string | null; ruleId: string | null }>;
+    expect(JSON.stringify(events)).not.toContain('SECRET-CONTENT-MUST-NOT-BE-LOGGED');
+    expect(events.some((event) => event.eventType === 'PreToolUse' && event.verdict === 'WARN' && event.ruleId === 'monitor.out-of-scope')).toBe(true);
+    expect(events.some((event) => event.eventType === 'PreToolUse' && event.verdict === 'DENY' && event.ruleId === 'hard.git-mutation')).toBe(true);
+    expect(fs.existsSync(path.join(home, 'logs', 'gate-decisions.jsonl'))).toBe(false);
   });
 
   it('when Core is stopped: edits proceed unrecorded, hard rules still block', async () => {

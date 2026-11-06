@@ -2,10 +2,13 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import {
   coreStateSchema,
+  storedEventSchema,
   type ApprovalRecord,
   type ApprovalRequest,
   type CoreState,
+  type EventEnvelope,
   type SessionRegistration,
+  type StoredEvent,
   type Task,
 } from '@jerry/contracts';
 import { backupDatabase, openJerryDatabase, type JerryDatabase, type JerrySchema } from '@jerry/database';
@@ -170,6 +173,92 @@ export class StateStore {
       await audit(trx, at, excluded ? 'repository.exclude' : 'repository.include', repoRoot, {});
     });
     await this.reload();
+  }
+
+  /**
+   * Stores events; an event ID already present is ignored, so replays from the spool and retries
+   * are idempotent. Returns how many events were new.
+   */
+  async recordEvents(events: readonly EventEnvelope[], receivedAt: Date, spooled: boolean): Promise<number> {
+    if (events.length === 0) return 0;
+    const at = receivedAt.toISOString();
+    const rows = events.map((event) => ({
+      event_id: event.eventId,
+      schema_version: event.schemaVersion,
+      source: event.source,
+      event_type: event.eventType,
+      occurred_at: event.timestamp,
+      received_at: at,
+      session_id: event.sessionId,
+      agent_id: event.agentId,
+      agent_type: event.agentType,
+      cwd: event.cwd,
+      tool_name: event.toolName,
+      tool_use_id: event.toolUseId,
+      task_id: event.taskId,
+      repo_root: event.repoRoot,
+      verdict: event.verdict,
+      rule_id: event.ruleId,
+      payload_json: JSON.stringify(event.payload),
+      redaction_json: JSON.stringify(event.redaction),
+      spooled: spooled ? 1 : 0,
+      created_at: at,
+    }));
+    const results = await this.database.db
+      .insertInto('hook_events')
+      .values(rows)
+      .onConflict((conflict) => conflict.column('event_id').doNothing())
+      .execute();
+    return results.reduce((sum, result) => sum + Number(result.numInsertedOrUpdatedRows ?? 0n), 0);
+  }
+
+  /** Newest first. */
+  async listEvents(filter: { sessionId?: string; verdict?: string; limit: number }): Promise<StoredEvent[]> {
+    let query = this.database.db.selectFrom('hook_events').selectAll().orderBy('occurred_at', 'desc').orderBy(sql`rowid`, 'desc').limit(filter.limit);
+    if (filter.sessionId !== undefined) query = query.where('session_id', '=', filter.sessionId);
+    if (filter.verdict !== undefined) query = query.where('verdict', '=', filter.verdict);
+    const rows = await query.execute();
+    return rows.map((row) =>
+      storedEventSchema.parse({
+        eventId: row.event_id,
+        schemaVersion: row.schema_version,
+        source: row.source,
+        eventType: row.event_type,
+        timestamp: row.occurred_at,
+        receivedAt: row.received_at,
+        sessionId: row.session_id,
+        agentId: row.agent_id,
+        agentType: row.agent_type,
+        cwd: row.cwd,
+        toolName: row.tool_name,
+        toolUseId: row.tool_use_id,
+        taskId: row.task_id,
+        repoRoot: row.repo_root,
+        verdict: row.verdict,
+        ruleId: row.rule_id,
+        payload: JSON.parse(row.payload_json),
+        redaction: JSON.parse(row.redaction_json),
+        spooled: row.spooled === 1,
+      }),
+    );
+  }
+
+  /**
+   * Retention (spec §18.2): events and sessions older than `days` are deleted. Governance records
+   * (tasks, plans, approvals, audit log) are kept. The database file shrinks after large deletions.
+   */
+  async applyRetention(now: Date, days: number): Promise<{ events: number; sessions: number }> {
+    const cutoff = new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString();
+    const events = await this.database.db.deleteFrom('hook_events').where('occurred_at', '<', cutoff).executeTakeFirst();
+    const sessions = await this.database.db.deleteFrom('sessions').where('last_seen_at', '<', cutoff).executeTakeFirst();
+    const removed = { events: Number(events.numDeletedRows), sessions: Number(sessions.numDeletedRows) };
+    if (removed.events + removed.sessions > 0) {
+      await sql`INSERT INTO audit_log (at, actor, action, subject, details_json, created_at) VALUES (${now.toISOString()}, 'jerry-core', 'retention.apply', NULL, ${JSON.stringify({ days, ...removed })}, ${now.toISOString()})`.execute(this.database.db);
+      if (removed.events > 5000) this.database.raw.exec('VACUUM');
+      else this.database.raw.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+      await this.reload();
+    }
+    return removed;
   }
 
   /** Online backup into JERRY_HOME/backups while Core keeps running. */

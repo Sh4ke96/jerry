@@ -6,6 +6,7 @@ import type { Migration } from 'kysely/migration';
 import { afterAll, describe, expect, it } from 'vitest';
 import { listBackups, MIGRATIONS, openJerryDatabase, restoreDatabase } from '../src/index.js';
 
+const LATEST = Object.keys(MIGRATIONS).sort().at(-1);
 const base = fs.mkdtempSync(path.join(os.tmpdir(), 'jerry-db-'));
 afterAll(() => fs.rmSync(base, { recursive: true, force: true }));
 
@@ -31,10 +32,10 @@ describe('openJerryDatabase', () => {
   it('creates and migrates a new database without taking a backup', async () => {
     const where = location();
     const database = await openJerryDatabase(where);
-    expect(database.migration).toBe('0001_initial');
+    expect(database.migration).toBe(LATEST);
     const tables = await sql<{ name: string }>`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`.execute(database.db);
     expect(tables.rows.map((row) => row.name)).toEqual(
-      expect.arrayContaining(['approvals', 'audit_log', 'plans', 'repositories', 'schema_migrations', 'sessions', 'settings', 'tasks']),
+      expect.arrayContaining(['approvals', 'audit_log', 'hook_events', 'plans', 'repositories', 'schema_migrations', 'sessions', 'settings', 'tasks']),
     );
     await database.close();
     expect(listBackups(where.backupsDir)).toHaveLength(0);
@@ -44,7 +45,7 @@ describe('openJerryDatabase', () => {
     const where = location();
     await (await openJerryDatabase(where)).close();
     const reopened = await openJerryDatabase(where);
-    expect(reopened.migration).toBe('0001_initial');
+    expect(reopened.migration).toBe(LATEST);
     await reopened.close();
     expect(listBackups(where.backupsDir)).toHaveLength(0);
   });
@@ -52,8 +53,8 @@ describe('openJerryDatabase', () => {
   it('backs up an existing database before applying pending migrations', async () => {
     const where = location();
     await (await openJerryDatabase(where)).close();
-    const upgraded = await openJerryDatabase({ ...where, migrations: { ...MIGRATIONS, '0002_notes': addNotesTable } });
-    expect(upgraded.migration).toBe('0002_notes');
+    const upgraded = await openJerryDatabase({ ...where, migrations: { ...MIGRATIONS, '9999_notes': addNotesTable } });
+    expect(upgraded.migration).toBe('9999_notes');
     await upgraded.close();
     expect(listBackups(where.backupsDir).map((backup) => path.basename(backup.file))).toEqual([expect.stringMatching(/-pre-migration\.sqlite$/)]);
   });
@@ -64,10 +65,10 @@ describe('openJerryDatabase', () => {
     await first.db.insertInto('settings').values({ key: 'marker', value_json: '"before"', created_at: 'x', updated_at: 'x' }).execute();
     await first.close();
 
-    await expect(openJerryDatabase({ ...where, migrations: { ...MIGRATIONS, '0002_broken': failing } })).rejects.toThrow(/simulated migration failure.*Restored/s);
+    await expect(openJerryDatabase({ ...where, migrations: { ...MIGRATIONS, '9999_broken': failing } })).rejects.toThrow(/simulated migration failure.*Restored/s);
 
     const again = await openJerryDatabase(where);
-    expect(again.migration).toBe('0001_initial');
+    expect(again.migration).toBe(LATEST);
     const marker = await again.db.selectFrom('settings').select('value_json').where('key', '=', 'marker').executeTakeFirst();
     expect(marker?.value_json).toBe('"before"');
     const leftovers = await sql<{ name: string }>`SELECT name FROM sqlite_master WHERE name = 'half_done'`.execute(again.db);

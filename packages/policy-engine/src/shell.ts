@@ -40,7 +40,7 @@ const GIT_READ_ONLY_SUBCOMMANDS = new Set([
 /** Global git flags that never make a command write; --no-optional-locks even prevents index refreshes. */
 const GIT_SAFE_GLOBAL_FLAGS = new Set(['--no-pager', '-P', '--no-optional-locks']);
 
-const JERRY_READ_ONLY_COMMANDS = new Set(['status', 'doctor', 'help', '--help', '-h']);
+const JERRY_READ_ONLY_COMMANDS = new Set(['status', 'doctor', 'events', 'help', '--help', '-h']);
 
 const GIT_BRANCH_READ_ONLY_ARGS = new Set(['--show-current', '-a', '--all', '-r', '--remotes', '-v', '-vv', '--list', '--no-color', '--color']);
 /** `git remote <first-arg> ...` forms that only read. */
@@ -118,6 +118,7 @@ function assessJerry(args: string[]): ShellAssessment {
   const [command, subcommand] = args;
   const readOnly =
     (args.length === 1 && command !== undefined && JERRY_READ_ONLY_COMMANDS.has(command)) ||
+    (command === 'events' && args.slice(1).every((arg) => /^--(session|verdict|limit)(=.*)?$|^[\w.-]+$/.test(arg))) ||
     (args.length === 2 && (command === 'task' || command === 'repo') && subcommand === 'list') ||
     (args.length === 2 && command === 'db' && subcommand === 'backups') ||
     (args.length === 2 && command === 'core' && subcommand === 'status');

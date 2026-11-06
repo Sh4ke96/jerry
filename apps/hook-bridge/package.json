@@ -4,5 +4,10 @@
   "private": true,
   "type": "module",
   "main": "./src/main.ts",
-  "dependencies": { "@jerry/contracts": "workspace:*", "@jerry/platform": "workspace:*", "@jerry/policy-engine": "workspace:*" }
+  "dependencies": {
+    "@jerry/contracts": "workspace:*",
+    "@jerry/platform": "workspace:*",
+    "@jerry/policy-engine": "workspace:*",
+    "@jerry/trace-engine": "workspace:*"
+  }
 }

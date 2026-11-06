@@ -119,6 +119,7 @@ describe.skipIf(claude === null)('jerry install / doctor / uninstall (isolated C
     expect(healthy.exitCode, healthy.output).toBe(0);
     expect(healthy.output).toContain('Guard status: GUARDED');
     expect(healthy.output).toMatch(/PASS\s+core-autostart/);
+    expect(healthy.output).toMatch(/PASS\s+disk-usage\s+[\d.]+ MiB/);
     expect(jerry(['core', 'stop']).exitCode).toBe(0);
   });
 

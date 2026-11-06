@@ -74,7 +74,8 @@ export function acquireSingleInstanceLock(lockFile: string): LockResult {
 export function spawnDetachedCore(home: string, coreScript: string, env: Env = process.env): number {
   const paths = jerryPaths(home);
   fs.mkdirSync(paths.logsDir, { recursive: true });
-  const log = fs.openSync(path.join(paths.logsDir, 'core.log'), 'a');
+  rotateLog(paths.coreLogFile);
+  const log = fs.openSync(paths.coreLogFile, 'a');
   try {
     const child = spawn(process.execPath, [coreScript], {
       cwd: home,
@@ -88,6 +89,17 @@ export function spawnDetachedCore(home: string, coreScript: string, env: Env = p
     return child.pid;
   } finally {
     fs.closeSync(log);
+  }
+}
+
+/** core.log is rotated at start once it exceeds this size; one previous generation is kept. */
+export const CORE_LOG_MAX_BYTES = 5 * 1024 * 1024;
+
+function rotateLog(file: string): void {
+  try {
+    if (fs.statSync(file).size > CORE_LOG_MAX_BYTES) fs.renameSync(file, `${file}.1`);
+  } catch {
+    // no log yet, or another start rotated it first
   }
 }
 

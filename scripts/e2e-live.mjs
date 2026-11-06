@@ -95,10 +95,22 @@ function runClaude(label, prompt, allowedTools, plugin = pluginDir, extraArgs = 
   return { sessionId: parsed?.session_id ?? null, text: String(text) };
 }
 
-function gateLog(sessionId) {
-  const file = path.join(home, 'logs', 'gate-decisions.jsonl');
-  const entries = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)) : [];
-  return entries.filter((entry) => entry.sessionId === sessionId);
+/** Events Core stored for a session, read through a read-only SQLite connection. */
+async function sessionEvents(sessionId) {
+  const { DatabaseSync } = await import('node:sqlite');
+  const db = new DatabaseSync(path.join(home, 'database', 'jerry.sqlite'), { readOnly: true });
+  try {
+    return db
+      .prepare('SELECT event_type, tool_name, verdict, rule_id FROM hook_events WHERE session_id = ? ORDER BY occurred_at')
+      .all(sessionId)
+      .map((row) => ({ sessionId, eventType: row.event_type, toolName: row.tool_name, verdict: row.verdict, ruleId: row.rule_id }));
+  } finally {
+    db.close();
+  }
+}
+/** Gate decisions (PreToolUse events) of a session. */
+async function gateLog(sessionId) {
+  return (await sessionEvents(sessionId)).filter((event) => event.eventType === 'PreToolUse');
 }
 const exists = (relative) => fs.existsSync(path.join(repo, relative));
 /** Session IDs registered in Core's SQLite database, read through a read-only connection. */
@@ -123,8 +135,12 @@ const a = runClaude(
   ['Write'],
 );
 expect('A: hello.txt was created (edits are never blocked)', exists('hello.txt'));
-expect('A: gate log recorded WARN monitor.no-approved-plan', gateLog(a.sessionId).some((e) => e.toolName === 'Write' && e.verdict === 'WARN' && e.ruleId === 'monitor.no-approved-plan'));
+expect('A: gate log recorded WARN monitor.no-approved-plan', (await gateLog(a.sessionId)).some((e) => e.toolName === 'Write' && e.verdict === 'WARN' && e.ruleId === 'monitor.no-approved-plan'));
 expect('A: Claude received the JERRY warning', /monitor\.no-approved-plan|deviation/i.test(a.text));
+// Telemetry hooks are asynchronous: give them a moment to land after the session ended.
+await new Promise((resolve) => setTimeout(resolve, 2000));
+const aEvents = (await sessionEvents(a.sessionId)).map((event) => event.eventType);
+expect('A: async hooks recorded the prompt, the tool result and the stop', ['UserPromptSubmit', 'PostToolUse', 'Stop'].every((type) => aEvents.includes(type)), aEvents.join(', '));
 
 // B — Git state changes are blocked for both shell tools.
 // One session per shell tool: a model that stops after the first blocked step must not hide the second.
@@ -140,8 +156,8 @@ const bPowerShell = runClaude(
   ['PowerShell(git commit --allow-empty -m test)'],
   pluginWithoutContext,
 );
-const bBashLog = gateLog(bBash.sessionId);
-const bPowerShellLog = gateLog(bPowerShell.sessionId);
+const bBashLog = await gateLog(bBash.sessionId);
+const bPowerShellLog = await gateLog(bPowerShell.sessionId);
 expect('B: no commit was made and nothing was staged', gitUntouched());
 expect('B1: Bash git add blocked (hard.git-mutation)', bBashLog.some((e) => e.toolName === 'Bash' && e.ruleId === 'hard.git-mutation'), bBashLog.map((e) => `${e.toolName}:${e.ruleId}`).join(', '));
 expect('B2: PowerShell git commit blocked (hard.git-mutation)', bPowerShellLog.some((e) => e.toolName === 'PowerShell' && e.ruleId === 'hard.git-mutation'), bPowerShellLog.map((e) => `${e.toolName}:${e.ruleId}`).join(', ') || bPowerShell.text.slice(0, 200));
@@ -154,7 +170,7 @@ const c = runClaude(
   'Do exactly these two steps with the Write tool and nothing else. Step 1: create src/hello.txt with the content "hi". Step 2: create outside.txt (in the current directory, not in src) with the content "hi". Then tell me, for each step, whether JERRY said anything about it.',
   ['Write'],
 );
-const cLog = gateLog(c.sessionId);
+const cLog = await gateLog(c.sessionId);
 expect('C: src/hello.txt created (in scope)', exists('src/hello.txt'));
 expect('C: outside.txt created (out of scope, not blocked)', exists('outside.txt'));
 expect('C: log shows PASS in-scope and WARN out-of-scope', cLog.some((e) => e.ruleId === 'monitor.in-approved-scope') && cLog.some((e) => e.verdict === 'WARN' && e.ruleId === 'monitor.out-of-scope'), cLog.map((e) => `${e.verdict}:${e.ruleId}`).join(', '));
@@ -177,7 +193,7 @@ const e = runClaude(
   ['--mcp-config', mcpConfig, '--strict-mcp-config'],
 );
 const stubCalls = fs.existsSync(stubLog) ? fs.readFileSync(stubLog, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line).tool) : [];
-const eLog = gateLog(e.sessionId);
+const eLog = await gateLog(e.sessionId);
 expect('E: read tool reached the MCP server', stubCalls.includes('get_file_contents'), `server saw: ${stubCalls.join(', ') || 'nothing'}`);
 expect('E: push_files never reached the MCP server', !stubCalls.includes('push_files'));
 expect('E: gate log shows the MCP push blocked (hard.git-mutation)', eLog.some((entry) => entry.toolName === 'mcp__git-remote-stub__push_files' && entry.ruleId === 'hard.git-mutation'), eLog.map((entry) => `${entry.toolName}:${entry.ruleId}`).join(', '));
@@ -213,6 +229,23 @@ const isAlive = (pid) => {
 expect('F: SessionStart started Core', autostarted !== null);
 expect('F: Core outlived the Claude Code session', autostarted !== null && isAlive(autostarted.pid), autostarted ? `pid ${autostarted.pid}, port ${autostarted.port}` : '');
 expect('F: the session was registered with the autostarted Core', (await registeredSessionIds()).has(f.sessionId));
+// The autostarted Core drained the spool: scenario D's edit, made while Core was down, is now
+// recorded and was evaluated against the plan after the fact.
+const spooledDecisions = await (async () => {
+  const { DatabaseSync } = await import('node:sqlite');
+  const db = new DatabaseSync(path.join(home, 'database', 'jerry.sqlite'), { readOnly: true });
+  try {
+    return db.prepare("SELECT tool_name, verdict, rule_id, payload_json FROM hook_events WHERE session_id = ? AND event_type = 'PreToolUse' AND spooled = 1").all(d.sessionId);
+  } finally {
+    db.close();
+  }
+})();
+const lateWrite = spooledDecisions.find((row) => row.tool_name === 'Write');
+expect(
+  'F: the outage edit from D reached Core through the spool and was evaluated late',
+  lateWrite !== undefined && JSON.parse(lateWrite.payload_json).evaluatedLate === true,
+  spooledDecisions.map((row) => `${row.tool_name}:${row.verdict}:${row.rule_id}`).join(', '),
+);
 if (autostarted !== null) await coreApi(autostarted, 'POST', '/api/v1/shutdown', {}).catch(() => null);
 
 // JERRY itself left no footprint; Claude's edits stay uncommitted for the user.

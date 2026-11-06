@@ -1,5 +1,5 @@
 {
-  "description": "JERRY guard: registers sessions, records and warns about edits outside a user-approved plan, and blocks only hard rules (Git state changes, .git writes, tampering with JERRY).",
+  "description": "JERRY guard: registers sessions, records and warns about edits outside a user-approved plan, blocks only hard rules (Git state changes, .git writes, tampering with JERRY), and records session events for the timeline.",
   "hooks": {
     "SessionStart": [
       {
@@ -38,6 +38,51 @@
             "onFailure": "block"
           }
         ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell|Monitor",
+        "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/bridge.mjs", "event"], "async": true, "timeout": 10 }]
+      },
+      {
+        "matcher": "^mcp__",
+        "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/bridge.mjs", "event"], "async": true, "timeout": 10 }]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell|Monitor",
+        "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/bridge.mjs", "event"], "async": true, "timeout": 10 }]
+      },
+      {
+        "matcher": "^mcp__",
+        "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/bridge.mjs", "event"], "async": true, "timeout": 10 }]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/bridge.mjs", "event"], "async": true, "timeout": 10 }]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/bridge.mjs", "event"], "async": true, "timeout": 10 }]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/bridge.mjs", "event"], "async": true, "timeout": 10 }]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/bridge.mjs", "event"], "async": true, "timeout": 10 }]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [{ "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/bridge.mjs", "event"], "timeout": 3 }]
       }
     ]
   }

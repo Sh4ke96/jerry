@@ -86,4 +86,36 @@ export const MIGRATIONS: Readonly<Record<string, Migration>> = {
       await db.schema.createIndex('audit_log_at').on('audit_log').column('at').execute();
     },
   },
+
+  '0002_hook_events': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema
+        .createTable('hook_events')
+        .addColumn('event_id', 'text', (column) => column.primaryKey())
+        .addColumn('schema_version', 'integer', (column) => column.notNull())
+        .addColumn('source', 'text', (column) => column.notNull())
+        .addColumn('event_type', 'text', (column) => column.notNull())
+        .addColumn('occurred_at', 'text', (column) => column.notNull())
+        .addColumn('received_at', 'text', (column) => column.notNull())
+        .addColumn('session_id', 'text')
+        .addColumn('agent_id', 'text')
+        .addColumn('agent_type', 'text')
+        .addColumn('cwd', 'text')
+        .addColumn('tool_name', 'text')
+        .addColumn('tool_use_id', 'text')
+        .addColumn('task_id', 'text')
+        .addColumn('repo_root', 'text')
+        .addColumn('verdict', 'text')
+        .addColumn('rule_id', 'text')
+        .addColumn('payload_json', 'text', (column) => column.notNull())
+        .addColumn('redaction_json', 'text', (column) => column.notNull())
+        .addColumn('spooled', 'integer', (column) => column.notNull().defaultTo(0))
+        .addColumn('created_at', 'text', (column) => column.notNull())
+        .execute();
+      await db.schema.createIndex('hook_events_occurred_at').on('hook_events').column('occurred_at').execute();
+      await db.schema.createIndex('hook_events_session').on('hook_events').columns(['session_id', 'occurred_at']).execute();
+      await db.schema.createIndex('hook_events_tool_use_id').on('hook_events').column('tool_use_id').execute();
+      await db.schema.createIndex('hook_events_verdict').on('hook_events').columns(['verdict', 'occurred_at']).execute();
+    },
+  },
 };

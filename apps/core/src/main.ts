@@ -11,8 +11,21 @@ import {
   resolveJerryHome,
   writeFileAtomic,
 } from '@jerry/platform';
-import { createCoreServer } from './server.js';
+import { drainSpool, importLegacyGateLog } from './events.js';
+import { createCoreServer, gateEvaluator } from './server.js';
 import { StateStore } from './state-store.js';
+
+const SPOOL_DRAIN_INTERVAL_MS = 15_000;
+const RETENTION_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const DEFAULT_RETENTION_DAYS = 90;
+
+/** Spec §18.2: events and sessions are kept 90 days unless JERRY_RETENTION_DAYS says otherwise. */
+function resolveRetentionDays(): number {
+  const raw = process.env['JERRY_RETENTION_DAYS'];
+  const days = raw === undefined || raw.trim() === '' ? DEFAULT_RETENTION_DAYS : Number(raw);
+  if (!Number.isInteger(days) || days < 1) throw new Error(`JERRY_RETENTION_DAYS must be a positive integer, got "${raw}"`);
+  return days;
+}
 
 async function main(): Promise<void> {
   const home = resolveJerryHome();
@@ -41,15 +54,45 @@ async function main(): Promise<void> {
   const startedAt = new Date();
   const configuredPort = resolveCorePort();
 
+  const guardedRoots = protectedRoots();
   const server = createCoreServer({
     token,
     store,
     jerryHome: home,
-    gateLogFile: paths.gateLogFile,
-    protectedRoots: protectedRoots(),
+    protectedRoots: guardedRoots,
     startedAt,
     onShutdownRequested: () => shutdown('shutdown requested via API'),
   });
+
+  // Background upkeep: events spooled while Core was down, the pre-database gate log, retention.
+  const evaluate = gateEvaluator(store, guardedRoots);
+  const retentionDays = resolveRetentionDays();
+  const upkeep = async (): Promise<void> => {
+    try {
+      const imported = await importLegacyGateLog(paths.gateLogFile, store, new Date());
+      if (imported > 0) process.stdout.write(`Imported ${imported} gate decisions from ${paths.gateLogFile}\n`);
+      while ((await drainSpool(home, store, evaluate)) > 0) {
+        // keep draining in batches until the spool is empty
+      }
+      const removed = await store.applyRetention(new Date(), retentionDays);
+      if (removed.events + removed.sessions > 0) {
+        process.stdout.write(`Retention (${retentionDays} days): removed ${removed.events} events and ${removed.sessions} sessions\n`);
+      }
+    } catch (error) {
+      process.stderr.write(`Upkeep failed: ${error instanceof Error ? error.message : String(error)}\n`);
+    }
+  };
+  let upkeepRunning: Promise<void> = upkeep();
+  const spoolTimer = setInterval(() => {
+    upkeepRunning = upkeepRunning.then(() => drainSpool(home, store, evaluate).then(() => undefined, (error: unknown) => {
+      process.stderr.write(`Spool drain failed: ${error instanceof Error ? error.message : String(error)}\n`);
+    }));
+  }, SPOOL_DRAIN_INTERVAL_MS);
+  const retentionTimer = setInterval(() => {
+    upkeepRunning = upkeepRunning.then(upkeep);
+  }, RETENTION_INTERVAL_MS);
+  spoolTimer.unref();
+  retentionTimer.unref();
 
   let port: number;
   try {

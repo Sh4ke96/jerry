@@ -74,7 +74,33 @@ export interface AuditLogTable {
   created_at: string;
 }
 
+/** Events from Claude Code hooks and JERRY Core (spec §11.2). Retention removes old rows. */
+export interface HookEventsTable {
+  event_id: string;
+  schema_version: number;
+  source: string;
+  event_type: string;
+  occurred_at: string;
+  received_at: string;
+  session_id: string | null;
+  agent_id: string | null;
+  agent_type: string | null;
+  cwd: string | null;
+  tool_name: string | null;
+  tool_use_id: string | null;
+  task_id: string | null;
+  repo_root: string | null;
+  verdict: string | null;
+  rule_id: string | null;
+  payload_json: string;
+  redaction_json: string;
+  /** 1 when the event reached Core through the spool (Core was down when it happened). */
+  spooled: number;
+  created_at: string;
+}
+
 export interface JerrySchema {
+  hook_events: HookEventsTable;
   repositories: RepositoriesTable;
   tasks: TasksTable;
   plans: PlansTable;

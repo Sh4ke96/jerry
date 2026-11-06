@@ -22,6 +22,7 @@
     "@jerry/database": "workspace:*",
     "@jerry/platform": "workspace:*",
     "@jerry/policy-engine": "workspace:*",
+    "@jerry/trace-engine": "workspace:*",
     "@types/node": "22.20.5",
     "esbuild": "0.28.2",
     "kysely": "0.29.8",

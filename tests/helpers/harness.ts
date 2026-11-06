@@ -91,7 +91,7 @@ export interface BridgeResult {
   durationMs: number;
 }
 
-export function runBridge(event: 'pre-tool-use' | 'session-start', input: unknown, env: Record<string, string>): BridgeResult {
+export function runBridge(event: 'pre-tool-use' | 'session-start' | 'event', input: unknown, env: Record<string, string>): BridgeResult {
   const started = performance.now();
   const result = spawnSync(process.execPath, [BRIDGE, event], {
     input: typeof input === 'string' ? input : JSON.stringify(input),

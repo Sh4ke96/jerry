@@ -38,8 +38,12 @@ export interface JerryPaths {
   databaseDir: string;
   databaseFile: string;
   backupsDir: string;
+  /** Events written by hooks while Core was unreachable; drained by Core. */
+  spoolDir: string;
   logsDir: string;
+  /** M0/M1 gate log; imported into the database once, then renamed. */
   gateLogFile: string;
+  coreLogFile: string;
   configDir: string;
   installManifestFile: string;
   marketplaceDir: string;
@@ -65,8 +69,10 @@ export function jerryPaths(home: string): JerryPaths {
     databaseDir: path.join(home, 'database'),
     databaseFile: path.join(home, 'database', 'jerry.sqlite'),
     backupsDir: path.join(home, 'backups'),
+    spoolDir: path.join(home, 'spool'),
     logsDir,
     gateLogFile: path.join(logsDir, 'gate-decisions.jsonl'),
+    coreLogFile: path.join(logsDir, 'core.log'),
     configDir,
     installManifestFile: path.join(configDir, 'install-manifest.json'),
     marketplaceDir: path.join(home, 'marketplace'),

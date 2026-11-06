@@ -26,9 +26,11 @@ repositories, not to this one.
 - JERRY never modifies any repository ([ADR 0002](docs/decisions/0002-jerry-never-modifies-repositories.md)).
 - State in SQLite (`JERRY_HOME/database/jerry.sqlite`) with in-code migrations, a backup before every migration,
   automatic restore when a migration fails, and full plan history ([ADR 0005](docs/decisions/0005-sqlite-node-builtin-kysely.md)).
+- Session events (prompts by size only, tool calls and results, subagents, stop, session end) with redaction,
+  a spool while Core is down, and 90-day retention ([ADR 0006](docs/decisions/0006-session-events-spool-retention.md)).
 - `jerry` CLI: `install`, `uninstall`, `doctor`, `core start|stop|status`, `task`, `plan revise`,
-  `approve`/`reject`, `repo exclude|include|list`, `db backup|backups|restore` (approve, reject, exclude and
-  restore require an interactive terminal).
+  `approve`/`reject`, `repo exclude|include|list`, `events`, `db backup|backups|restore` (approve, reject,
+  exclude and restore require an interactive terminal).
 
 ## Layout
 
@@ -40,6 +42,7 @@ packages/contracts      Zod schemas shared across processes
 packages/database       SQLite (node:sqlite + Kysely): schema, migrations, backup and restore
 packages/platform       JERRY_HOME, Core client, claude.exe discovery, atomic writes, home safety
 packages/policy-engine  pure gate logic: paths, shell classification, approvals
+packages/trace-engine   event envelopes, data minimization and redaction
 claude-plugin/          static plugin files (manifest, hooks.json)
 tests/                  integration (bridge + Core) and install E2E
 scripts/                build, hook benchmark, live Claude Code check

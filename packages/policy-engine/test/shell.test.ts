@@ -82,6 +82,9 @@ const readOnlyBash = [
   'node D:\\Projekciki\\jerry\\dist\\cli\\jerry.mjs task list',
   'jerry repo list',
   'jerry core status',
+  'jerry events',
+  'node dist/cli/jerry.mjs events --limit 20 --verdict warn',
+  'jerry db backups',
 ];
 
 const writeCapableBash = [

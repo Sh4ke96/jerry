@@ -1,6 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { assertJerryHomeOutsideRepositories, CoreUnavailableError, findClaudeBinary, jerryPaths, resolveCorePort, resolveJerryHome } from '@jerry/platform';
+import {
+  assertJerryHomeOutsideRepositories,
+  CoreUnavailableError,
+  countSpooled,
+  findClaudeBinary,
+  jerryPaths,
+  resolveCorePort,
+  resolveJerryHome,
+} from '@jerry/platform';
 import { claudeVersion, listInstalledPlugins, PLUGIN_ID } from './claude-cli.js';
 import { getCoreStatus } from './core-commands.js';
 
@@ -79,6 +87,17 @@ export async function doctor(): Promise<void> {
     add('core-autostart', 'PASS', `sessions start Core from ${paths.runtimeCoreFile} when it is not running`);
   }
 
+  const usage = diskUsage(paths);
+  const totalMiB = usage.total / 1024 / 1024;
+  const parts = Object.entries(usage.parts)
+    .map(([name, bytes]) => `${name} ${(bytes / 1024 / 1024).toFixed(1)}`)
+    .join(', ');
+  add('disk-usage', totalMiB > DISK_WARN_MIB ? 'WARN' : 'PASS', `${totalMiB.toFixed(1)} MiB in ${home} (${parts} MiB); events older than the retention period (default 90 days) are removed automatically`);
+  const spooled = countSpooled(home);
+  if (spooled > 0) {
+    add('spool', coreHealthy ? 'WARN' : 'PASS', `${spooled} event(s) waiting for Core${coreHealthy ? ' (Core drains the spool every 15 s)' : ''}`);
+  }
+
   const footprint = findFootprint(process.cwd());
   add('project-footprint', footprint.length === 0 ? 'PASS' : 'FAIL', footprint.length === 0 ? `no JERRY files under ${process.cwd()}` : `found ${footprint.join(', ')}`);
 
@@ -96,6 +115,40 @@ export async function doctor(): Promise<void> {
       : 'UNGUARDED (plugin not active: nothing is monitored or enforced)';
   console.log(`\nGuard status: ${guard}`);
   if (checks.some((check) => check.status === 'FAIL')) process.exitCode = 1;
+}
+
+const DISK_WARN_MIB = 1024;
+
+function directorySize(target: string): number {
+  let total = 0;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(target, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  for (const entry of entries) {
+    const full = path.join(target, entry.name);
+    if (entry.isDirectory()) total += directorySize(full);
+    else {
+      try {
+        total += fs.statSync(full).size;
+      } catch {
+        // file disappeared while measuring
+      }
+    }
+  }
+  return total;
+}
+
+function diskUsage(paths: ReturnType<typeof jerryPaths>): { total: number; parts: Record<string, number> } {
+  const parts = {
+    database: directorySize(paths.databaseDir),
+    backups: directorySize(paths.backupsDir),
+    logs: directorySize(paths.logsDir),
+    spool: directorySize(paths.spoolDir),
+  };
+  return { total: directorySize(paths.home), parts };
 }
 
 /** Looks for JERRY artifacts at the Git root of cwd (or cwd itself). */

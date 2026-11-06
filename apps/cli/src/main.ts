@@ -2,6 +2,7 @@ import { parseArgs } from 'node:util';
 import { JERRY_VERSION } from '@jerry/contracts';
 import { getCoreStatus, startCore, stopCore } from './core-commands.js';
 import { backupNow, restoreFromBackup, showBackups } from './db-commands.js';
+import { showEvents } from './events-command.js';
 import { doctor } from './doctor.js';
 import { install, uninstall } from './install-commands.js';
 import { excludeRepository, includeRepository, listExcludedRepositories } from './repo-commands.js';
@@ -22,6 +23,8 @@ Usage:
   jerry repo exclude <path>           Stop monitoring a repository (hard rules still apply)
   jerry repo include <path>           Monitor an excluded repository again
   jerry repo list                     List excluded repositories
+  jerry events [--session <id>] [--verdict warn|deny|pass] [--limit <n>]
+                                      Show the latest recorded events (default 50)
   jerry db backup                     Back up the JERRY database (Core must be running)
   jerry db backups                    List database backups
   jerry db restore <file>             Replace the database with a backup (Core must be stopped)
@@ -52,6 +55,15 @@ async function run(argv: string[]): Promise<void> {
       if (positionals[0] !== 'revise' || positionals[1] === undefined || values.scope === undefined) throw new UsageError();
       await revisePlan(positionals[1], values.scope);
       return;
+    }
+    case 'events': {
+      const { values } = parseArgs({
+        args: rest,
+        options: { session: { type: 'string' }, verdict: { type: 'string' }, limit: { type: 'string', default: '50' } },
+      });
+      const limit = Number(values.limit);
+      if (!Number.isInteger(limit) || limit < 1) throw new UsageError('--limit must be a positive integer');
+      return showEvents({ limit, ...(values.session === undefined ? {} : { sessionId: values.session }), ...(values.verdict === undefined ? {} : { verdict: values.verdict }) });
     }
     case 'db': {
       const [subcommand, target] = rest;

@@ -6,11 +6,13 @@ import {
   sessionStartInputSchema,
   type GateCheckRequest,
   type GateDecision,
+  type EventEnvelope,
   type SessionRegistrationResponse,
   type SessionStartInput,
 } from '@jerry/contracts';
-import { autostartCore, protectedRoots, readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
+import { autostartCore, protectedRoots, readCoreRuntimeInfo, requestCore, resolveJerryHome, spoolEvent } from '@jerry/platform';
 import { classifyToolCall, evaluateHardRules } from '@jerry/policy-engine';
+import { buildEventEnvelope, newEventId, type EnvelopeOverrides } from '@jerry/trace-engine';
 
 /**
  * Claude Code command-hook adapter (ADR 0003: JERRY monitors, and blocks only hard rules).
@@ -37,7 +39,10 @@ const MAX_STDIN_BYTES = 64 * 1024 * 1024;
 /** Only these tool_input fields are forwarded to Core: never file contents or edit payloads. */
 const FORWARDED_TOOL_INPUT_FIELDS = ['file_path', 'notebook_path', 'command'] as const;
 
-type BridgeEvent = 'pre-tool-use' | 'session-start';
+/** pre-tool-use and session-start answer Claude Code; event records telemetry hooks. */
+type BridgeEvent = 'pre-tool-use' | 'session-start' | 'event';
+/** Telemetry hooks run asynchronously; a short timeout keeps a hung Core from piling up processes. */
+const EVENT_TIMEOUT_MS = 1000;
 
 /** Set once the hard rules passed; from then on every failure lets the tool call proceed. */
 let hardRulesCleared = false;
@@ -58,7 +63,8 @@ function proceed(): never {
 
 /** Called on unexpected failures: block only while the hard rules have not been verified. */
 function onFailure(reason: string): never {
-  if (process.argv[2] === 'session-start' || hardRulesCleared) proceed();
+  // Only pre-tool-use enforces hard rules; session-start and telemetry events never block.
+  if (process.argv[2] !== 'pre-tool-use' || hardRulesCleared) proceed();
   block(`${reason}; the hard rules could not be checked, so the call is blocked`);
 }
 
@@ -83,7 +89,9 @@ async function preToolUse(raw: string): Promise<void> {
   for (const field of FORWARDED_TOOL_INPUT_FIELDS) {
     if (field in input.tool_input) forwardedInput[field] = input.tool_input[field];
   }
+  const eventId = newEventId();
   const request: GateCheckRequest = {
+    eventId,
     sessionId: input.session_id,
     cwd: input.cwd,
     toolName: input.tool_name,
@@ -91,6 +99,8 @@ async function preToolUse(raw: string): Promise<void> {
     toolUseId: input.tool_use_id ?? null,
     agentId: input.agent_id ?? null,
   };
+  // What gets spooled if Core cannot record the call itself (same event ID: replay stays idempotent).
+  const spoolable = (overrides: EnvelopeOverrides) => buildEventEnvelope({ ...input, tool_input: forwardedInput }, { eventId, ...overrides });
 
   const hardRule = evaluateHardRules(classifyToolCall(request.toolName, request.toolInput), request.cwd, {
     platform: process.platform,
@@ -98,20 +108,58 @@ async function preToolUse(raw: string): Promise<void> {
     realPath: (target) => target,
   });
   if (hardRule !== null) {
-    // Best effort: record the blocked attempt in Core's gate log; never wait long for it.
-    await askCore(request).catch(() => null);
+    // Core records the blocked attempt; if it is down, the attempt is spooled instead.
+    const recorded = await askCore(request).then(
+      () => true,
+      () => false,
+    );
+    if (!recorded) spool(spoolable({ verdict: 'DENY', ruleId: hardRule.ruleId, extraPayload: { reason: hardRule.reason } }));
     block(`${hardRule.reason} [${hardRule.ruleId}]`);
   }
   hardRulesCleared = true;
 
   const decision = await askCore(request).catch(() => null);
   if (decision === null) {
-    // Core unavailable: this call proceeds unrecorded. Start Core in the background so the
-    // following calls are monitored again; never make Claude wait for it.
+    // Core unavailable: the call proceeds; it is spooled and evaluated against the plan once Core
+    // is back. Start Core in the background; never make Claude wait for it.
+    spool(spoolable({ pendingEvaluation: true, ruleId: 'core.unavailable' }));
     tryAutostart();
     proceed();
   }
   emit(decision);
+}
+
+function spool(event: EventEnvelope | null): void {
+  if (event === null) return;
+  try {
+    spoolEvent(resolveJerryHome(), event);
+  } catch {
+    // Losing one event must never affect Claude's work.
+  }
+}
+
+/**
+ * Telemetry hooks (PostToolUse, SubagentStart/Stop, Stop, SessionEnd, UserPromptSubmit). They run
+ * asynchronously and never block or fail: the event goes to Core, or to the spool if Core is down.
+ */
+async function recordEvent(raw: string): Promise<void> {
+  let input: unknown;
+  try {
+    input = JSON.parse(raw);
+  } catch {
+    proceed();
+  }
+  if (typeof input !== 'object' || input === null) proceed();
+  const event = buildEventEnvelope(input as Record<string, unknown>);
+  if (event === null) proceed();
+  try {
+    const info = readCoreRuntimeInfo(resolveJerryHome());
+    await requestCore(info, { method: 'POST', path: '/api/v1/events', body: { events: [event] }, timeoutMs: EVENT_TIMEOUT_MS });
+  } catch {
+    spool(event);
+    tryAutostart();
+  }
+  proceed();
 }
 
 function tryAutostart(): 'started' | 'throttled' | 'unavailable' {
@@ -216,7 +264,12 @@ async function sessionStart(raw: string): Promise<void> {
     context = monitoredSessionContext(registration);
   } catch (error) {
     const cause = error instanceof Error ? error.message : String(error);
-    context = `JERRY: Core unavailable (${cause}); monitoring is off and actions are not recorded until the user runs "jerry core start". ${HARD_RULES_TEXT}`;
+    context = `JERRY: Core unavailable (${cause}); actions are not checked against the plan until Core is back (they are recorded and checked later when possible). ${HARD_RULES_TEXT}`;
+    try {
+      spool(buildEventEnvelope(JSON.parse(raw) as Record<string, unknown>));
+    } catch {
+      // unparseable input: nothing to record
+    }
   }
   writeOut(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: context } }));
   proceed();
@@ -224,7 +277,7 @@ async function sessionStart(raw: string): Promise<void> {
 
 async function main(): Promise<void> {
   const event = process.argv[2] as BridgeEvent | undefined;
-  if (event !== 'pre-tool-use' && event !== 'session-start') {
+  if (event !== 'pre-tool-use' && event !== 'session-start' && event !== 'event') {
     block(`bridge invoked with unknown event "${String(event)}"`);
   }
   const watchdog = setTimeout(() => onFailure(`bridge exceeded ${WATCHDOG_MS} ms`), WATCHDOG_MS);
@@ -233,8 +286,10 @@ async function main(): Promise<void> {
   const raw = await readStdin();
   if (event === 'pre-tool-use') {
     await preToolUse(raw);
-  } else {
+  } else if (event === 'session-start') {
     await sessionStart(raw);
+  } else {
+    await recordEvent(raw);
   }
 }
 

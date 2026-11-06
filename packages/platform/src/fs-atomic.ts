@@ -17,8 +17,3 @@ export function writeFileAtomic(filePath: string, contents: string): void {
     throw error;
   }
 }
-
-export function appendJsonLine(filePath: string, record: unknown): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.appendFileSync(filePath, `${JSON.stringify(record)}\n`, 'utf8');
-}
