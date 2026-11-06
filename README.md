@@ -69,5 +69,7 @@ loaded through `--plugin-dir`, without changing any settings.
 - The specification is the source of requirements; changes need a rationale and a version (ADR in `docs/decisions/`).
 - Do not start the next phase before the critical tests of the current one pass.
 - No real Claude Code OAuth tokens in tests or code; no external telemetry.
+- No secret-shaped literals in the source, not even fake ones: the repository is scanned by GitGuardian.
+  Tests assemble credential-like fixtures from fragments at runtime (see `packages/trace-engine/test/events.test.ts`).
 - Commit, push and merge only with explicit approval.
 - READMEs, code comments and ADRs are written in English.
