@@ -1,4 +1,4 @@
-import type { CoreStatus, RepositoryExclusion, StoredEvent, TaskWithDecision } from '@jerry/contracts';
+import type { CoreStatus, RepositoryExclusion, StoredEvent, TaskSummary } from '@jerry/contracts';
 import { reactive } from 'vue';
 import { api, SignedOutError, startSession } from './api.js';
 
@@ -10,7 +10,7 @@ export interface DashboardState {
   error: string | null;
   notice: string | null;
   status: CoreStatus | null;
-  tasks: TaskWithDecision[];
+  tasks: TaskSummary[];
   events: StoredEvent[];
   exclusions: RepositoryExclusion[];
   refreshedAt: Date | null;

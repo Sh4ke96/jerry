@@ -166,4 +166,38 @@ export const MIGRATIONS: Readonly<Record<string, Migration>> = {
       `.execute(db);
     },
   },
+
+  '0005_session_tasks': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Set by SessionEnd, cleared when the same session starts again (resume).
+      await db.schema.alterTable('sessions').addColumn('ended_at', 'text').execute();
+      await db.schema.alterTable('sessions').addColumn('end_reason', 'text').execute();
+
+      // Which session worked on which task (ADR 0013). No foreign key to sessions: retention removes
+      // old sessions, while the task keeps the record of who worked on it.
+      await db.schema
+        .createTable('session_tasks')
+        .addColumn('session_id', 'text', (column) => column.notNull())
+        .addColumn('task_id', 'text', (column) => column.notNull().references('tasks.task_id'))
+        .addColumn('first_at', 'text', (column) => column.notNull())
+        .addColumn('last_at', 'text', (column) => column.notNull())
+        .addColumn('last_activity', 'text', (column) => column.notNull())
+        .addColumn('created_at', 'text', (column) => column.notNull())
+        .addColumn('updated_at', 'text', (column) => column.notNull())
+        .addPrimaryKeyConstraint('session_tasks_pk', ['session_id', 'task_id'])
+        .execute();
+      await db.schema.createIndex('session_tasks_task').on('session_tasks').columns(['task_id', 'last_at']).execute();
+
+      await db.schema
+        .createTable('task_checkpoints')
+        .addColumn('id', 'integer', (column) => column.primaryKey().autoIncrement())
+        .addColumn('task_id', 'text', (column) => column.notNull().references('tasks.task_id'))
+        .addColumn('session_id', 'text')
+        .addColumn('summary', 'text', (column) => column.notNull())
+        .addColumn('next_steps_json', 'text', (column) => column.notNull())
+        .addColumn('created_at', 'text', (column) => column.notNull())
+        .execute();
+      await db.schema.createIndex('task_checkpoints_task').on('task_checkpoints').columns(['task_id', 'id']).execute();
+    },
+  },
 };

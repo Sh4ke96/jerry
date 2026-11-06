@@ -5,7 +5,11 @@ import {
   storedEventSchema,
   type ApprovalRecord,
   type ApprovalRequest,
+  type CallOrigin,
+  type Checkpoint,
   type CoreState,
+  type TaskActivity,
+  type TaskSession,
   type EventEnvelope,
   type SessionRegistration,
   type StoredEvent,
@@ -21,7 +25,7 @@ import {
 } from '@jerry/contracts';
 import { backupDatabase, openJerryDatabase, type JerryDatabase, type JerrySchema } from '@jerry/database';
 import { comparablePath, computePlanHash, currentPlanDecision } from '@jerry/policy-engine';
-import { applyEvent } from '@jerry/workflow';
+import { applyEvent, isTerminal } from '@jerry/workflow';
 import { sql, type Kysely, type Transaction } from 'kysely';
 import { z } from 'zod';
 
@@ -31,6 +35,9 @@ const NEXT_TASK_NUMBER = 'next_task_number';
 
 /** Where a user decision came from; recorded in the audit log. */
 export type Channel = 'cli' | 'dashboard';
+
+/** What a session last did for a task. */
+export type SessionActivity = 'plan.submitted' | 'plan.revised' | 'edit' | 'checkpoint';
 
 /** User decisions about a whole task (approvals and plans have their own methods). */
 export type TaskControlEvent = Extract<WorkflowEvent, 'task.paused' | 'task.resumed' | 'task.cancelled'>;
@@ -99,7 +106,7 @@ export class StateStore {
     return currentPlanDecision(this.requireTask(taskId), this.state.approvals);
   }
 
-  async createTask(input: { repoRoot: string; title: string; scope: string[]; document?: PlanDocument; submittedBy?: 'user' | 'claude' }, now: Date): Promise<Task> {
+  async createTask(input: { repoRoot: string; title: string; scope: string[]; document?: PlanDocument; submittedBy?: 'user' | 'claude'; sessionId?: string | null }, now: Date): Promise<Task> {
     const at = now.toISOString();
     const taskId = await this.database.db.transaction().execute(async (trx) => {
       const repoId = await upsertRepository(trx, input.repoRoot, at);
@@ -111,6 +118,7 @@ export class StateStore {
       await trx.insertInto('tasks').values({ task_id: id, title: input.title, repo_id: repoId, current_plan_version: 1, state, created_at: at, updated_at: at }).execute();
       await insertPlan(trx, { taskId: id, title: input.title, repoRoot: input.repoRoot, version: 1, scope: input.scope, document: input.document, at });
       await recordTransition(trx, { taskId: id, from: null, to: state, event: 'plan.submitted', actor, reason: 'plan version 1', at });
+      if (input.sessionId != null) await linkSession(trx, input.sessionId, id, 'plan.submitted', at);
       await trx
         .insertInto('settings')
         .values({ key: NEXT_TASK_NUMBER, value_json: JSON.stringify(number + 1), created_at: at, updated_at: at })
@@ -124,12 +132,13 @@ export class StateStore {
   }
 
   /** Creates the next plan version. Earlier versions and their approvals stay in history but no longer match. */
-  async revisePlan(taskId: string, scope: string[], now: Date, document?: PlanDocument, submittedBy: 'user' | 'claude' = 'user'): Promise<Task> {
+  async revisePlan(taskId: string, scope: string[], now: Date, document?: PlanDocument, submittedBy: 'user' | 'claude' = 'user', sessionId: string | null = null): Promise<Task> {
     const task = this.requireTask(taskId);
     const at = now.toISOString();
     const version = task.plan.version + 1;
     await this.database.db.transaction().execute(async (trx) => {
       await this.transition(trx, taskId, 'plan.revised', submittedBy, `plan version ${version}`, at);
+      if (sessionId !== null) await linkSession(trx, sessionId, taskId, 'plan.revised', at);
       await insertPlan(trx, { taskId, title: task.title, repoRoot: task.repoRoot, version, scope, document, at });
       await trx.updateTable('tasks').set({ current_plan_version: version, updated_at: at }).where('task_id', '=', taskId).execute();
       await audit(trx, at, 'plan.revise', taskId, { version, scope, withDocument: document !== undefined }, actorOf(submittedBy));
@@ -203,9 +212,110 @@ export class StateStore {
     await this.database.db
       .insertInto('sessions')
       .values({ session_id: registration.sessionId, cwd: registration.cwd, source: registration.source, first_seen_at: at, last_seen_at: at, created_at: at, updated_at: at })
-      .onConflict((conflict) => conflict.column('session_id').doUpdateSet({ cwd: registration.cwd, source: registration.source, last_seen_at: at, updated_at: at }))
+      // A session that starts again (resume, compaction) is running again.
+      .onConflict((conflict) => conflict.column('session_id').doUpdateSet({ cwd: registration.cwd, source: registration.source, last_seen_at: at, ended_at: null, end_reason: null, updated_at: at }))
       .execute();
     await this.reload();
+  }
+
+  /**
+   * Records that a session worked on a task (ADR 0013). Unknown tasks are ignored: the link is
+   * bookkeeping and must never fail the call that caused it.
+   */
+  async linkSession(sessionId: string, taskId: string, activity: SessionActivity, now: Date): Promise<void> {
+    if (!this.state.tasks.some((task) => task.taskId === taskId)) return;
+    await linkSession(this.database.db, sessionId, taskId, activity, now.toISOString());
+  }
+
+  /**
+   * The session behind an MCP call: the PreToolUse event the hook recorded for the same tool use
+   * (Claude Code passes the tool-use ID to MCP servers), else the session the MCP server reported.
+   */
+  async resolveOrigin(origin: CallOrigin | undefined): Promise<string | null> {
+    if (origin === undefined) return null;
+    if (origin.toolUseId !== undefined) {
+      const row = await this.database.db
+        .selectFrom('hook_events')
+        .select('session_id')
+        .where('tool_use_id', '=', origin.toolUseId)
+        .where('event_type', '=', 'PreToolUse')
+        .where('session_id', 'is not', null)
+        .orderBy('occurred_at', 'desc')
+        .limit(1)
+        .executeTakeFirst();
+      if (row?.session_id != null) return row.session_id;
+    }
+    return origin.sessionId ?? null;
+  }
+
+  /** Claude's progress note; open tasks only. It changes no state. */
+  async saveCheckpoint(taskId: string, note: { summary: string; nextSteps: string[] }, sessionId: string | null, now: Date): Promise<Checkpoint> {
+    const task = this.requireTask(taskId);
+    if (isTerminal(task.state)) throw new StateError(409, `${taskId} is ${task.state}; checkpoints are for open tasks`);
+    const at = now.toISOString();
+    await this.database.db.transaction().execute(async (trx) => {
+      await trx.insertInto('task_checkpoints').values({ task_id: taskId, session_id: sessionId, summary: note.summary, next_steps_json: JSON.stringify(note.nextSteps), created_at: at }).execute();
+      if (sessionId !== null) await linkSession(trx, sessionId, taskId, 'checkpoint', at);
+    });
+    return { taskId, sessionId, summary: note.summary, nextSteps: note.nextSteps, at };
+  }
+
+  /** Session activity and the latest checkpoint of every task. */
+  async taskActivity(): Promise<Map<string, { activity: TaskActivity; lastCheckpoint: Checkpoint | null }>> {
+    const { db } = this.database;
+    const links = await db
+      .selectFrom('session_tasks')
+      .leftJoin('sessions', 'sessions.session_id', 'session_tasks.session_id')
+      .select(['session_tasks.task_id', 'session_tasks.session_id', 'session_tasks.last_at', 'sessions.ended_at'])
+      .orderBy('session_tasks.last_at', 'desc')
+      .execute();
+    const latest = await db
+      .selectFrom('task_checkpoints')
+      .selectAll()
+      .where('id', 'in', db.selectFrom('task_checkpoints').select((eb) => eb.fn.max('id').as('id')).groupBy('task_id'))
+      .execute();
+
+    const result = new Map<string, { activity: TaskActivity; lastCheckpoint: Checkpoint | null }>();
+    for (const task of this.state.tasks) {
+      result.set(task.taskId, { activity: { sessionCount: 0, lastSessionId: null, lastActivityAt: null, lastSessionEndedAt: null }, lastCheckpoint: null });
+    }
+    for (const link of links) {
+      const entry = result.get(link.task_id);
+      if (entry === undefined) continue;
+      if (entry.activity.lastSessionId === null) {
+        entry.activity = { sessionCount: 0, lastSessionId: link.session_id, lastActivityAt: link.last_at, lastSessionEndedAt: link.ended_at ?? null };
+      }
+      entry.activity.sessionCount += 1;
+    }
+    for (const row of latest) {
+      const entry = result.get(row.task_id);
+      if (entry !== undefined) entry.lastCheckpoint = checkpointFromRow(row);
+    }
+    return result;
+  }
+
+  /** Tasks the given session worked on. */
+  async tasksOfSession(sessionId: string): Promise<string[]> {
+    const rows = await this.database.db.selectFrom('session_tasks').select('task_id').where('session_id', '=', sessionId).orderBy('last_at', 'desc').execute();
+    return rows.map((row) => row.task_id);
+  }
+
+  /** Sessions (most recent first) and checkpoints (newest first) of one task. */
+  async taskHistory(taskId: string, checkpointLimit = 20): Promise<{ sessions: TaskSession[]; checkpoints: Checkpoint[] }> {
+    this.requireTask(taskId);
+    const { db } = this.database;
+    const sessions = await db
+      .selectFrom('session_tasks')
+      .leftJoin('sessions', 'sessions.session_id', 'session_tasks.session_id')
+      .select(['session_tasks.session_id', 'session_tasks.first_at', 'session_tasks.last_at', 'session_tasks.last_activity', 'sessions.ended_at', 'sessions.end_reason'])
+      .where('session_tasks.task_id', '=', taskId)
+      .orderBy('session_tasks.last_at', 'desc')
+      .execute();
+    const checkpoints = await db.selectFrom('task_checkpoints').selectAll().where('task_id', '=', taskId).orderBy('id', 'desc').limit(checkpointLimit).execute();
+    return {
+      sessions: sessions.map((row) => ({ sessionId: row.session_id, firstAt: row.first_at, lastAt: row.last_at, lastActivity: row.last_activity, endedAt: row.ended_at ?? null, endReason: row.end_reason ?? null })),
+      checkpoints: checkpoints.map(checkpointFromRow),
+    };
   }
 
   /** Excluding stops monitoring for the repository; hard rules keep applying there. */
@@ -253,6 +363,18 @@ export class StateStore {
       .values(rows)
       .onConflict((conflict) => conflict.column('event_id').doNothing())
       .execute();
+    for (const event of events) {
+      if (event.sessionId === null) continue;
+      // An edit inside a task's approved scope means the session works on that task, also when the
+      // decision was made late for an event from the spool.
+      if (event.eventType === 'PreToolUse' && event.ruleId === 'monitor.in-approved-scope' && event.taskId !== null) {
+        await this.linkSession(event.sessionId, event.taskId, 'edit', new Date(event.timestamp));
+      }
+      // SessionEnd closes the session (also when it arrives late through the spool).
+      if (event.eventType !== 'SessionEnd') continue;
+      const reason = typeof event.payload['reason'] === 'string' && event.payload['reason'] !== '' ? event.payload['reason'] : null;
+      await this.database.db.updateTable('sessions').set({ ended_at: event.timestamp, end_reason: reason, updated_at: at }).where('session_id', '=', event.sessionId).execute();
+    }
     return results.reduce((sum, result) => sum + Number(result.numInsertedOrUpdatedRows ?? 0n), 0);
   }
 
@@ -486,6 +608,26 @@ async function insertPlan(trx: Transaction<JerrySchema>, plan: { taskId: string;
       created_at: plan.at,
     })
     .execute();
+}
+
+/** Upsert; events can arrive out of order (spool), so the times only ever widen. */
+async function linkSession(trx: Transaction<JerrySchema> | Kysely<JerrySchema>, sessionId: string, taskId: string, activity: SessionActivity, at: string): Promise<void> {
+  await trx
+    .insertInto('session_tasks')
+    .values({ session_id: sessionId, task_id: taskId, first_at: at, last_at: at, last_activity: activity, created_at: at, updated_at: at })
+    .onConflict((conflict) =>
+      conflict.columns(['session_id', 'task_id']).doUpdateSet({
+        first_at: sql`min(session_tasks.first_at, excluded.first_at)`,
+        last_activity: sql`CASE WHEN excluded.last_at >= session_tasks.last_at THEN excluded.last_activity ELSE session_tasks.last_activity END`,
+        last_at: sql`max(session_tasks.last_at, excluded.last_at)`,
+        updated_at: at,
+      }),
+    )
+    .execute();
+}
+
+function checkpointFromRow(row: { task_id: string; session_id: string | null; summary: string; next_steps_json: string; created_at: string }): Checkpoint {
+  return { taskId: row.task_id, sessionId: row.session_id, summary: row.summary, nextSteps: JSON.parse(row.next_steps_json) as string[], at: row.created_at };
 }
 
 /** The target state, or a 409 explaining why the workflow does not allow the step. */

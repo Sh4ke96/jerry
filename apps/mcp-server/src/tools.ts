@@ -1,25 +1,29 @@
 import {
+  checkpointRequestSchema,
+  checkpointSchema,
   coreStatusSchema,
   gatePreviewResponseSchema,
   planDocumentSchema,
   repositoryStateSchema,
   storedEventSchema,
   taskSchema,
+  type CallOrigin,
   type RepositoryState,
   type Task,
+  type TaskSummary,
   type TaskWithDecision,
   type WorkflowState,
 } from '@jerry/contracts';
 import { autostartCore, CoreUnavailableError, readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
 import { isTerminal, WORK_STATES } from '@jerry/workflow';
 import { z } from 'zod';
-import type { ToolDefinition, ToolResult } from './protocol.js';
+import type { CallContext, ToolDefinition, ToolResult } from './protocol.js';
 
 /**
- * JERRY tools for Claude (spec §4.2 E). They read state, preview gate decisions and submit plans.
- * There is deliberately no tool that approves, rejects, excludes or completes anything: those are
- * user actions in the CLI or dashboard. Submitting a plan only ever creates a version waiting for
- * the user.
+ * JERRY tools for Claude (spec §4.2 E). They read state, preview gate decisions, submit plans and
+ * save progress checkpoints. There is deliberately no tool that approves, rejects, excludes, pauses
+ * or completes anything: those are user actions in the CLI or dashboard. Submitting a plan only
+ * ever creates a version waiting for the user; a checkpoint is a note and changes no state.
  */
 
 const DEFAULT_DEVIATION_WINDOW_MINUTES = 480;
@@ -66,9 +70,24 @@ async function withCore(work: () => Promise<ToolResult>): Promise<ToolResult> {
   }
 }
 
+/** The Claude Code session that started this server (Claude Code sets it for MCP servers). */
+function sessionId(): string | null {
+  const value = process.env['CLAUDE_CODE_SESSION_ID'];
+  return value === undefined || value === '' ? null : value;
+}
+
+/** Tells Core which session made the call (ADR 0013); Core prefers the hook's record of the tool use. */
+function origin(call: CallContext): CallOrigin {
+  const session = sessionId();
+  return { ...(call.toolUseId === null ? {} : { toolUseId: call.toolUseId }), ...(session === null ? {} : { sessionId: session }) };
+}
+
 async function repositoryState(path: unknown): Promise<RepositoryState> {
   const target = typeof path === 'string' && path !== '' ? path : projectDir();
-  return repositoryStateSchema.parse(await core('GET', `/api/v1/repositories/state?path=${encodeURIComponent(target)}`));
+  const params = new URLSearchParams({ path: target });
+  const session = sessionId();
+  if (session !== null) params.set('sessionId', session);
+  return repositoryStateSchema.parse(await core('GET', `/api/v1/repositories/state?${params.toString()}`));
 }
 
 /** Being implemented under its approved plan: the plans that cover edits right now. */
@@ -103,7 +122,9 @@ export const TOOLS: readonly ToolDefinition[] = [
         const state = await repositoryState(args['path']);
         // Finished and cancelled tasks are history; leaving them out keeps the answer short.
         const open = state.tasks.filter((task) => !isTerminal(task.state));
-        const latest = [...open].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+        // The current task: the one this session worked on most recently, else the most recently active.
+        const recency = (task: TaskSummary): string => task.activity.lastActivityAt ?? task.createdAt;
+        const latest = open.find((task) => task.taskId === state.sessionTasks.find((id) => open.some((candidate) => candidate.taskId === id))) ?? [...open].sort((a, b) => recency(b).localeCompare(recency(a)))[0];
         return ok({
           guard: 'GUARDED',
           jerryVersion: status.version,
@@ -111,7 +132,17 @@ export const TOOLS: readonly ToolDefinition[] = [
           monitored: state.repoRoot !== null && !state.excluded,
           approved: open.filter(coversEdits).map(summarizeTask),
           open: open.filter((task) => !coversEdits(task)).map(summarizeTask),
-          currentTask: latest === undefined ? null : { ...summarizeTask(latest), contentHash: latest.plan.contentHash, createdAt: latest.createdAt },
+          currentTask:
+            latest === undefined
+              ? null
+              : {
+                  ...summarizeTask(latest),
+                  contentHash: latest.plan.contentHash,
+                  createdAt: latest.createdAt,
+                  workedInThisSession: state.sessionTasks.includes(latest.taskId),
+                  lastActivityAt: latest.activity.lastActivityAt,
+                  lastCheckpoint: latest.lastCheckpoint === null ? null : { summary: latest.lastCheckpoint.summary, nextSteps: latest.lastCheckpoint.nextSteps, at: latest.lastCheckpoint.at },
+                },
           next: nextAction(state),
           hardRules: 'No Git command or Git-server MCP tool that changes anything; no writes inside .git; no changes to JERRY data or the settings that enable it; no user-only jerry commands.',
         });
@@ -196,7 +227,7 @@ export const TOOLS: readonly ToolDefinition[] = [
       additionalProperties: false,
     },
     readOnly: false,
-    handler: (args) =>
+    handler: (args, call) =>
       withCore(async () => {
         const plan = planDocumentSchema.safeParse(args['plan']);
         if (!plan.success) return { content: [{ type: 'text', text: `The plan is incomplete or malformed; fix it and submit again:\n${z.prettifyError(plan.error)}` }], isError: true };
@@ -204,20 +235,47 @@ export const TOOLS: readonly ToolDefinition[] = [
         const taskId = typeof args['taskId'] === 'string' && args['taskId'] !== '' ? args['taskId'] : null;
         let task: Task;
         if (taskId !== null) {
-          task = taskSchema.parse(await core('POST', `/api/v1/tasks/${encodeURIComponent(taskId)}/plan`, { scope: document.scope.include, document, submittedBy: 'claude' }));
+          task = taskSchema.parse(await core('POST', `/api/v1/tasks/${encodeURIComponent(taskId)}/plan`, { scope: document.scope.include, document, submittedBy: 'claude', origin: origin(call) }));
         } else {
           const title = typeof args['title'] === 'string' ? args['title'].trim() : '';
           if (title === '') return { content: [{ type: 'text', text: 'A new task needs a short title.' }], isError: true };
           const repoPath = typeof args['repoPath'] === 'string' && args['repoPath'] !== '' ? args['repoPath'] : projectDir();
-          task = taskSchema.parse(await core('POST', '/api/v1/tasks', { repoPath, title, scope: document.scope.include, document, submittedBy: 'claude' }));
+          task = taskSchema.parse(await core('POST', '/api/v1/tasks', { repoPath, title, scope: document.scope.include, document, submittedBy: 'claude', origin: origin(call) }));
         }
         return ok({
           taskId: task.taskId,
           planVersion: task.plan.version,
           contentHash: task.plan.contentHash,
           state: task.state,
-          nextStep: `Tell the user that ${task.taskId} plan v${task.plan.version} waits for their decision in the JERRY dashboard (Plans) or with "jerry approve ${task.taskId} --stage plan --version ${task.plan.version}". Do not approve it yourself. Edits before approval are recorded as deviations.`,
+          nextStep: `Tell the user that ${task.taskId} plan v${task.plan.version} waits for their decision in the JERRY dashboard (Tasks) or with "jerry approve ${task.taskId} --stage plan --version ${task.plan.version}". Do not approve it yourself. Edits before approval are recorded as deviations.`,
         });
+      }),
+  },
+  {
+    name: 'jerry_save_checkpoint',
+    title: 'Save a progress checkpoint',
+    description:
+      'Save a short progress note on an open task, so a later session (after a restart, resume or compaction) knows what is done and what comes next. Notes only: it changes no task state and approves nothing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        taskId: { type: 'string', description: 'The task you are working on (JRY-…).' },
+        summary: { type: 'string', maxLength: 2000, description: 'What is done so far, briefly and concretely (files, decisions).' },
+        nextSteps: { type: 'array', items: { type: 'string', maxLength: 300 }, maxItems: 10, description: 'What remains, in order.' },
+      },
+      required: ['taskId', 'summary'],
+      additionalProperties: false,
+    },
+    readOnly: false,
+    handler: (args, call) =>
+      withCore(async () => {
+        const taskId = typeof args['taskId'] === 'string' ? args['taskId'].trim().toUpperCase() : '';
+        const note = checkpointRequestSchema.safeParse({ summary: args['summary'], nextSteps: args['nextSteps'] ?? [] });
+        if (taskId === '' || !note.success) {
+          return { content: [{ type: 'text', text: `A checkpoint needs a taskId and a summary (at most 2000 characters, up to 10 next steps of 300 characters).${note.success ? '' : `\n${z.prettifyError(note.error)}`}` }], isError: true };
+        }
+        const saved = checkpointSchema.parse(await core('POST', `/api/v1/tasks/${encodeURIComponent(taskId)}/checkpoints`, { ...note.data, origin: origin(call) }));
+        return ok({ saved: true, taskId: saved.taskId, at: saved.at, nextSteps: saved.nextSteps.length });
       }),
   },
 ];

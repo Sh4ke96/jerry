@@ -200,6 +200,33 @@ expect('I: Claude saw that the task is paused', /paused/i.test(i.text));
 const resumed = await coreApi(info, 'POST', `/api/v1/tasks/${task.taskId}/transitions`, { event: 'task.resumed' });
 expect('I: resume returns the task to implementation', resumed.state === 'IMPLEMENTATION', resumed.state);
 
+// J — session recovery: one session saves a checkpoint; the next one knows what to continue with.
+const j1 = runClaude(
+  'J1: work and save a checkpoint',
+  `Step 1: use the Write tool to create src/progress.txt with the content "step 1". Step 2: call jerry_save_checkpoint for task ${task.taskId} with the summary "Created src/progress.txt (step 1 of 2)." and the single next step "Create src/progress2.txt". Do nothing else.`,
+  ['Write', 'mcp__plugin_jerry_jerry__jerry_save_checkpoint'],
+);
+const jRows = await (async () => {
+  const { DatabaseSync } = await import('node:sqlite');
+  const db = new DatabaseSync(path.join(home, 'database', 'jerry.sqlite'), { readOnly: true });
+  try {
+    return {
+      checkpoints: db.prepare('SELECT session_id, summary, next_steps_json FROM task_checkpoints WHERE task_id = ?').all(task.taskId),
+      links: db.prepare('SELECT session_id, last_activity FROM session_tasks WHERE task_id = ?').all(task.taskId),
+    };
+  } finally {
+    db.close();
+  }
+})();
+expect('J1: the checkpoint was saved', jRows.checkpoints.some((row) => row.next_steps_json.includes('progress2')), JSON.stringify(jRows.checkpoints).slice(0, 200));
+expect('J1: JERRY tied the checkpoint and the edit to the session', jRows.checkpoints.some((row) => row.session_id === j1.sessionId) && jRows.links.some((row) => row.session_id === j1.sessionId), JSON.stringify(jRows.links));
+const j2 = runClaude(
+  'J2: a new session resumes',
+  'Do not use any tools. From the JERRY context of this session only, answer in one sentence: which JERRY task is open in this repository, and what is the next step according to its last checkpoint?',
+  ['Read'],
+);
+expect('J2: the new session knew the task and the next step', j2.text.includes(task.taskId) && /progress2/.test(j2.text), j2.text.slice(0, 200));
+
 // H — /jerry:plan: the model studies the repository, drafts a full plan and submits it; nothing is approved.
 const h = runClaude(
   'H: /jerry:plan',
@@ -302,7 +329,7 @@ if (autostarted !== null) await coreApi(autostarted, 'POST', '/api/v1/shutdown',
 // JERRY itself left no footprint; Claude's edits stay uncommitted for the user.
 expect('No JERRY or harness files in repo', !['.jerry', '.harness'].some(exists), exists('.claude') ? 'note: .claude/ exists (created by Claude Code, not JERRY)' : '');
 const status = git('status', '--porcelain', '--untracked-files=all').stdout.trim().split('\n').filter(Boolean);
-expect('Repo changes are exactly Claude’s five untracked edits', status.length === 5 && status.every((line) => line.startsWith('?? ')), status.join(' | '));
+expect('Repo changes are exactly Claude’s six untracked edits', status.length === 6 && status.every((line) => line.startsWith('?? ')), status.join(' | '));
 
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed. Artifacts kept in ${base}`);

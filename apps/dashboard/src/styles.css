@@ -389,6 +389,24 @@ code {
   color: var(--muted);
 }
 
+.checkpoint {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--accent);
+  background: var(--surface-muted);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+
+.checkpoint h3 {
+  margin: 0 0 6px;
+  font-size: 0.95rem;
+}
+
+.checkpoint p,
+.checkpoint ol {
+  margin: 0 0 4px;
+}
+
 .history {
   margin: 12px 0 0;
   padding-left: 20px;

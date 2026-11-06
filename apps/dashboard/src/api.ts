@@ -1,4 +1,4 @@
-import type { ApprovalRecord, CoreStatus, RepositoryExclusion, StoredEvent, TaskWithDecision, WorkflowTransition } from '@jerry/contracts';
+import type { ApprovalRecord, CoreStatus, RepositoryExclusion, StoredEvent, Task, TaskSummary, WorkflowTransition } from '@jerry/contracts';
 
 export type TaskControlEvent = 'task.paused' | 'task.resumed' | 'task.cancelled';
 
@@ -45,7 +45,7 @@ export interface EventQuery {
 
 export const api = {
   status: () => request<CoreStatus>('GET', '/api/v1/status'),
-  tasks: () => request<TaskWithDecision[]>('GET', '/api/v1/tasks'),
+  tasks: () => request<TaskSummary[]>('GET', '/api/v1/tasks'),
   exclusions: () => request<RepositoryExclusion[]>('GET', '/api/v1/repositories/exclusions'),
   events: (query: EventQuery = {}) => {
     const params = new URLSearchParams({ limit: String(query.limit ?? 200) });
@@ -53,7 +53,7 @@ export const api = {
     if (query.since !== undefined) params.set('since', query.since);
     return request<StoredEvent[]>('GET', `/api/v1/events?${params.toString()}`);
   },
-  decide: (task: TaskWithDecision, decision: 'APPROVED' | 'REJECTED', confirmTaskId: string) =>
+  decide: (task: TaskSummary, decision: 'APPROVED' | 'REJECTED', confirmTaskId: string) =>
     request<ApprovalRecord>('POST', `/api/v1/tasks/${encodeURIComponent(task.taskId)}/approvals`, {
       stage: 'PLAN',
       version: task.plan.version,
@@ -63,7 +63,7 @@ export const api = {
   transitions: (taskId: string) => request<WorkflowTransition[]>('GET', `/api/v1/tasks/${encodeURIComponent(taskId)}/transitions`),
   /** Pause, resume or cancel; cancelling needs the typed task ID. */
   control: (taskId: string, event: TaskControlEvent, confirmTaskId?: string) =>
-    request<TaskWithDecision>('POST', `/api/v1/tasks/${encodeURIComponent(taskId)}/transitions`, {
+    request<Task>('POST', `/api/v1/tasks/${encodeURIComponent(taskId)}/transitions`, {
       event,
       ...(confirmTaskId === undefined ? {} : { confirmTaskId }),
     }),

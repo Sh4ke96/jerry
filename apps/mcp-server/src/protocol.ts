@@ -21,7 +21,13 @@ export interface ToolDefinition {
   inputSchema: Record<string, unknown>;
   /** False for tools that submit something to JERRY (never for approvals: those do not exist here). */
   readOnly: boolean;
-  handler: (args: Record<string, unknown>) => Promise<ToolResult>;
+  handler: (args: Record<string, unknown>, call: CallContext) => Promise<ToolResult>;
+}
+
+/** What Claude Code tells the server about a call beyond its arguments. */
+export interface CallContext {
+  /** `_meta["claudecode/toolUseId"]`: the same ID the PreToolUse hook saw for this call. */
+  toolUseId: string | null;
 }
 
 interface Request {
@@ -81,7 +87,10 @@ export function serve(serverInfo: { name: string; version: string }, instruction
           return;
         }
         const args = request.params?.['arguments'];
-        reply(request.id, await tool.handler(typeof args === 'object' && args !== null ? (args as Record<string, unknown>) : {}));
+        const meta = request.params?.['_meta'];
+        const toolUseId = typeof meta === 'object' && meta !== null ? (meta as Record<string, unknown>)['claudecode/toolUseId'] : undefined;
+        const call: CallContext = { toolUseId: typeof toolUseId === 'string' && toolUseId !== '' ? toolUseId : null };
+        reply(request.id, await tool.handler(typeof args === 'object' && args !== null ? (args as Record<string, unknown>) : {}, call));
         return;
       }
       default:

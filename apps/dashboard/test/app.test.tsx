@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import type { StoredEvent, TaskWithDecision, WorkflowTransition } from '@jerry/contracts';
+import type { StoredEvent, TaskSummary, WorkflowTransition } from '@jerry/contracts';
 import { flushPromises, mount } from '@vue/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { samplePlan } from '../../../tests/helpers/plan-fixture';
@@ -9,7 +9,7 @@ import { startDashboard, state } from '../src/state';
 const CSRF = 'c'.repeat(64);
 const NOW = new Date().toISOString();
 
-const waitingTask: TaskWithDecision = {
+const waitingTask: TaskSummary = {
   taskId: 'JRY-0002',
   title: 'Add login form',
   repoRoot: 'D:\\Work\\shop',
@@ -17,17 +17,21 @@ const waitingTask: TaskWithDecision = {
   state: 'WAIT_PLAN_APPROVAL',
   plan: { version: 1, contentHash: `sha256:${'a'.repeat(64)}`, scope: ['src/auth/**'], createdAt: NOW, document: samplePlan('D:\\Work\\shop', ['src/auth/**']) },
   planDecision: null,
+  activity: { sessionCount: 0, lastSessionId: null, lastActivityAt: null, lastSessionEndedAt: null },
+  lastCheckpoint: null,
 };
 
-const approvedTask: TaskWithDecision = {
+const approvedTask: TaskSummary = {
   ...waitingTask,
   taskId: 'JRY-0001',
   title: 'M1 Core Foundation',
   state: 'IMPLEMENTATION',
   planDecision: { approvalId: 'apr_1', taskId: 'JRY-0001', stage: 'PLAN', version: 1, contentHash: waitingTask.plan.contentHash, decision: 'APPROVED', approvedBy: 'local-user', approvedAt: NOW, comment: '' },
+  activity: { sessionCount: 2, lastSessionId: 's2', lastActivityAt: NOW, lastSessionEndedAt: NOW },
+  lastCheckpoint: { taskId: 'JRY-0001', sessionId: 's2', summary: 'Store and API for sessions are done.', nextSteps: ['Dashboard card', 'Live check'], at: NOW },
 };
 
-const cancelledTask: TaskWithDecision = { ...waitingTask, taskId: 'JRY-0003', title: 'Dropped idea', state: 'CANCELLED' };
+const cancelledTask: TaskSummary = { ...waitingTask, taskId: 'JRY-0003', title: 'Dropped idea', state: 'CANCELLED' };
 
 const history: WorkflowTransition[] = [
   { taskId: 'JRY-0001', from: null, to: 'WAIT_PLAN_APPROVAL', event: 'plan.submitted', actor: 'claude', reason: 'plan version 1', at: NOW },
@@ -137,6 +141,20 @@ describe('Dashboard app', () => {
     const cancel = calls.find((call) => call.url === '/api/v1/tasks/JRY-0002/transitions')!;
     expect(JSON.parse(String(cancel.init?.body))).toEqual({ event: 'task.cancelled', confirmTaskId: 'JRY-0002' });
     expect((cancel.init?.headers as Record<string, string>)['x-jerry-csrf']).toBe(CSRF);
+    wrapper.unmount();
+  });
+
+  it('shows which sessions worked on a task and Claude’s last checkpoint', async () => {
+    const wrapper = await mountApp();
+    await openTasks(wrapper);
+    const card = wrapper.findAll('article.task').find((candidate) => candidate.text().includes('JRY-0001'))!;
+    expect(card.text()).toContain('2 sessions · last activity');
+    expect(card.text()).toContain('last session ended');
+    expect(card.get('.checkpoint').text()).toContain('Store and API for sessions are done.');
+    expect(card.findAll('.checkpoint li').map((item) => item.text())).toEqual(['Dashboard card', 'Live check']);
+    const waiting = wrapper.findAll('article.task').find((candidate) => candidate.text().includes('JRY-0002'))!;
+    expect(waiting.text()).toContain('No session has worked on it yet');
+    expect(waiting.find('.checkpoint').exists()).toBe(false);
     wrapper.unmount();
   });
 

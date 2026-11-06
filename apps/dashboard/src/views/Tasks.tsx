@@ -1,4 +1,4 @@
-import type { TaskWithDecision, WorkflowTransition } from '@jerry/contracts';
+import type { TaskSummary, WorkflowTransition } from '@jerry/contracts';
 import { availableEvents, STATE_LABELS } from '@jerry/workflow';
 import { defineComponent, reactive, ref } from 'vue';
 import { api } from '../api';
@@ -12,7 +12,7 @@ import { handleError, perform, state } from '../state';
 type ConfirmedAction = 'approve' | 'reject' | 'cancel';
 
 interface PendingAction {
-  task: TaskWithDecision;
+  task: TaskSummary;
   action: ConfirmedAction;
 }
 
@@ -36,6 +36,15 @@ const DIALOG: Record<ConfirmedAction, { title: string; confirm: string; tone: 'p
     note: 'Cancelling cannot be undone. The task and its history stay on record; its plan no longer covers any edits.',
   },
 };
+
+/** How many Claude Code sessions worked on the task, and whether the last one has ended. */
+function sessionsText(task: TaskSummary): string {
+  const { sessionCount, lastActivityAt, lastSessionEndedAt } = task.activity;
+  if (sessionCount === 0 || lastActivityAt === null) return 'No session has worked on it yet';
+  const count = sessionCount === 1 ? '1 session' : `${sessionCount} sessions`;
+  const last = lastSessionEndedAt === null ? 'last session may still be open' : `last session ended ${formatTime(lastSessionEndedAt)}`;
+  return `${count} · last activity ${formatTime(lastActivityAt)} · ${last}`;
+}
 
 export const Tasks = defineComponent({
   name: 'Tasks',
@@ -61,7 +70,7 @@ export const Tasks = defineComponent({
       }
     };
 
-    const control = async (task: TaskWithDecision, event: 'task.paused' | 'task.resumed'): Promise<void> => {
+    const control = async (task: TaskSummary, event: 'task.paused' | 'task.resumed'): Promise<void> => {
       busy.value = true;
       await perform(() => api.control(task.taskId, event), `${event === 'task.paused' ? 'Paused' : 'Resumed'} ${task.taskId}.`);
       busy.value = false;
@@ -83,7 +92,7 @@ export const Tasks = defineComponent({
       else delete histories[taskId];
     };
 
-    const actions = (task: TaskWithDecision) => {
+    const actions = (task: TaskSummary) => {
       const allowed = availableEvents(task.state, 'user');
       const ask = (action: ConfirmedAction) => () => (pending.value = { task, action });
       const buttons = [];
@@ -150,7 +159,7 @@ export const Tasks = defineComponent({
       );
     };
 
-    const card = (task: TaskWithDecision) => (
+    const card = (task: TaskSummary) => (
       <article class="panel task" key={task.taskId}>
         <header class="task__header">
           <div>
@@ -185,7 +194,24 @@ export const Tasks = defineComponent({
               {task.planDecision.comment !== '' && <span class="muted"> · {task.planDecision.comment}</span>}
             </dd>,
           ]}
+          <dt>Sessions</dt>
+          <dd>{sessionsText(task)}</dd>
         </dl>
+        {task.lastCheckpoint !== null && (
+          <section class="checkpoint">
+            <h3>
+              Last checkpoint <span class="muted small">{formatTime(task.lastCheckpoint.at)} · written by Claude</span>
+            </h3>
+            <p>{task.lastCheckpoint.summary}</p>
+            {task.lastCheckpoint.nextSteps.length > 0 && (
+              <ol>
+                {task.lastCheckpoint.nextSteps.map((step, index) => (
+                  <li key={index}>{step}</li>
+                ))}
+              </ol>
+            )}
+          </section>
+        )}
         {isOpen(task) && task.plan.document !== undefined && <PlanDocumentView plan={task.plan.document} />}
         {actions(task)}
         {history(task.taskId)}

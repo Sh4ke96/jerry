@@ -1,58 +1,9 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import readline from 'node:readline';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { api, createFixtureRepo, ROOT, runBridge, preToolUse, startCore, tempDir, TEST_CORE_ENV, type RunningCore } from '../helpers/harness.js';
+import { api, createFixtureRepo, runBridge, preToolUse, startCore, tempDir, type RunningCore } from '../helpers/harness.js';
+import { McpClient } from '../helpers/mcp-client.js';
 import { samplePlan } from '../helpers/plan-fixture.js';
-
-const MCP_SERVER = path.join(ROOT, 'dist', 'plugin', 'mcp', 'server.mjs');
-
-/** A tiny MCP client speaking newline-delimited JSON-RPC over the server's stdio. */
-class McpClient {
-  private nextId = 1;
-  private readonly pending = new Map<number, (message: Record<string, unknown>) => void>();
-  private readonly child: ChildProcessWithoutNullStreams;
-
-  constructor(env: Record<string, string>) {
-    this.child = spawn(process.execPath, [MCP_SERVER], { env: { ...process.env, ...TEST_CORE_ENV, ...env }, windowsHide: true });
-    readline.createInterface({ input: this.child.stdout }).on('line', (line) => {
-      const message = JSON.parse(line) as Record<string, unknown>;
-      const resolve = this.pending.get(message['id'] as number);
-      if (resolve !== undefined) {
-        this.pending.delete(message['id'] as number);
-        resolve(message);
-      }
-    });
-  }
-
-  request(method: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
-    const id = this.nextId++;
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`no answer to ${method}`)), 10_000);
-      this.pending.set(id, (message) => {
-        clearTimeout(timer);
-        resolve(message);
-      });
-      this.child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
-    });
-  }
-
-  notify(method: string): void {
-    this.child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method })}\n`);
-  }
-
-  async call(name: string, args: Record<string, unknown> = {}): Promise<{ structured: Record<string, unknown>; text: string; isError: boolean }> {
-    const response = await this.request('tools/call', { name, arguments: args });
-    const result = response['result'] as { content: Array<{ text: string }>; structuredContent?: Record<string, unknown>; isError?: boolean };
-    return { structured: result.structuredContent ?? {}, text: result.content[0]?.text ?? '', isError: result.isError === true };
-  }
-
-  close(): void {
-    this.child.stdin.end();
-    this.child.kill();
-  }
-}
 
 describe('JERRY MCP server (bundled)', () => {
   const base = tempDir('mcp');
@@ -83,9 +34,9 @@ describe('JERRY MCP server (bundled)', () => {
     const mcp = await connect();
     const listed = (await mcp.request('tools/list'))['result'] as { tools: Array<{ name: string; annotations: { readOnlyHint: boolean } }> };
     const names = listed.tools.map((tool) => tool.name).sort();
-    expect(names).toEqual(['jerry_check_paths', 'jerry_get_state', 'jerry_list_deviations', 'jerry_submit_plan']);
-    expect(listed.tools.filter((tool) => !tool.annotations.readOnlyHint).map((tool) => tool.name)).toEqual(['jerry_submit_plan']);
-    expect(names.some((name) => /approve|reject|exclude|done|complete/.test(name))).toBe(false);
+    expect(names).toEqual(['jerry_check_paths', 'jerry_get_state', 'jerry_list_deviations', 'jerry_save_checkpoint', 'jerry_submit_plan']);
+    expect(listed.tools.filter((tool) => !tool.annotations.readOnlyHint).map((tool) => tool.name)).toEqual(['jerry_submit_plan', 'jerry_save_checkpoint']);
+    expect(names.some((name) => /approve|reject|exclude|pause|resume|cancel|done|complete/.test(name))).toBe(false);
   });
 
   it('submits a plan as a task waiting for approval, and a revision voids the approval', async () => {

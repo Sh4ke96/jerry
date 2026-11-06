@@ -247,6 +247,17 @@ export const taskTransitionRequestSchema = z.object({
   confirmTaskId: z.string().optional(),
 });
 
+/**
+ * Which Claude Code session made a call through the MCP server (ADR 0013). The tool-use ID is
+ * matched against the PreToolUse event the hook recorded, so the session comes from the hook, not
+ * from the caller; the session ID from the MCP server's environment is the fallback.
+ */
+export const callOriginSchema = z.object({
+  toolUseId: z.string().min(1).max(200).optional(),
+  sessionId: z.string().min(1).max(200).optional(),
+});
+export type CallOrigin = z.infer<typeof callOriginSchema>;
+
 export const taskCreateRequestSchema = z.object({
   repoPath: z.string().min(1),
   title: z.string().min(1),
@@ -254,6 +265,7 @@ export const taskCreateRequestSchema = z.object({
   document: planDocumentSchema.optional(),
   /** Who submitted the plan, for the audit log: the user (CLI) or Claude (MCP). Not a permission. */
   submittedBy: z.enum(['user', 'claude']).default('user'),
+  origin: callOriginSchema.optional(),
 });
 export type TaskCreateRequest = z.infer<typeof taskCreateRequestSchema>;
 
@@ -261,6 +273,7 @@ export const planReviseRequestSchema = z.object({
   scope: planScopeSchema,
   document: planDocumentSchema.optional(),
   submittedBy: z.enum(['user', 'claude']).default('user'),
+  origin: callOriginSchema.optional(),
 });
 export type PlanReviseRequest = z.infer<typeof planReviseRequestSchema>;
 
@@ -292,12 +305,47 @@ export const approvedPlanSummarySchema = z.object({
 });
 export type ApprovedPlanSummary = z.infer<typeof approvedPlanSummarySchema>;
 
-/** Core's answer to SessionStart: what is currently approved for the session's repository. */
+/** Claude's progress note on a task, so a later session can pick the work up (ADR 0013). */
+export const checkpointRequestSchema = z.object({
+  summary: z.string().trim().min(1).max(2000),
+  nextSteps: z.array(z.string().trim().min(1).max(300)).max(10).default([]),
+  origin: callOriginSchema.optional(),
+});
+export type CheckpointRequest = z.infer<typeof checkpointRequestSchema>;
+
+export const checkpointSchema = z.object({
+  taskId: taskIdSchema,
+  sessionId: z.string().nullable(),
+  summary: z.string(),
+  nextSteps: z.array(z.string()),
+  at: z.iso.datetime(),
+});
+export type Checkpoint = z.infer<typeof checkpointSchema>;
+
+/** An open task as a new or resumed session sees it at SessionStart. */
+export const openTaskSchema = z.object({
+  taskId: taskIdSchema,
+  title: z.string().min(1),
+  state: workflowStateSchema,
+  planVersion: z.number().int().positive(),
+  scope: planScopeSchema,
+  /** Being implemented under its approved plan: edits in its scope pass. */
+  coversEdits: z.boolean(),
+  /** This session (same ID after resume or compaction) already worked on the task. */
+  workedInThisSession: z.boolean(),
+  lastActivityAt: z.iso.datetime().nullable(),
+  checkpoint: z.object({ summary: z.string(), nextSteps: z.array(z.string()), at: z.iso.datetime() }).nullable(),
+});
+export type OpenTask = z.infer<typeof openTaskSchema>;
+
+/** Core's answer to SessionStart: what is approved for the session's repository, and the open tasks to resume. */
 export const sessionRegistrationResponseSchema = z.object({
   registered: z.literal(true),
   repoRoot: z.string().nullable(),
   excluded: z.boolean(),
   approvedPlans: z.array(approvedPlanSummarySchema),
+  /** Missing only from an older Core. */
+  openTasks: z.array(openTaskSchema).optional(),
 });
 export type SessionRegistrationResponse = z.infer<typeof sessionRegistrationResponseSchema>;
 
@@ -367,11 +415,48 @@ export const databaseBackupResultSchema = z.object({ file: z.string().min(1) });
 export const taskWithDecisionSchema = taskSchema.extend({ planDecision: approvalRecordSchema.nullable() });
 export type TaskWithDecision = z.infer<typeof taskWithDecisionSchema>;
 
+/** Which Claude Code sessions worked on a task, and when (ADR 0013). */
+export const taskActivitySchema = z.object({
+  sessionCount: z.number().int().nonnegative(),
+  lastSessionId: z.string().nullable(),
+  lastActivityAt: z.iso.datetime().nullable(),
+  /** When the last session ended (SessionEnd); null while it may still be running. */
+  lastSessionEndedAt: z.iso.datetime().nullable(),
+});
+export type TaskActivity = z.infer<typeof taskActivitySchema>;
+
+/** A task as lists show it: decision, session activity and the latest checkpoint. */
+export const taskSummarySchema = taskWithDecisionSchema.extend({
+  activity: taskActivitySchema,
+  lastCheckpoint: checkpointSchema.nullable(),
+});
+export type TaskSummary = z.infer<typeof taskSummarySchema>;
+
+export const taskSessionSchema = z.object({
+  sessionId: z.string(),
+  firstAt: z.iso.datetime(),
+  lastAt: z.iso.datetime(),
+  /** What the session last did for the task: plan.submitted, plan.revised, edit, checkpoint. */
+  lastActivity: z.string(),
+  endedAt: z.iso.datetime().nullable(),
+  endReason: z.string().nullable(),
+});
+export type TaskSession = z.infer<typeof taskSessionSchema>;
+
+export const taskDetailSchema = taskSummarySchema.extend({
+  sessions: z.array(taskSessionSchema),
+  /** Newest first. */
+  checkpoints: z.array(checkpointSchema),
+});
+export type TaskDetail = z.infer<typeof taskDetailSchema>;
+
 /** Everything JERRY knows about the repository containing a path (used by MCP tools and the dashboard). */
 export const repositoryStateSchema = z.object({
   repoRoot: z.string().nullable(),
   excluded: z.boolean(),
-  tasks: z.array(taskWithDecisionSchema),
+  tasks: z.array(taskSummarySchema),
+  /** Tasks the asking session worked on, when it said which session it is. */
+  sessionTasks: z.array(taskIdSchema).default([]),
 });
 export type RepositoryState = z.infer<typeof repositoryStateSchema>;
 

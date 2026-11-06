@@ -137,6 +137,9 @@ importers:
       '@jerry/trace-engine':
         specifier: workspace:*
         version: link:../../packages/trace-engine
+      '@jerry/workflow':
+        specifier: workspace:*
+        version: link:../../packages/workflow
 
   apps/mcp-server:
     dependencies:

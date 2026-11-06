@@ -38,11 +38,16 @@ repositories, not to this one.
   approved plan covers edits only while its task is in implementation. Pause, resume and cancel are your
   decisions (dashboard or `jerry task pause|resume|cancel`)
   ([ADR 0012](docs/decisions/0012-workflow-states.md)).
+- Sessions and tasks are linked: JERRY records which Claude Code session submitted, edited or checkpointed
+  which task. Claude saves progress notes with `jerry_save_checkpoint`. A new, resumed or compacted session
+  starts knowing the open tasks, their state and the last checkpoint
+  ([ADR 0013](docs/decisions/0013-session-task-correlation-and-recovery.md)).
 - JERRY Control Center at `http://127.0.0.1:47823` (open it with `jerry ui`): overview, tasks with their state,
   plan, history and the decisions their state allows, session timeline, repositories; installable as an app
   ([ADR 0009](docs/decisions/0009-dashboard.md)).
-- MCP server in the plugin with read-only tools that give Claude the live plan state, path checks and recorded
-  deviations; nothing in it can approve ([ADR 0008](docs/decisions/0008-local-mcp-server.md)).
+- MCP server in the plugin: read-only tools for the live plan state, path checks and recorded deviations,
+  plus plan submission and progress checkpoints; nothing in it can approve, pause or complete anything
+  ([ADR 0008](docs/decisions/0008-local-mcp-server.md)).
 - `jerry status` (quick summary) and `jerry doctor` (full diagnostics); the hook bridge loads no heavy
   dependencies, about 30 ms per guarded call ([ADR 0010](docs/decisions/0010-fast-bridge-cli-doctor.md)).
 - `jerry` CLI (Commander, `jerry --help`): `install`, `uninstall`, `doctor`, `ui`, `core start|stop|status`,

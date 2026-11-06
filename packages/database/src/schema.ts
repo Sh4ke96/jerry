@@ -70,8 +70,33 @@ export interface SessionsTable {
   source: string | null;
   first_seen_at: string;
   last_seen_at: string;
+  /** Set by SessionEnd; cleared when the same session starts again. */
+  ended_at: string | null;
+  end_reason: string | null;
   created_at: string;
   updated_at: string;
+}
+
+/** Which Claude Code session worked on which task. */
+export interface SessionTasksTable {
+  session_id: string;
+  task_id: string;
+  first_at: string;
+  last_at: string;
+  /** plan.submitted, plan.revised, edit or checkpoint. */
+  last_activity: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Claude's progress notes on a task, for the next session. */
+export interface TaskCheckpointsTable {
+  id: Generated<number>;
+  task_id: string;
+  session_id: string | null;
+  summary: string;
+  next_steps_json: string;
+  created_at: string;
 }
 
 export interface SettingsTable {
@@ -125,6 +150,8 @@ export interface JerrySchema {
   plans: PlansTable;
   approvals: ApprovalsTable;
   sessions: SessionsTable;
+  session_tasks: SessionTasksTable;
+  task_checkpoints: TaskCheckpointsTable;
   settings: SettingsTable;
   audit_log: AuditLogTable;
 }

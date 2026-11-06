@@ -141,6 +141,19 @@ describe('StateStore on SQLite', () => {
     await reopened.close();
   });
 
+  it('keeps session links consistent when events arrive out of order (spool)', async () => {
+    const store = await StateStore.open(options());
+    const task = await store.createTask({ repoRoot: REPO, title: 'Links', scope: ['src/**'], sessionId: 's1' }, now(0));
+    await store.linkSession('s1', task.taskId, 'checkpoint', now(10));
+    // An edit from the spool that happened earlier must not move the activity back in time.
+    await store.linkSession('s1', task.taskId, 'edit', now(5));
+    await store.linkSession('s1', 'JRY-9999', 'edit', now(6)); // unknown task: ignored
+    const { sessions } = await store.taskHistory(task.taskId);
+    expect(sessions).toEqual([{ sessionId: 's1', firstAt: now(0).toISOString(), lastAt: now(10).toISOString(), lastActivity: 'checkpoint', endedAt: null, endReason: null }]);
+    expect(await store.tasksOfSession('s1')).toEqual([task.taskId]);
+    await store.close();
+  });
+
   it('imports the M0 JSON state once and keeps the file, renamed', async () => {
     const where = options();
     const scope = ['apps/**'];

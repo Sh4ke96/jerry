@@ -8,6 +8,7 @@
     "@jerry/contracts": "workspace:*",
     "@jerry/platform": "workspace:*",
     "@jerry/policy-engine": "workspace:*",
-    "@jerry/trace-engine": "workspace:*"
+    "@jerry/trace-engine": "workspace:*",
+    "@jerry/workflow": "workspace:*"
   }
 }

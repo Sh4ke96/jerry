@@ -79,6 +79,36 @@ describe('guards accept exactly what the Zod schemas accept', () => {
     );
   });
 
+  it('session registration response with open tasks to resume', () => {
+    const checkpoint = { summary: 'Added the parser.', nextSteps: ['Write tests'], at: '2026-11-06T12:00:00.000Z' };
+    const task = { taskId: 'JRY-0002', title: 'Parser', state: 'IMPLEMENTATION', planVersion: 1, scope: ['src/**'], coversEdits: true, workedInThisSession: false, lastActivityAt: '2026-11-06T12:00:00.000Z', checkpoint };
+    const base = { registered: true, repoRoot: 'D:/Work', excluded: false, approvedPlans: [], openTasks: [task] };
+    const taskVariants = variants(task, {
+      taskId: ['JRY-1', ...UNUSUAL],
+      title: UNUSUAL,
+      state: ['DONE', 'PAUSED', 'implementation', 'UNKNOWN', ...UNUSUAL],
+      planVersion: UNUSUAL,
+      scope: [[''], ['src/**', 1], ...UNUSUAL],
+      coversEdits: UNUSUAL,
+      workedInThisSession: UNUSUAL,
+      lastActivityAt: ['2026-11-06', '2026-11-06T12:00:00Z', ...UNUSUAL],
+      checkpoint: [
+        ...UNUSUAL,
+        { ...checkpoint, summary: '' },
+        { ...checkpoint, summary: 3 },
+        { ...checkpoint, nextSteps: 'x' },
+        { ...checkpoint, nextSteps: [1] },
+        { ...checkpoint, at: 'yesterday' },
+        { summary: 'x', nextSteps: [] },
+      ],
+    });
+    expectEquivalent(
+      isSessionRegistrationResponse,
+      sessionRegistrationResponseSchema,
+      [base, { ...base, openTasks: [] }, { ...base, openTasks: null }, { ...base, openTasks: task }, ...taskVariants.map((variant) => ({ ...base, openTasks: [task, variant] }))],
+    );
+  });
+
   it('Core runtime info', () => {
     const base = { pid: 1234, port: 47823, configuredPort: 47823, token: 'a'.repeat(64), startedAt: '2026-11-06T12:00:00.000Z', version: '0.0.1-m0' };
     expectEquivalent(

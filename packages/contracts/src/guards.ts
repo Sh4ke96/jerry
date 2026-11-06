@@ -1,4 +1,4 @@
-import { CORE_TOKEN_PATTERN, GATE_VERDICTS, TASK_ID_PATTERN } from './constants.js';
+import { CORE_TOKEN_PATTERN, GATE_VERDICTS, TASK_ID_PATTERN, WORKFLOW_STATES } from './constants.js';
 
 /**
  * Dependency-free validators for the hook bridge's hot path (ADR 0010). Each one accepts exactly
@@ -54,6 +54,27 @@ export function isGateDecision(value: unknown): value is GateDecision {
   );
 }
 
+const isTaskId = (value: unknown): boolean => typeof value === 'string' && TASK_ID_PATTERN.test(value);
+const isScope = (value: unknown): boolean => Array.isArray(value) && value.length > 0 && value.every(isNonEmptyString);
+const isStringArray = (value: unknown): boolean => Array.isArray(value) && value.every((item) => typeof item === 'string');
+const WORKFLOW_STATE_SET: ReadonlySet<unknown> = new Set(WORKFLOW_STATES);
+
+function isOpenTask(task: unknown): boolean {
+  if (!isObject(task)) return false;
+  const checkpoint = task['checkpoint'];
+  return (
+    isTaskId(task['taskId']) &&
+    isNonEmptyString(task['title']) &&
+    WORKFLOW_STATE_SET.has(task['state']) &&
+    isInteger(task['planVersion'], 1) &&
+    isScope(task['scope']) &&
+    typeof task['coversEdits'] === 'boolean' &&
+    typeof task['workedInThisSession'] === 'boolean' &&
+    (task['lastActivityAt'] === null || isIsoDateTime(task['lastActivityAt'])) &&
+    (checkpoint === null || (isObject(checkpoint) && typeof checkpoint['summary'] === 'string' && isStringArray(checkpoint['nextSteps']) && isIsoDateTime(checkpoint['at'])))
+  );
+}
+
 export function isSessionRegistrationResponse(value: unknown): value is SessionRegistrationResponse {
   return (
     isObject(value) &&
@@ -61,16 +82,8 @@ export function isSessionRegistrationResponse(value: unknown): value is SessionR
     isNullableString(value['repoRoot']) &&
     typeof value['excluded'] === 'boolean' &&
     Array.isArray(value['approvedPlans']) &&
-    value['approvedPlans'].every(
-      (plan) =>
-        isObject(plan) &&
-        typeof plan['taskId'] === 'string' &&
-        TASK_ID_PATTERN.test(plan['taskId']) &&
-        isInteger(plan['planVersion'], 1) &&
-        Array.isArray(plan['scope']) &&
-        plan['scope'].length > 0 &&
-        plan['scope'].every(isNonEmptyString),
-    )
+    value['approvedPlans'].every((plan) => isObject(plan) && isTaskId(plan['taskId']) && isInteger(plan['planVersion'], 1) && isScope(plan['scope'])) &&
+    (value['openTasks'] === undefined || (Array.isArray(value['openTasks']) && value['openTasks'].every(isOpenTask)))
   );
 }
 

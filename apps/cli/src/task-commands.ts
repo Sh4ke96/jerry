@@ -1,6 +1,6 @@
 import path from 'node:path';
 import readline from 'node:readline/promises';
-import { approvalRecordSchema, taskSchema, taskWithDecisionSchema, workflowTransitionSchema, type ApprovalRecord, type Task } from '@jerry/contracts';
+import { approvalRecordSchema, taskDetailSchema, taskSchema, taskWithDecisionSchema, workflowTransitionSchema, type ApprovalRecord, type Task } from '@jerry/contracts';
 import { readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
 import { isTerminal, STATE_LABELS } from '@jerry/workflow';
 import { z } from 'zod';
@@ -40,16 +40,34 @@ export async function listTasks(options: { all: boolean }): Promise<void> {
 }
 
 export async function showTask(taskId: string): Promise<void> {
-  const task = await fetchTask(taskId);
-  const history = z.array(workflowTransitionSchema).parse(await callCore('GET', `/api/v1/tasks/${encodeURIComponent(task.taskId)}/transitions`));
+  const id = taskId.toUpperCase();
+  const [task, history] = await Promise.all([
+    callCore('GET', `/api/v1/tasks/${encodeURIComponent(id)}`).then((body) => taskDetailSchema.parse(body)),
+    callCore('GET', `/api/v1/tasks/${encodeURIComponent(id)}/transitions`).then((body) => z.array(workflowTransitionSchema).parse(body)),
+  ]);
   console.log(`${task.taskId}  ${STATE_LABELS[task.state]} (${task.state})`);
   printPlan(task);
   const decision = task.planDecision;
   console.log(`  decision: ${decision === null ? 'none for this plan version' : `${decision.decision} ${decision.approvedAt}${decision.comment === '' ? '' : ` "${decision.comment}"`}`}`);
+
   console.log('\nHistory:');
   if (history.length === 0) console.log('  (none recorded; the task predates workflow states)');
   for (const step of history) {
     console.log(`  ${step.at}  ${(step.from ?? 'new').padEnd(30)} -> ${step.to.padEnd(30)} ${step.event} by ${step.actor}${step.reason === '' ? '' : `: ${step.reason}`}`);
+  }
+
+  console.log('\nClaude Code sessions:');
+  if (task.sessions.length === 0) console.log('  (none yet)');
+  for (const session of task.sessions) {
+    const ended = session.endedAt === null ? 'may still be open' : `ended ${session.endedAt}${session.endReason === null ? '' : ` (${session.endReason})`}`;
+    console.log(`  ${session.sessionId}  ${session.firstAt} .. ${session.lastAt}  last: ${session.lastActivity}, ${ended}`);
+  }
+
+  const [checkpoint] = task.checkpoints;
+  if (checkpoint !== undefined) {
+    console.log(`\nLast checkpoint (${checkpoint.at}, written by Claude${task.checkpoints.length > 1 ? `; ${task.checkpoints.length - 1} earlier` : ''}):`);
+    console.log(`  ${checkpoint.summary}`);
+    checkpoint.nextSteps.forEach((step, index) => console.log(`  ${index + 1}. ${step}`));
   }
 }
 

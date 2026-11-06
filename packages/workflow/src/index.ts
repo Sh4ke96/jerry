@@ -10,10 +10,12 @@ import type { WorkflowActor, WorkflowEvent, WorkflowState } from '@jerry/contrac
  *   core    completing a task after the final checks (DONE is never set by a model, spec §7.2 Phase 9)
  */
 
-export const TERMINAL_STATES: ReadonlySet<WorkflowState> = new Set(['DONE', 'CANCELLED']);
+// The PURE annotations let bundlers drop what a consumer does not use: the hook bridge needs only
+// the labels and WORK_STATES, not the transition table.
+export const TERMINAL_STATES: ReadonlySet<WorkflowState> = /* @__PURE__ */ new Set(['DONE', 'CANCELLED']);
 
 /** States in which an approved plan covers edits (ADR 0012); everywhere else edits are deviations. */
-export const WORK_STATES: ReadonlySet<WorkflowState> = new Set(['IMPLEMENTATION', 'FIX_IMPLEMENTATION']);
+export const WORK_STATES: ReadonlySet<WorkflowState> = /* @__PURE__ */ new Set(['IMPLEMENTATION', 'FIX_IMPLEMENTATION']);
 
 /** States a task can be paused from (and resumed to). */
 const PAUSABLE: readonly WorkflowState[] = [
@@ -58,7 +60,7 @@ const RULES: Readonly<Record<WorkflowEvent, Rule>> = {
   'task.completed': { from: ['FINAL_REPORT'], to: 'DONE', actors: ['core'] },
   'task.paused': { from: PAUSABLE, to: 'PAUSED', actors: ['user'] },
   'task.resumed': { from: ['PAUSED'], to: 'resume', actors: ['user'] },
-  'task.cancelled': { from: [...PAUSABLE, 'PAUSED'], to: 'CANCELLED', actors: ['user'] },
+  'task.cancelled': { from: /* @__PURE__ */ PAUSABLE.concat('PAUSED'), to: 'CANCELLED', actors: ['user'] },
 };
 
 export type TransitionResult = { ok: true; to: WorkflowState } | { ok: false; reason: string };

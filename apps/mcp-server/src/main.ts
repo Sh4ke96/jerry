@@ -6,6 +6,6 @@ import { TOOLS } from './tools.js';
 serve(
   { name: 'jerry', version: JERRY_VERSION },
   // Kept short: it stays in the context of every session (token cost, see ADR 0008).
-  'JERRY state, path checks and plan submission. Use them when you need the live plan state or submit a plan; nothing here can approve.',
+  'JERRY state, path checks, plan submission and progress checkpoints. Use them for the live plan state, to submit a plan or to save progress; nothing here can approve.',
   TOOLS,
 );

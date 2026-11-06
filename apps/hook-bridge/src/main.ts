@@ -1,10 +1,11 @@
 import fs from 'node:fs';
 // Types only from the contracts index: the bridge must not load Zod (ADR 0010; checked by the build).
-import type { EventEnvelope, GateCheckRequest, GateDecision, SessionRegistrationResponse, SessionStartInput } from '@jerry/contracts';
+import type { EventEnvelope, GateCheckRequest, GateDecision, OpenTask, SessionRegistrationResponse, SessionStartInput } from '@jerry/contracts';
 import { isGateDecision, isPreToolUseInput, isSessionRegistrationResponse, isSessionStartInput } from '@jerry/contracts/guards';
 import { autostartCore, protectedRoots, readCoreRuntimeInfo, requestCore, resolveJerryHome, spoolEvent } from '@jerry/platform';
 import { classifyToolCall, evaluateHardRules } from '@jerry/policy-engine';
 import { buildEventEnvelope, newEventId, type EnvelopeOverrides } from '@jerry/trace-engine';
+import { STATE_LABELS } from '@jerry/workflow';
 
 /**
  * Claude Code command-hook adapter (ADR 0003: JERRY monitors, and blocks only hard rules).
@@ -242,12 +243,48 @@ function monitoredSessionContext(registration: SessionRegistrationResponse): str
     const plans = registration.approvedPlans.map((plan) => `${plan.taskId} v${plan.planVersion} (scope: ${plan.scope.join(', ')})`).join('; ');
     lines.push(`Approved plan: ${plans}.`);
   }
+  if (registration.repoRoot !== null && !registration.excluded) lines.push(...resumeContext(registration.openTasks ?? []));
   lines.push(
     'Mention JERRY warnings in your summary. If you need the current plan state (it can change mid-session), use the jerry MCP tools.',
     HARD_RULES_TEXT,
     'If JERRY blocks an action, report the reason to the user instead of working around it.',
   );
   return lines.join(' ');
+}
+
+/** Open tasks shown in full at session start; the rest are counted (jerry_get_state lists them). */
+const OPEN_TASKS_IN_CONTEXT = 3;
+
+/** One line of text, at most `max` characters: titles and notes come from Claude, not from JERRY. */
+function oneLine(text: string, max: number): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
+}
+
+/**
+ * What the session needs to pick up the work after a restart, resume or compaction (ADR 0013):
+ * open tasks with their state and Claude's last checkpoint. Kept short; it is in every session.
+ */
+function resumeContext(openTasks: readonly OpenTask[]): string[] {
+  if (openTasks.length === 0) return [];
+  const shown = openTasks.slice(0, OPEN_TASKS_IN_CONTEXT).map((task) => {
+    let entry = `${task.taskId} "${oneLine(task.title, 80)}": ${STATE_LABELS[task.state].toLowerCase()}`;
+    if (task.state === 'PAUSED') entry += ', do not continue it until the user resumes it';
+    if (task.workedInThisSession) entry += ', you worked on it in this session';
+    else if (task.lastActivityAt !== null) entry += `, last worked on ${task.lastActivityAt.slice(0, 16).replace('T', ' ')} UTC`;
+    if (task.checkpoint !== null) {
+      entry += `; last checkpoint: ${oneLine(task.checkpoint.summary, 300)}`;
+      if (task.checkpoint.nextSteps.length > 0) entry += ` Next: ${task.checkpoint.nextSteps.slice(0, 3).map((step) => oneLine(step, 120)).join('; ')}`;
+    }
+    return entry;
+  });
+  const more = openTasks.length - shown.length;
+  const lines = [`Open JERRY tasks: ${shown.join(' | ')}${more > 0 ? ` (+${more} more)` : ''}.`];
+  if (openTasks.slice(0, OPEN_TASKS_IN_CONTEXT).some((task) => task.checkpoint !== null)) {
+    lines.push('Checkpoints are your notes from earlier sessions: check them against the current code (git status, git diff) before continuing.');
+  }
+  if (openTasks.some((task) => task.coversEdits)) lines.push('Save progress with jerry_save_checkpoint at milestones and before you finish.');
+  return lines;
 }
 
 async function sessionStart(raw: string): Promise<void> {

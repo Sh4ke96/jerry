@@ -11,14 +11,20 @@ import {
   taskCreateRequestSchema,
   taskIdSchema,
   taskTransitionRequestSchema,
+  checkpointRequestSchema,
   type CoreState,
   type CoreStatus,
   type GateCheckRequest,
   type GateDecision,
+  type OpenTask,
   type RepositoryState,
   type SessionRegistrationResponse,
+  type Task,
+  type TaskDetail,
+  type TaskSummary,
 } from '@jerry/contracts';
 import { approvedPlansForRepo, comparablePath, evaluateGate, isRepoExcluded } from '@jerry/policy-engine';
+import { isTerminal } from '@jerry/workflow';
 import { buildEventEnvelope } from '@jerry/trace-engine';
 import type { z } from 'zod';
 import { BrowserSessions, clearedSessionCookie, CSRF_HEADER, readCookie, safeEqual, SESSION_COOKIE, sessionCookie, type BrowserSession } from './auth.js';
@@ -261,19 +267,18 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   });
 
   app.get('/api/v1/repositories/state', { config: TOKEN_OR_SESSION }, async (request) => {
-    const path = (request.query as Record<string, unknown>)['path'];
+    const query = request.query as Record<string, unknown>;
+    const path = query['path'];
     if (typeof path !== 'string' || path === '') throw new HttpError(400, 'path is required');
+    const sessionId = typeof query['sessionId'] === 'string' && query['sessionId'] !== '' ? query['sessionId'] : null;
     const repoRoot = findGitRoot(realPathOfNearestExisting(path));
     const snapshot = store.snapshot();
+    const tasks = repoRoot === null ? [] : snapshot.tasks.filter((task) => sameRepo(task.repoRoot, repoRoot));
     const state: RepositoryState = {
       repoRoot,
       excluded: repoRoot !== null && isRepoExcluded(snapshot, repoRoot, process.platform),
-      tasks:
-        repoRoot === null
-          ? []
-          : snapshot.tasks
-              .filter((task) => comparablePath(task.repoRoot, task.repoRoot, process.platform) === comparablePath(repoRoot, repoRoot, process.platform))
-              .map((task) => ({ ...task, planDecision: store.planDecision(task.taskId) })),
+      tasks: await summarize(store, tasks),
+      sessionTasks: sessionId === null ? [] : (await store.tasksOfSession(sessionId)).filter((taskId) => tasks.some((task) => task.taskId === taskId)),
     };
     return state;
   });
@@ -300,14 +305,14 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     if (sessionEvent !== null) await store.recordEvents([sessionEvent], now, false);
     const repoRoot = findGitRoot(realPathOfNearestExisting(registration.cwd));
     const snapshot = store.snapshot();
+    const excluded = repoRoot !== null && isRepoExcluded(snapshot, repoRoot, process.platform);
+    const approvedPlans = repoRoot === null ? [] : approvedPlansForRepo(snapshot, repoRoot, process.platform);
     const response: SessionRegistrationResponse = {
       registered: true,
       repoRoot,
-      excluded: repoRoot !== null && isRepoExcluded(snapshot, repoRoot, process.platform),
-      approvedPlans:
-        repoRoot === null
-          ? []
-          : approvedPlansForRepo(snapshot, repoRoot, process.platform).map((plan) => ({ taskId: plan.taskId, planVersion: plan.planVersion, scope: [...plan.scope] })),
+      excluded,
+      approvedPlans: approvedPlans.map((plan) => ({ taskId: plan.taskId, planVersion: plan.planVersion, scope: [...plan.scope] })),
+      openTasks: repoRoot === null || excluded ? [] : await openTasksFor(store, snapshot, repoRoot, registration.sessionId, new Set(approvedPlans.map((plan) => plan.taskId))),
     };
     return response;
   });
@@ -326,21 +331,39 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     return { repoRoot, excluded: body.excluded };
   });
 
-  app.get('/api/v1/tasks', { config: TOKEN_OR_SESSION }, async () =>
-    store.snapshot().tasks.map((task) => ({ ...task, planDecision: store.planDecision(task.taskId) })),
-  );
+  app.get('/api/v1/tasks', { config: TOKEN_OR_SESSION }, async () => summarize(store, store.snapshot().tasks));
+
+  app.get('/api/v1/tasks/:taskId', { config: TOKEN_OR_SESSION }, async (request) => {
+    const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId);
+    const task = store.snapshot().tasks.find((candidate) => candidate.taskId === taskId);
+    if (task === undefined) throw new HttpError(404, `Unknown task ${taskId}`);
+    const [summary] = await summarize(store, [task]);
+    const detail: TaskDetail = { ...summary!, ...(await store.taskHistory(taskId)) };
+    return detail;
+  });
 
   app.post('/api/v1/tasks', { config: TOKEN_ONLY }, async (request, reply) => {
     const body = parse(taskCreateRequestSchema, request.body);
     const repoRoot = findGitRoot(realPathOfNearestExisting(body.repoPath));
     if (repoRoot === null) throw new HttpError(400, `${body.repoPath} is not inside a Git repository`);
-    return reply.code(201).send(await store.createTask({ repoRoot, title: body.title, scope: body.scope, ...(body.document === undefined ? {} : { document: body.document }), submittedBy: body.submittedBy }, new Date()));
+    const sessionId = await store.resolveOrigin(body.origin);
+    return reply
+      .code(201)
+      .send(await store.createTask({ repoRoot, title: body.title, scope: body.scope, ...(body.document === undefined ? {} : { document: body.document }), submittedBy: body.submittedBy, sessionId }, new Date()));
   });
 
   app.post('/api/v1/tasks/:taskId/plan', { config: TOKEN_ONLY }, async (request) => {
     const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId);
     const body = parse(planReviseRequestSchema, request.body);
-    return store.revisePlan(taskId, body.scope, new Date(), body.document, body.submittedBy);
+    return store.revisePlan(taskId, body.scope, new Date(), body.document, body.submittedBy, await store.resolveOrigin(body.origin));
+  });
+
+  /** Claude's progress notes (through MCP). Notes only: no state changes. */
+  app.post('/api/v1/tasks/:taskId/checkpoints', { config: TOKEN_ONLY }, async (request, reply) => {
+    const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId);
+    const body = parse(checkpointRequestSchema, request.body);
+    const sessionId = await store.resolveOrigin(body.origin);
+    return reply.code(201).send(await store.saveCheckpoint(taskId, { summary: body.summary, nextSteps: body.nextSteps }, sessionId, new Date()));
   });
 
   app.post('/api/v1/tasks/:taskId/approvals', { config: TOKEN_OR_SESSION }, async (request, reply) => {
@@ -403,6 +426,50 @@ function identify(request: FastifyRequest, token: string, sessions: BrowserSessi
   const site = request.headers['sec-fetch-site'];
   if (typeof site === 'string' && site !== 'same-origin' && site !== 'none') throw new HttpError(403, 'Cross-site requests are not accepted');
   return { kind: 'session', session };
+}
+
+function sameRepo(a: string, b: string): boolean {
+  return comparablePath(a, a, process.platform) === comparablePath(b, b, process.platform);
+}
+
+const NO_ACTIVITY = { activity: { sessionCount: 0, lastSessionId: null, lastActivityAt: null, lastSessionEndedAt: null }, lastCheckpoint: null };
+
+async function summarize(store: StateStore, tasks: readonly Task[]): Promise<TaskSummary[]> {
+  const activity = await store.taskActivity();
+  return tasks.map((task) => ({ ...task, planDecision: store.planDecision(task.taskId), ...(activity.get(task.taskId) ?? NO_ACTIVITY) }));
+}
+
+/** At most this many open tasks go into a session's start context. */
+const MAX_OPEN_TASKS = 10;
+
+/**
+ * What a starting session should know to resume work (ADR 0013): the repository's open tasks,
+ * the ones this session already worked on first (same ID after resume or compaction), then the
+ * most recently active.
+ */
+async function openTasksFor(store: StateStore, snapshot: CoreState, repoRoot: string, sessionId: string, covering: ReadonlySet<string>): Promise<OpenTask[]> {
+  const tasks = snapshot.tasks.filter((task) => sameRepo(task.repoRoot, repoRoot) && !isTerminal(task.state));
+  if (tasks.length === 0) return [];
+  const activity = await store.taskActivity();
+  const mine = new Set(await store.tasksOfSession(sessionId));
+  const recency = (task: Task): string => activity.get(task.taskId)?.activity.lastActivityAt ?? task.createdAt;
+  return tasks
+    .sort((a, b) => Number(mine.has(b.taskId)) - Number(mine.has(a.taskId)) || recency(b).localeCompare(recency(a)))
+    .slice(0, MAX_OPEN_TASKS)
+    .map((task) => {
+      const checkpoint = activity.get(task.taskId)?.lastCheckpoint ?? null;
+      return {
+        taskId: task.taskId,
+        title: task.title,
+        state: task.state,
+        planVersion: task.plan.version,
+        scope: task.plan.scope,
+        coversEdits: covering.has(task.taskId),
+        workedInThisSession: mine.has(task.taskId),
+        lastActivityAt: activity.get(task.taskId)?.activity.lastActivityAt ?? null,
+        checkpoint: checkpoint === null ? null : { summary: checkpoint.summary, nextSteps: checkpoint.nextSteps, at: checkpoint.at },
+      };
+    });
 }
 
 /** Pages get a readable HTML answer instead of JSON when access is refused. */
