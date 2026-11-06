@@ -55,6 +55,8 @@ export interface CoreAppOptions {
   sessions?: BrowserSessions;
   /** Built dashboard (index.html, assets/, icons/); without it `/` shows a placeholder page. */
   dashboardDir?: string;
+  /** Short hash of the running core.mjs (see buildHash). */
+  build?: string;
   onShutdownRequested: () => void;
 }
 
@@ -198,6 +200,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
       jerryHome: options.jerryHome,
       taskCount: snapshot.tasks.length,
       sessionCount: store.sessionCount,
+      ...(options.build === undefined ? {} : { build: options.build }),
       database: { file: store.databaseFile, migration: store.migration },
     };
     return status;
@@ -350,6 +353,8 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   });
 
   app.post('/api/v1/database/backups', { config: TOKEN_OR_SESSION }, async (_request, reply) => reply.code(201).send({ file: await store.backup('manual') }));
+
+  app.get('/api/v1/database/health', { config: TOKEN_ONLY }, async () => ({ integrity: store.integrityCheck(), migration: store.migration, file: store.databaseFile }));
 
   app.post('/api/v1/shutdown', { config: TOKEN_ONLY }, async (_request, reply) => {
     setImmediate(options.onShutdownRequested);

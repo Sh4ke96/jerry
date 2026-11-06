@@ -1,11 +1,14 @@
 import { z } from 'zod';
+import { CORE_TOKEN_PATTERN, EVENT_SCHEMA_VERSION, GATE_VERDICTS, HOOK_EVENT_TYPES, TASK_ID_PATTERN } from './constants.js';
 
 /**
  * Shared, versioned contracts between the Claude Code hook bridge, JERRY Core and the CLI.
- * Everything crossing a process boundary is validated against these schemas.
+ * Everything crossing a process boundary is validated against these schemas. The hook bridge is
+ * the exception: it validates with the dependency-free guards in guards.ts (ADR 0010), which tests
+ * keep equivalent to these schemas.
  */
 
-export const JERRY_VERSION = '0.0.1-m0';
+export * from './constants.js';
 
 // ---------------------------------------------------------------------------
 // Claude Code hook input (stdin of a command hook)
@@ -62,7 +65,7 @@ export type GateCheckRequest = z.infer<typeof gateCheckRequestSchema>;
  * WARN: the action proceeds, is recorded as a deviation, and Claude and the user are told.
  * DENY: hard rule (Git state changes, .git, JERRY data and guard configuration): the call is blocked.
  */
-export const gateVerdictSchema = z.enum(['PASS', 'WARN', 'DENY']);
+export const gateVerdictSchema = z.enum(GATE_VERDICTS);
 export type GateVerdict = z.infer<typeof gateVerdictSchema>;
 
 export const gateDecisionSchema = z.object({
@@ -78,19 +81,7 @@ export type GateDecision = z.infer<typeof gateDecisionSchema>;
 // Events (spec §11.2 envelope)
 // ---------------------------------------------------------------------------
 
-export const EVENT_SCHEMA_VERSION = 1;
-
-export const hookEventTypeSchema = z.enum([
-  'SessionStart',
-  'UserPromptSubmit',
-  'PreToolUse',
-  'PostToolUse',
-  'PostToolUseFailure',
-  'SubagentStart',
-  'SubagentStop',
-  'Stop',
-  'SessionEnd',
-]);
+export const hookEventTypeSchema = z.enum(HOOK_EVENT_TYPES);
 export type HookEventType = z.infer<typeof hookEventTypeSchema>;
 
 export const redactionSchema = z.object({
@@ -139,7 +130,7 @@ export type StoredEvent = z.infer<typeof storedEventSchema>;
 // Tasks, plans, approvals
 // ---------------------------------------------------------------------------
 
-export const taskIdSchema = z.string().regex(/^JRY-\d{4,}$/);
+export const taskIdSchema = z.string().regex(TASK_ID_PATTERN);
 export const contentHashSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
 
 /** Repo-relative glob patterns, forward slashes, e.g. "src/**". */
@@ -264,7 +255,7 @@ export const coreRuntimeInfoSchema = z.object({
   port: z.number().int().min(1).max(65535),
   /** The port Core was asked to use; differs from `port` when it was taken and Core fell back. */
   configuredPort: z.number().int().min(0).max(65535).optional(),
-  token: z.string().regex(/^[0-9a-f]{64}$/),
+  token: z.string().regex(CORE_TOKEN_PATTERN),
   startedAt: z.iso.datetime(),
   version: z.string().min(1),
 });
@@ -278,6 +269,8 @@ export const coreStatusSchema = z.object({
   jerryHome: z.string(),
   taskCount: z.number().int().nonnegative(),
   sessionCount: z.number().int().nonnegative(),
+  /** Short hash of the running core.mjs, so tools can tell an outdated Core from a fresh install. */
+  build: z.string().optional(),
   database: z.object({
     file: z.string(),
     /** Latest applied migration. */

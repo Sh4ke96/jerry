@@ -268,6 +268,12 @@ export class StateStore {
     return removed;
   }
 
+  /** SQLite's quick integrity check: "ok", or a description of the first problems found. */
+  integrityCheck(): string {
+    const rows = this.database.raw.prepare('PRAGMA quick_check').all() as Array<Record<string, unknown>>;
+    return rows.map((row) => String(Object.values(row)[0])).join('; ');
+  }
+
   /** Online backup into JERRY_HOME/backups while Core keeps running. */
   backup(label: string): Promise<string> {
     return backupDatabase(this.database.raw, this.database.backupsDir, label);

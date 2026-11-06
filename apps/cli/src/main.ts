@@ -1,160 +1,113 @@
-import { parseArgs } from 'node:util';
 import { JERRY_VERSION } from '@jerry/contracts';
+import { Command, InvalidArgumentError } from 'commander';
 import { getCoreStatus, startCore, stopCore } from './core-commands.js';
 import { backupNow, restoreFromBackup, showBackups } from './db-commands.js';
-import { showEvents } from './events-command.js';
-import { openDashboard } from './ui-command.js';
 import { doctor } from './doctor.js';
+import { showEvents } from './events-command.js';
 import { install, uninstall } from './install-commands.js';
 import { excludeRepository, includeRepository, listExcludedRepositories } from './repo-commands.js';
+import { showStatus } from './status-command.js';
 import { createTask, decidePlan, listTasks, revisePlan } from './task-commands.js';
+import { openDashboard } from './ui-command.js';
 
-const USAGE = `jerry ${JERRY_VERSION} — M0 feasibility spike
+/** Repeatable option without a default, so a required one is really required. */
+const collect = (value: string, previous: string[] | undefined): string[] => [...(previous ?? []), value];
 
-Usage:
-  jerry install                       Install the JERRY plugin in Claude Code (user scope)
-  jerry uninstall [--purge-data]      Remove the plugin and marketplace; keep data unless --purge-data
-  jerry doctor                        Check plugin, hooks, Core and project footprint
-  jerry ui [--print-url]              Open the dashboard in the browser (one-time login link)
-  jerry core start|stop|status        Manage the local JERRY Core process
-  jerry task create --repo <path> --title <text> --scope <glob> [--scope <glob>...]
-  jerry task list
-  jerry plan revise <taskId> --scope <glob> [--scope <glob>...]
-  jerry approve <taskId> --stage plan --version <n> [--comment <text>]
-  jerry reject  <taskId> --stage plan --version <n> [--comment <text>]
-  jerry repo exclude <path>           Stop monitoring a repository (hard rules still apply)
-  jerry repo include <path>           Monitor an excluded repository again
-  jerry repo list                     List excluded repositories
-  jerry events [--session <id>] [--verdict warn|deny|pass] [--limit <n>]
-                                      Show the latest recorded events (default 50)
-  jerry db backup                     Back up the JERRY database (Core must be running)
-  jerry db backups                    List database backups
-  jerry db restore <file>             Replace the database with a backup (Core must be stopped)
-`;
-
-async function run(argv: string[]): Promise<void> {
-  const [command, ...rest] = argv;
-  switch (command) {
-    case 'install':
-      await install();
-      return;
-    case 'uninstall': {
-      const { values } = parseArgs({ args: rest, options: { 'purge-data': { type: 'boolean', default: false } } });
-      await uninstall({ purgeData: values['purge-data'] });
-      return;
-    }
-    case 'doctor':
-      await doctor();
-      return;
-    case 'core':
-      return runCore(rest[0]);
-    case 'status':
-      return runCore('status');
-    case 'task':
-      return runTask(rest);
-    case 'plan': {
-      const { positionals, values } = parseArgs({ args: rest, allowPositionals: true, options: { scope: { type: 'string', multiple: true } } });
-      if (positionals[0] !== 'revise' || positionals[1] === undefined || values.scope === undefined) throw new UsageError();
-      await revisePlan(positionals[1], values.scope);
-      return;
-    }
-    case 'ui': {
-      const { values } = parseArgs({ args: rest, options: { 'print-url': { type: 'boolean', default: false } } });
-      return openDashboard({ printOnly: values['print-url'] });
-    }
-    case 'events': {
-      const { values } = parseArgs({
-        args: rest,
-        options: { session: { type: 'string' }, verdict: { type: 'string' }, limit: { type: 'string', default: '50' } },
-      });
-      const limit = Number(values.limit);
-      if (!Number.isInteger(limit) || limit < 1) throw new UsageError('--limit must be a positive integer');
-      return showEvents({ limit, ...(values.session === undefined ? {} : { sessionId: values.session }), ...(values.verdict === undefined ? {} : { verdict: values.verdict }) });
-    }
-    case 'db': {
-      const [subcommand, target] = rest;
-      if (subcommand === 'backup') return backupNow();
-      if (subcommand === 'backups') return showBackups();
-      if (subcommand === 'restore' && target !== undefined) return restoreFromBackup(target);
-      throw new UsageError();
-    }
-    case 'repo': {
-      const [subcommand, target] = rest;
-      if (subcommand === 'list') return listExcludedRepositories();
-      if (subcommand === 'exclude' && target !== undefined) return excludeRepository(target);
-      if (subcommand === 'include' && target !== undefined) return includeRepository(target);
-      throw new UsageError();
-    }
-    case 'approve':
-    case 'reject': {
-      const { positionals, values } = parseArgs({
-        args: rest,
-        allowPositionals: true,
-        options: { stage: { type: 'string' }, version: { type: 'string' }, comment: { type: 'string', default: '' } },
-      });
-      const version = Number(values.version);
-      if (positionals[0] === undefined || values.stage === undefined || !Number.isInteger(version) || version < 1) throw new UsageError();
-      await decidePlan({
-        taskId: positionals[0],
-        stage: values.stage,
-        version,
-        decision: command === 'approve' ? 'APPROVED' : 'REJECTED',
-        comment: values.comment,
-      });
-      return;
-    }
-    case undefined:
-    case 'help':
-    case '--help':
-    case '-h':
-      process.stdout.write(USAGE);
-      return;
-    default:
-      throw new UsageError(`Unknown command "${command}"`);
-  }
+function positiveInteger(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) throw new InvalidArgumentError('must be a positive integer');
+  return parsed;
 }
 
-async function runCore(subcommand: string | undefined): Promise<void> {
-  switch (subcommand) {
-    case 'start':
-      return startCore();
-    case 'stop':
-      return stopCore();
-    case 'status': {
-      const { info, status } = await getCoreStatus();
-      console.log(`JERRY Core ${status.version}: pid ${info.pid}, 127.0.0.1:${info.port}, started ${status.startedAt}, home ${status.jerryHome}, ${status.taskCount} task(s), ${status.sessionCount} session(s)`);
-      return;
-    }
-    default:
-      throw new UsageError();
-  }
+function stage(value: string): string {
+  if (value.toLowerCase() !== 'plan') throw new InvalidArgumentError('only "plan" is supported for now');
+  return value;
 }
 
-async function runTask(args: string[]): Promise<void> {
-  const { positionals, values } = parseArgs({
-    args,
-    allowPositionals: true,
-    options: { repo: { type: 'string' }, title: { type: 'string' }, scope: { type: 'string', multiple: true } },
+const program = new Command()
+  .name('jerry')
+  .description('JERRY: local guardian for Claude Code. Monitors sessions, keeps Git with you, shows everything in a dashboard.')
+  .version(JERRY_VERSION, '-v, --version')
+  // Program options only before the subcommand: "jerry approve … --version 2" is the plan version.
+  .enablePositionalOptions()
+  .showHelpAfterError('(run with --help for usage)');
+
+program.command('status').description('Short summary: guard state, plans, today\'s deviations').action(() => showStatus());
+program.command('doctor').description('Full diagnostics of the installation, hooks, Core, database and settings').action(() => doctor());
+program.command('install').description('Install or update the JERRY plugin and Core runtime (Claude Code user scope)').action(() => install());
+program
+  .command('uninstall')
+  .description('Remove the plugin, marketplace and Core runtime; keep data unless --purge-data')
+  .option('--purge-data', 'also delete JERRY data (state, events, backups)', false)
+  .action((options: { purgeData: boolean }) => uninstall({ purgeData: options.purgeData }));
+program
+  .command('ui')
+  .description('Open the dashboard in the browser with a one-time login link')
+  .option('--print-url', 'print the link instead of opening the browser', false)
+  .action((options: { printUrl: boolean }) => openDashboard({ printOnly: options.printUrl }));
+
+const core = program.command('core').description('Manage the local JERRY Core process');
+core.command('start').description('Start Core (and allow automatic starts again)').action(() => startCore());
+core.command('stop').description('Stop Core and pause automatic starts until "jerry core start"').action(() => stopCore());
+core
+  .command('status')
+  .description('Show Core process details')
+  .action(async () => {
+    const { info, status } = await getCoreStatus();
+    console.log(`JERRY Core ${status.version}: pid ${info.pid}, 127.0.0.1:${info.port}, started ${status.startedAt}, home ${status.jerryHome}, ${status.taskCount} task(s), ${status.sessionCount} session(s)`);
   });
-  if (positionals[0] === 'list') return listTasks();
-  if (positionals[0] === 'create' && values.repo !== undefined && values.title !== undefined && values.scope !== undefined) {
-    return createTask({ repo: values.repo, title: values.title, scope: values.scope });
-  }
-  throw new UsageError();
+
+const task = program.command('task').description('Tasks and their plans');
+task
+  .command('create')
+  .description('Create a task with plan version 1')
+  .requiredOption('--repo <path>', 'a path inside the Git repository')
+  .requiredOption('--title <text>', 'what the task is about')
+  .requiredOption('--scope <glob>', 'repo-relative glob the plan covers (repeatable)', collect)
+  .action((options: { repo: string; title: string; scope: string[] }) => createTask(options));
+task.command('list').description('List tasks and their approval state').action(() => listTasks());
+
+program
+  .command('plan')
+  .description('Revise a plan')
+  .command('revise <taskId>')
+  .description('Create the next plan version with a new scope (earlier approvals stop applying)')
+  .requiredOption('--scope <glob>', 'repo-relative glob (repeatable)', collect)
+  .action((taskId: string, options: { scope: string[] }) => revisePlan(taskId, options.scope));
+
+for (const decision of ['approve', 'reject'] as const) {
+  program
+    .command(`${decision} <taskId>`)
+    .description(`${decision === 'approve' ? 'Approve' : 'Reject'} a plan version (interactive: you type the task ID)`)
+    .requiredOption('--stage <stage>', 'what is decided: plan', stage)
+    .requiredOption('--version <n>', 'the plan version you reviewed', positiveInteger)
+    .option('--comment <text>', 'note stored with the decision', '')
+    .action((taskId: string, options: { stage: string; version: number; comment: string }) =>
+      decidePlan({ taskId, stage: options.stage, version: options.version, decision: decision === 'approve' ? 'APPROVED' : 'REJECTED', comment: options.comment }),
+    );
 }
 
-class UsageError extends Error {
-  constructor(message = 'Invalid arguments') {
-    super(message);
-  }
-}
+const repo = program.command('repo').description('Repositories JERRY monitors');
+repo.command('exclude <path>').description('Stop monitoring a repository (interactive; hard rules still apply)').action((target: string) => excludeRepository(target));
+repo.command('include <path>').description('Monitor an excluded repository again').action((target: string) => includeRepository(target));
+repo.command('list').description('List excluded repositories').action(() => listExcludedRepositories());
 
-run(process.argv.slice(2)).catch((error: unknown) => {
-  if (error instanceof UsageError) {
-    process.stderr.write(`${error.message}\n\n${USAGE}`);
-    process.exitCode = 64;
-    return;
-  }
+program
+  .command('events')
+  .description('Show the latest recorded events, oldest first')
+  .option('--session <id>', 'only this Claude Code session')
+  .option('--verdict <verdict>', 'only PASS, WARN or DENY (comma-separated)')
+  .option('--limit <n>', 'how many events', positiveInteger, 50)
+  .action((options: { session?: string; verdict?: string; limit: number }) =>
+    showEvents({ limit: options.limit, ...(options.session === undefined ? {} : { sessionId: options.session }), ...(options.verdict === undefined ? {} : { verdict: options.verdict }) }),
+  );
+
+const db = program.command('db').description('JERRY database');
+db.command('backup').description('Back up the database now (Core must be running)').action(() => backupNow());
+db.command('backups').description('List database backups').action(() => showBackups());
+db.command('restore <file>').description('Replace the database with a backup (Core stopped; interactive)').action((file: string) => restoreFromBackup(file));
+
+program.parseAsync(process.argv).catch((error: unknown) => {
   process.stderr.write(`jerry: ${error instanceof Error ? error.message : String(error)}\n`);
   process.exitCode = 1;
 });

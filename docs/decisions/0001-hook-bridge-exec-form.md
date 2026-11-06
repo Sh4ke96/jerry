@@ -46,4 +46,6 @@ Run the guard and SessionStart hooks in **exec form**:
   (fail-closed) and `jerry doctor` reports it. The specification requires Node LTS anyway.
 - The bridge adds ~55 ms on top of Node start-up, mostly parsing the 461 KiB bundle (largely Zod).
   Possible M1 optimisations: `zod/mini`, `module.enableCompileCache()`.
+  *Update (M1):* resolved differently: the bridge no longer bundles Zod (24 KiB, about 27–32 ms above Node);
+  see [ADR 0010](0010-fast-bridge-cli-doctor.md).
 - The specification (§4.5, §11.4, §18.5) needs updating: `bridge.ps1` → `bridge.mjs` in exec form.

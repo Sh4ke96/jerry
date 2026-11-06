@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { EVENT_SCHEMA_VERSION, hookEventTypeSchema, type EventEnvelope, type GateDecision, type HookEventType } from '@jerry/contracts';
+import type { EventEnvelope, GateDecision, HookEventType } from '@jerry/contracts';
+import { EVENT_SCHEMA_VERSION, HOOK_EVENT_TYPES } from '@jerry/contracts/constants';
 import { redactText, truncate } from './redaction.js';
 
 /**
@@ -76,9 +77,9 @@ export interface EnvelopeOverrides {
 
 /** Builds the envelope for any supported hook input; returns null for events JERRY does not record. */
 export function buildEventEnvelope(input: Raw, overrides: EnvelopeOverrides = {}): EventEnvelope | null {
-  const parsedType = hookEventTypeSchema.safeParse(input['hook_event_name']);
-  if (!parsedType.success) return null;
-  const eventType: HookEventType = parsedType.data;
+  const name = input['hook_event_name'];
+  if (!(HOOK_EVENT_TYPES as readonly unknown[]).includes(name)) return null;
+  const eventType = name as HookEventType;
   const redaction = new RedactionLog();
   const toolName = text(input['tool_name']);
   const payload: Record<string, unknown> = {};

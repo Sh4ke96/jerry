@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { assertJerryHomeOutsideRepositories } from './home-safety.js';
@@ -89,6 +90,18 @@ export function spawnDetachedCore(home: string, coreScript: string, env: Env = p
     return child.pid;
   } finally {
     fs.closeSync(log);
+  }
+}
+
+/**
+ * Identifies a Core build by its bundle file: Core reports it in its status, and doctor compares it
+ * with the installed runtime and the CLI's own build to spot a Core that needs a restart.
+ */
+export function buildHash(coreScript: string): string | null {
+  try {
+    return createHash('sha256').update(fs.readFileSync(coreScript)).digest('hex').slice(0, 12);
+  } catch {
+    return null;
   }
 }
 

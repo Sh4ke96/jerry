@@ -28,8 +28,8 @@ const common = {
   logLevel: 'warning',
 };
 
-await Promise.all([
-  build({ ...common, entryPoints: [path.join(root, 'apps/hook-bridge/src/main.ts')], outfile: path.join(dist, 'plugin/hooks/bridge.mjs'), minify: true }),
+const [bridgeBuild] = await Promise.all([
+  build({ ...common, entryPoints: [path.join(root, 'apps/hook-bridge/src/main.ts')], outfile: path.join(dist, 'plugin/hooks/bridge.mjs'), minify: true, metafile: true }),
   build({ ...common, entryPoints: [path.join(root, 'apps/mcp-server/src/main.ts')], outfile: path.join(dist, 'plugin/mcp/server.mjs'), minify: true }),
   // Fastify and its dependencies are CommonJS and require Node built-ins; an ESM bundle needs a real `require`.
   build({
@@ -40,6 +40,13 @@ await Promise.all([
   }),
   build({ ...common, entryPoints: [path.join(root, 'apps/cli/src/main.ts')], outfile: path.join(dist, 'cli/jerry.mjs'), banner: { js: '#!/usr/bin/env node' } }),
 ]);
+
+// The bridge starts on every guarded tool call; it must stay free of heavy dependencies (ADR 0010).
+const BRIDGE_FORBIDDEN = [/[\\/]zod@/, /[\\/]kysely@/, /[\\/]fastify@/];
+const forbidden = Object.keys(bridgeBuild.metafile.inputs).filter((input) => BRIDGE_FORBIDDEN.some((pattern) => pattern.test(input)));
+if (forbidden.length > 0) {
+  throw new Error(`The hook bridge bundle must not include heavy dependencies; found:\n  ${forbidden.slice(0, 5).join('\n  ')}`);
+}
 
 // Dashboard: Vue components compiled ahead of time (no runtime template compiler, so the page
 // runs under a CSP without 'unsafe-eval'); no inlined assets, so the CSP needs no data: scripts.

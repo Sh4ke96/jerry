@@ -1,15 +1,7 @@
 import fs from 'node:fs';
-import {
-  gateDecisionSchema,
-  preToolUseInputSchema,
-  sessionRegistrationResponseSchema,
-  sessionStartInputSchema,
-  type GateCheckRequest,
-  type GateDecision,
-  type EventEnvelope,
-  type SessionRegistrationResponse,
-  type SessionStartInput,
-} from '@jerry/contracts';
+// Types only from the contracts index: the bridge must not load Zod (ADR 0010; checked by the build).
+import type { EventEnvelope, GateCheckRequest, GateDecision, SessionRegistrationResponse, SessionStartInput } from '@jerry/contracts';
+import { isGateDecision, isPreToolUseInput, isSessionRegistrationResponse, isSessionStartInput } from '@jerry/contracts/guards';
 import { autostartCore, protectedRoots, readCoreRuntimeInfo, requestCore, resolveJerryHome, spoolEvent } from '@jerry/platform';
 import { classifyToolCall, evaluateHardRules } from '@jerry/policy-engine';
 import { buildEventEnvelope, newEventId, type EnvelopeOverrides } from '@jerry/trace-engine';
@@ -81,9 +73,8 @@ async function readStdin(): Promise<string> {
 }
 
 async function preToolUse(raw: string): Promise<void> {
-  const parsed = preToolUseInputSchema.safeParse(JSON.parse(raw));
-  if (!parsed.success) onFailure(`unrecognised PreToolUse input (${parsed.error.issues[0]?.message ?? 'invalid'})`);
-  const input = parsed.data;
+  const input: unknown = JSON.parse(raw);
+  if (!isPreToolUseInput(input)) onFailure('unrecognised PreToolUse input');
 
   const forwardedInput: Record<string, unknown> = {};
   for (const field of FORWARDED_TOOL_INPUT_FIELDS) {
@@ -172,14 +163,14 @@ function tryAutostart(): 'started' | 'throttled' | 'unavailable' {
 
 async function registerSession(input: SessionStartInput): Promise<SessionRegistrationResponse> {
   const info = readCoreRuntimeInfo(resolveJerryHome());
-  return sessionRegistrationResponseSchema.parse(
-    await requestCore(info, {
-      method: 'POST',
-      path: '/api/v1/sessions',
-      body: { sessionId: input.session_id, cwd: input.cwd, source: input.source ?? null },
-      timeoutMs: CORE_TIMEOUT_MS,
-    }),
-  );
+  const body = await requestCore(info, {
+    method: 'POST',
+    path: '/api/v1/sessions',
+    body: { sessionId: input.session_id, cwd: input.cwd, source: input.source ?? null },
+    timeoutMs: CORE_TIMEOUT_MS,
+  });
+  if (!isSessionRegistrationResponse(body)) throw new Error('Core answered the session registration with an unexpected shape');
+  return body;
 }
 
 /** After an automatic start, waits for Core to accept the session (bounded by the SessionStart hook timeout). */
@@ -200,7 +191,8 @@ async function registerSessionAfterAutostart(input: SessionStartInput): Promise<
 async function askCore(request: GateCheckRequest): Promise<GateDecision> {
   const info = readCoreRuntimeInfo(resolveJerryHome());
   const body = await requestCore(info, { method: 'POST', path: '/api/v1/gate/check', body: request, timeoutMs: CORE_TIMEOUT_MS });
-  return gateDecisionSchema.parse(body);
+  if (!isGateDecision(body)) throw new Error('Core answered the gate check with an unexpected shape');
+  return body;
 }
 
 function emit(decision: GateDecision): never {
@@ -261,7 +253,8 @@ function monitoredSessionContext(registration: SessionRegistrationResponse): str
 async function sessionStart(raw: string): Promise<void> {
   let context: string;
   try {
-    const input = sessionStartInputSchema.parse(JSON.parse(raw));
+    const input: unknown = JSON.parse(raw);
+    if (!isSessionStartInput(input)) throw new Error('unrecognised SessionStart input');
     let registration: SessionRegistrationResponse;
     try {
       registration = await registerSession(input);

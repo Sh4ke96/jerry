@@ -120,6 +120,10 @@ describe.skipIf(claude === null)('jerry install / doctor / uninstall (isolated C
     expect(healthy.output).toContain('Guard status: GUARDED');
     expect(healthy.output).toMatch(/PASS\s+core-autostart/);
     expect(healthy.output).toMatch(/PASS\s+disk-usage\s+[\d.]+ MiB/);
+    for (const check of ['node-for-hooks', 'claude-cli', 'plugin', 'marketplace', 'plugin-build', 'settings', 'core-build', 'api-auth', 'database']) {
+      expect(healthy.output, check).toMatch(new RegExp(`PASS\\s+${check}\\s`));
+    }
+    expect(jerry(['status']).output).toContain('GUARDED (monitoring on, hard rules enforced)');
     const login = jerry(['ui', '--print-url']);
     expect(login.exitCode, login.output).toBe(0);
     expect(login.output.trim()).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/ui\/login\?code=[0-9a-f]{64}$/);

@@ -6,6 +6,7 @@ import type { FastifyInstance } from 'fastify';
 import {
   acquireSingleInstanceLock,
   assertJerryHomeOutsideRepositories,
+  buildHash,
   jerryPaths,
   protectedRoots,
   resolveCorePort,
@@ -57,6 +58,7 @@ async function main(): Promise<void> {
   const configuredPort = resolveCorePort();
 
   const guardedRoots = protectedRoots();
+  const build = buildHash(fileURLToPath(import.meta.url));
   let boundPort = configuredPort;
   const sessions = new BrowserSessions();
   const createApp = (): FastifyInstance =>
@@ -69,6 +71,7 @@ async function main(): Promise<void> {
       port: () => boundPort,
       sessions,
       dashboardDir: fileURLToPath(new URL('./dashboard/', import.meta.url)),
+      ...(build === null ? {} : { build }),
       onShutdownRequested: () => shutdown('shutdown requested via API'),
     });
   let app = createApp();

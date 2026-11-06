@@ -6,9 +6,10 @@ A local agent harness and development guardian for Claude Code and VS Code.
 This repository contains the source of JERRY itself. The zero-footprint requirement applies to the user's
 repositories, not to this one.
 
-**Status:** M0 feasibility spike. Results and known gaps: [docs/spikes/M0-feasibility.md](docs/spikes/M0-feasibility.md).
+**Status:** M1 Core Foundation complete ([report](docs/milestones/M1-core-foundation.md)). M0 spike:
+[docs/spikes/M0-feasibility.md](docs/spikes/M0-feasibility.md).
 
-## What works in M0
+## What works
 
 - A Claude Code plugin (`claude-plugin/`) with `SessionStart` and `PreToolUse` hooks
   (Write/Edit/MultiEdit/NotebookEdit/Bash/PowerShell/Monitor).
@@ -34,7 +35,9 @@ repositories, not to this one.
   reject, session timeline, repositories; installable as an app ([ADR 0009](docs/decisions/0009-dashboard.md)).
 - MCP server in the plugin with read-only tools that give Claude the live plan state, path checks and recorded
   deviations; nothing in it can approve ([ADR 0008](docs/decisions/0008-local-mcp-server.md)).
-- `jerry` CLI: `install`, `uninstall`, `doctor`, `ui`, `core start|stop|status`, `task`, `plan revise`,
+- `jerry status` (quick summary) and `jerry doctor` (full diagnostics); the hook bridge loads no heavy
+  dependencies, about 30 ms per guarded call ([ADR 0010](docs/decisions/0010-fast-bridge-cli-doctor.md)).
+- `jerry` CLI (Commander, `jerry --help`): `install`, `uninstall`, `doctor`, `ui`, `core start|stop|status`, `task`, `plan revise`,
   `approve`/`reject`, `repo exclude|include|list`, `events`, `db backup|backups|restore` (approve, reject,
   exclude and restore require an interactive terminal).
 

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import http from 'node:http';
-import { coreRuntimeInfoSchema, type CoreRuntimeInfo } from '@jerry/contracts';
+import type { CoreRuntimeInfo } from '@jerry/contracts';
+import { isCoreRuntimeInfo } from '@jerry/contracts/guards';
 import { jerryPaths } from './jerry-home.js';
 
 export class CoreUnavailableError extends Error {
@@ -37,11 +38,10 @@ export function readCoreRuntimeInfo(jerryHome: string): CoreRuntimeInfo {
   } catch (error) {
     throw new CoreUnavailableError(`Core runtime file ${coreInfoFile} is not valid JSON`, { cause: error });
   }
-  const result = coreRuntimeInfoSchema.safeParse(parsed);
-  if (!result.success) {
+  if (!isCoreRuntimeInfo(parsed)) {
     throw new CoreUnavailableError(`Core runtime file ${coreInfoFile} has an invalid shape`);
   }
-  return result.data;
+  return parsed;
 }
 
 export interface CoreRequestOptions {
