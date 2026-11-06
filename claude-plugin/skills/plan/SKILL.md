@@ -38,7 +38,7 @@ Fill every section of the plan document (spec §7.2):
 | `rollback` | how to undo the change |
 | `scope.include` | repo-relative globs of the files you will edit, as narrow as possible (`src/auth/**`, `tests/auth/**`) |
 | `scope.exclude` | areas deliberately left alone |
-| `steps` | ordered steps with their files and `dependsOn` (step numbers) |
+| `steps` | ordered steps with their files and `dependsOn` (step numbers); if subagents will do part of the work, at most three, with disjoint files |
 | `tests` | unit, component, integration, api, e2e or manual tests to add or run |
 | `regression` | what could break elsewhere and how you will check it |
 | `commitSubjects` | proposed commit subjects in the repository's convention; the user commits |

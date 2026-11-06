@@ -6,7 +6,8 @@ A local agent harness and development guardian for Claude Code and VS Code.
 This repository contains the source of JERRY itself. The zero-footprint requirement applies to the user's
 repositories, not to this one.
 
-**Status:** M1 Core Foundation complete ([report](docs/milestones/M1-core-foundation.md)). M0 spike:
+**Status:** M1 Core Foundation complete ([report](docs/milestones/M1-core-foundation.md)); M2 Workflow Control
+items 1–4 done. What remains: [docs/roadmap.md](docs/roadmap.md). M0 spike:
 [docs/spikes/M0-feasibility.md](docs/spikes/M0-feasibility.md).
 
 ## What works
@@ -105,4 +106,6 @@ loaded through `--plugin-dir`, without changing any settings.
 - No secret-shaped literals in the source, not even fake ones: the repository is scanned by GitGuardian.
   Tests assemble credential-like fixtures from fragments at runtime (see `packages/trace-engine/test/events.test.ts`).
 - Commit, push and merge only with explicit approval.
+- At most three subagents, at a time and per phase, in JERRY's workflows and in work on JERRY itself
+  ([ADR 0015](docs/decisions/0015-at-most-three-subagents.md)).
 - READMEs, code comments and ADRs are written in English.
