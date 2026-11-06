@@ -1,9 +1,12 @@
 import {
   coreStatusSchema,
   gatePreviewResponseSchema,
+  planDocumentSchema,
   repositoryStateSchema,
   storedEventSchema,
+  taskSchema,
   type RepositoryState,
+  type Task,
   type TaskWithDecision,
 } from '@jerry/contracts';
 import { autostartCore, CoreUnavailableError, readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
@@ -11,11 +14,19 @@ import { z } from 'zod';
 import type { ToolDefinition, ToolResult } from './protocol.js';
 
 /**
- * Read-only JERRY tools for Claude (spec §4.2 E). There is deliberately no tool that approves,
- * rejects, excludes or completes anything: those are user actions in the CLI or dashboard.
+ * JERRY tools for Claude (spec §4.2 E). They read state, preview gate decisions and submit plans.
+ * There is deliberately no tool that approves, rejects, excludes or completes anything: those are
+ * user actions in the CLI or dashboard. Submitting a plan only ever creates a version waiting for
+ * the user.
  */
 
 const DEFAULT_DEVIATION_WINDOW_MINUTES = 480;
+
+/** The plan document's JSON Schema, generated from the Zod schema Core validates with. */
+const PLAN_JSON_SCHEMA = (() => {
+  const { $schema: _ignored, ...schema } = z.toJSONSchema(planDocumentSchema, { io: 'input' }) as Record<string, unknown>;
+  return { ...schema, description: 'The plan (spec §7.2). scope.include lists the repo-relative globs JERRY checks edits against.' };
+})();
 
 function projectDir(): string {
   return process.env['CLAUDE_PROJECT_DIR'] ?? process.cwd();
@@ -82,6 +93,7 @@ export const TOOLS: readonly ToolDefinition[] = [
     title: 'JERRY state',
     description: 'Live JERRY state for a repository: approved and pending plans with scope, current task, and the next expected action.',
     inputSchema: pathArgument,
+    readOnly: true,
     handler: (args) =>
       withCore(async () => {
         const status = coreStatusSchema.parse(await core('GET', '/api/v1/status'));
@@ -113,6 +125,7 @@ export const TOOLS: readonly ToolDefinition[] = [
       required: ['paths'],
       additionalProperties: false,
     },
+    readOnly: true,
     handler: (args) =>
       withCore(async () => {
         const paths = z.array(z.string().min(1)).min(1).max(50).safeParse(args['paths']);
@@ -135,6 +148,7 @@ export const TOOLS: readonly ToolDefinition[] = [
       },
       additionalProperties: false,
     },
+    readOnly: true,
     handler: (args) =>
       withCore(async () => {
         const minutes = Math.min(Math.max(Number(args['sinceMinutes'] ?? DEFAULT_DEVIATION_WINDOW_MINUTES) || DEFAULT_DEVIATION_WINDOW_MINUTES, 1), 10080);
@@ -157,6 +171,47 @@ export const TOOLS: readonly ToolDefinition[] = [
               evaluatedLate: event.payload['evaluatedLate'] === true,
             };
           }),
+        });
+      }),
+  },
+  {
+    name: 'jerry_submit_plan',
+    title: 'Submit a plan for approval',
+    description:
+      "Submit a plan to JERRY for the user's approval (use the /jerry:plan skill to draft it). Without taskId it creates a task; with taskId it creates the next plan version, which voids that task's earlier approval. It never approves anything.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        taskId: { type: 'string', description: "Revise this task's plan (only when the user asked for plan changes)." },
+        title: { type: 'string', description: 'Short task title (required for a new task).' },
+        repoPath: { type: 'string', description: 'Repository of a new task (default: project directory).' },
+        plan: PLAN_JSON_SCHEMA,
+      },
+      required: ['plan'],
+      additionalProperties: false,
+    },
+    readOnly: false,
+    handler: (args) =>
+      withCore(async () => {
+        const plan = planDocumentSchema.safeParse(args['plan']);
+        if (!plan.success) return { content: [{ type: 'text', text: `The plan is incomplete or malformed; fix it and submit again:\n${z.prettifyError(plan.error)}` }], isError: true };
+        const document = plan.data;
+        const taskId = typeof args['taskId'] === 'string' && args['taskId'] !== '' ? args['taskId'] : null;
+        let task: Task;
+        if (taskId !== null) {
+          task = taskSchema.parse(await core('POST', `/api/v1/tasks/${encodeURIComponent(taskId)}/plan`, { scope: document.scope.include, document, submittedBy: 'claude' }));
+        } else {
+          const title = typeof args['title'] === 'string' ? args['title'].trim() : '';
+          if (title === '') return { content: [{ type: 'text', text: 'A new task needs a short title.' }], isError: true };
+          const repoPath = typeof args['repoPath'] === 'string' && args['repoPath'] !== '' ? args['repoPath'] : projectDir();
+          task = taskSchema.parse(await core('POST', '/api/v1/tasks', { repoPath, title, scope: document.scope.include, document, submittedBy: 'claude' }));
+        }
+        return ok({
+          taskId: task.taskId,
+          planVersion: task.plan.version,
+          contentHash: task.plan.contentHash,
+          status: 'WAITING_FOR_APPROVAL',
+          nextStep: `Tell the user that ${task.taskId} plan v${task.plan.version} waits for their decision in the JERRY dashboard (Plans) or with "jerry approve ${task.taskId} --stage plan --version ${task.plan.version}". Do not approve it yourself. Edits before approval are recorded as deviations.`,
         });
       }),
   },

@@ -31,6 +31,9 @@ repositories, not to this one.
   a spool while Core is down, and 90-day retention ([ADR 0006](docs/decisions/0006-session-events-spool-retention.md)).
 - Local API on Fastify: bearer token for the CLI and hooks; `jerry ui` signs the browser in with a one-time link,
   with CSRF and Origin checks for the dashboard ([ADR 0007](docs/decisions/0007-local-api-fastify-browser-sessions.md)).
+- `/jerry:plan`: Claude studies the repository, drafts the full plan (spec §7.2) and submits it with
+  `jerry_submit_plan`; you approve the exact document in the dashboard or CLI
+  ([ADR 0011](docs/decisions/0011-plans-submitted-by-claude.md)).
 - JERRY Control Center at `http://127.0.0.1:47823` (open it with `jerry ui`): overview, plans with approve and
   reject, session timeline, repositories; installable as an app ([ADR 0009](docs/decisions/0009-dashboard.md)).
 - MCP server in the plugin with read-only tools that give Claude the live plan state, path checks and recorded

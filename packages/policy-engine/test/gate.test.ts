@@ -222,6 +222,22 @@ describe('hard rules: always blocked, with or without a plan, in excluded reposi
   });
 });
 
+describe('computePlanHash', () => {
+  const base = { taskId: 'JRY-0001', title: 't', repoRoot: REPO, version: 1, scope: ['src/**'] };
+
+  it('keeps the hash of plans without a document (approvals made before documents stay valid)', () => {
+    expect(computePlanHash(base)).toBe(computePlanHash({ ...base, document: undefined }));
+  });
+
+  it('binds the approval to the whole document, independent of key order', () => {
+    const document = { goal: 'g', steps: [{ step: 's', files: [] }] };
+    const reordered = { steps: [{ files: [], step: 's' }], goal: 'g' };
+    expect(computePlanHash({ ...base, document })).toBe(computePlanHash({ ...base, document: reordered }));
+    expect(computePlanHash({ ...base, document })).not.toBe(computePlanHash(base));
+    expect(computePlanHash({ ...base, document })).not.toBe(computePlanHash({ ...base, document: { ...document, goal: 'other' } }));
+  });
+});
+
 describe('other tools', () => {
   it('does not monitor read tools', () => {
     const request: GateCheckRequest = { sessionId: 's', cwd: REPO, toolName: 'Read', toolInput: { file_path: 'a' }, toolUseId: null, agentId: null };

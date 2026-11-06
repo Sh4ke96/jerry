@@ -6,6 +6,7 @@ import { computePlanHash } from '@jerry/policy-engine';
 import { afterAll, describe, expect, it } from 'vitest';
 import { StateStore } from '../../apps/core/src/state-store.js';
 import { tempDir } from '../helpers/harness.js';
+import { samplePlan } from '../helpers/plan-fixture.js';
 
 const base = tempDir('state-store');
 afterAll(() => fs.rmSync(base, { recursive: true, force: true }));
@@ -62,6 +63,34 @@ describe('StateStore on SQLite', () => {
     ]);
     const actions = await database.db.selectFrom('audit_log').select('action').orderBy('id').execute();
     expect(actions.map((row) => row.action)).toEqual(['task.create', 'plan.revise', 'approval.approved']);
+    await database.close();
+  });
+
+  it('stores the full plan document, and a revision with a new document voids the approval', async () => {
+    const where = options();
+    const store = await StateStore.open(where);
+    const task = await store.createTask({ repoRoot: REPO, title: 'Greeting', scope: ['src/greeting/**'], document: samplePlan(REPO, ['src/greeting/**']), submittedBy: 'claude' }, now(0));
+    expect(task.plan.document?.goal).toContain('greeting helper');
+    await store.recordApproval(task.taskId, { stage: 'PLAN', version: 1, decision: 'APPROVED', comment: '' }, now(1));
+
+    const changed = { ...samplePlan(REPO, ['src/greeting/**']), goal: 'Add a localised greeting helper.' };
+    const revised = await store.revisePlan(task.taskId, changed.scope.include, now(2), changed, 'claude');
+    expect(revised.plan.version).toBe(2);
+    expect(revised.plan.contentHash).not.toBe(task.plan.contentHash);
+    expect(store.planDecision(task.taskId)).toBeNull();
+    await store.close();
+
+    const reopened = await StateStore.open(where);
+    expect(reopened.snapshot().tasks[0]?.plan.document?.goal).toBe('Add a localised greeting helper.');
+    await reopened.close();
+
+    const database = await openJerryDatabase({ file: where.databaseFile, backupsDir: where.backupsDir });
+    const actors = await database.db.selectFrom('audit_log').select(['action', 'actor']).orderBy('id').execute();
+    expect(actors).toEqual([
+      { action: 'task.create', actor: 'claude-code' },
+      { action: 'approval.approved', actor: 'local-user' },
+      { action: 'plan.revise', actor: 'claude-code' },
+    ]);
     await database.close();
   });
 

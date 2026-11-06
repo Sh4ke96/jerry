@@ -9,6 +9,7 @@ import {
   type EventEnvelope,
   type SessionRegistration,
   type StoredEvent,
+  type PlanDocument,
   type Task,
 } from '@jerry/contracts';
 import { backupDatabase, openJerryDatabase, type JerryDatabase, type JerrySchema } from '@jerry/database';
@@ -83,7 +84,7 @@ export class StateStore {
     return currentPlanDecision(this.requireTask(taskId), this.state.approvals);
   }
 
-  async createTask(input: { repoRoot: string; title: string; scope: string[] }, now: Date): Promise<Task> {
+  async createTask(input: { repoRoot: string; title: string; scope: string[]; document?: PlanDocument; submittedBy?: 'user' | 'claude' }, now: Date): Promise<Task> {
     const at = now.toISOString();
     const taskId = await this.database.db.transaction().execute(async (trx) => {
       const repoId = await upsertRepository(trx, input.repoRoot, at);
@@ -91,13 +92,13 @@ export class StateStore {
       const number = setting === undefined ? 1 : Number(JSON.parse(setting.value_json));
       const id = `JRY-${String(number).padStart(4, '0')}`;
       await trx.insertInto('tasks').values({ task_id: id, title: input.title, repo_id: repoId, current_plan_version: 1, created_at: at, updated_at: at }).execute();
-      await insertPlan(trx, { taskId: id, title: input.title, repoRoot: input.repoRoot, version: 1, scope: input.scope, at });
+      await insertPlan(trx, { taskId: id, title: input.title, repoRoot: input.repoRoot, version: 1, scope: input.scope, document: input.document, at });
       await trx
         .insertInto('settings')
         .values({ key: NEXT_TASK_NUMBER, value_json: JSON.stringify(number + 1), created_at: at, updated_at: at })
         .onConflict((conflict) => conflict.column('key').doUpdateSet({ value_json: JSON.stringify(number + 1), updated_at: at }))
         .execute();
-      await audit(trx, at, 'task.create', id, { repoRoot: input.repoRoot, scope: input.scope });
+      await audit(trx, at, 'task.create', id, { repoRoot: input.repoRoot, scope: input.scope, withDocument: input.document !== undefined }, actorOf(input.submittedBy));
       return id;
     });
     await this.reload();
@@ -105,14 +106,14 @@ export class StateStore {
   }
 
   /** Creates the next plan version. Earlier versions and their approvals stay in history but no longer match. */
-  async revisePlan(taskId: string, scope: string[], now: Date): Promise<Task> {
+  async revisePlan(taskId: string, scope: string[], now: Date, document?: PlanDocument, submittedBy: 'user' | 'claude' = 'user'): Promise<Task> {
     const task = this.requireTask(taskId);
     const at = now.toISOString();
     const version = task.plan.version + 1;
     await this.database.db.transaction().execute(async (trx) => {
-      await insertPlan(trx, { taskId, title: task.title, repoRoot: task.repoRoot, version, scope, at });
+      await insertPlan(trx, { taskId, title: task.title, repoRoot: task.repoRoot, version, scope, document, at });
       await trx.updateTable('tasks').set({ current_plan_version: version, updated_at: at }).where('task_id', '=', taskId).execute();
-      await audit(trx, at, 'plan.revise', taskId, { version, scope });
+      await audit(trx, at, 'plan.revise', taskId, { version, scope, withDocument: document !== undefined }, actorOf(submittedBy));
     });
     await this.reload();
     return this.requireTask(taskId);
@@ -295,7 +296,7 @@ export class StateStore {
       .selectFrom('tasks')
       .innerJoin('repositories', 'repositories.repo_id', 'tasks.repo_id')
       .innerJoin('plans', (join) => join.onRef('plans.task_id', '=', 'tasks.task_id').onRef('plans.version', '=', 'tasks.current_plan_version'))
-      .select(['tasks.task_id', 'tasks.title', 'tasks.created_at', 'repositories.root_path', 'plans.version', 'plans.content_hash', 'plans.scope_json', 'plans.created_at as plan_created_at'])
+      .select(['tasks.task_id', 'tasks.title', 'tasks.created_at', 'repositories.root_path', 'plans.version', 'plans.content_hash', 'plans.scope_json', 'plans.document_json', 'plans.created_at as plan_created_at'])
       .orderBy('tasks.task_id')
       .execute();
     const approvals = await db.selectFrom('approvals').selectAll().orderBy('approved_at').orderBy(sql`rowid`).execute();
@@ -312,7 +313,7 @@ export class StateStore {
         title: row.title,
         repoRoot: row.root_path,
         createdAt: row.created_at,
-        plan: { version: row.version, contentHash: row.content_hash, scope: JSON.parse(row.scope_json), createdAt: row.plan_created_at },
+        plan: { version: row.version, contentHash: row.content_hash, scope: JSON.parse(row.scope_json), createdAt: row.plan_created_at, ...(row.document_json === null ? {} : { document: JSON.parse(row.document_json) }) },
       })),
       approvals: approvals.map((row) => ({
         approvalId: row.approval_id,
@@ -411,19 +412,25 @@ async function upsertRepository(trx: Transaction<JerrySchema> | Kysely<JerrySche
   return repoId;
 }
 
-async function insertPlan(trx: Transaction<JerrySchema>, plan: { taskId: string; title: string; repoRoot: string; version: number; scope: string[]; at: string }): Promise<void> {
+async function insertPlan(trx: Transaction<JerrySchema>, plan: { taskId: string; title: string; repoRoot: string; version: number; scope: string[]; document?: PlanDocument | undefined; at: string }): Promise<void> {
   await trx
     .insertInto('plans')
     .values({
       task_id: plan.taskId,
       version: plan.version,
-      content_hash: computePlanHash({ taskId: plan.taskId, title: plan.title, repoRoot: plan.repoRoot, version: plan.version, scope: plan.scope }),
+      content_hash: computePlanHash({ taskId: plan.taskId, title: plan.title, repoRoot: plan.repoRoot, version: plan.version, scope: plan.scope, ...(plan.document === undefined ? {} : { document: plan.document }) }),
       scope_json: JSON.stringify(plan.scope),
+      document_json: plan.document === undefined ? null : JSON.stringify(plan.document),
       created_at: plan.at,
     })
     .execute();
 }
 
-async function audit(trx: Transaction<JerrySchema>, at: string, action: string, subject: string | null, details: Record<string, unknown>): Promise<void> {
-  await trx.insertInto('audit_log').values({ at, actor: 'local-user', action, subject, details_json: JSON.stringify(details), created_at: at }).execute();
+async function audit(trx: Transaction<JerrySchema>, at: string, action: string, subject: string | null, details: Record<string, unknown>, actor = 'local-user'): Promise<void> {
+  await trx.insertInto('audit_log').values({ at, actor, action, subject, details_json: JSON.stringify(details), created_at: at }).execute();
+}
+
+/** Plans can come from the user (CLI) or Claude (MCP); approvals always come from the user. */
+function actorOf(submittedBy: 'user' | 'claude' | undefined): string {
+  return submittedBy === 'claude' ? 'claude-code' : 'local-user';
 }

@@ -4,6 +4,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { api, createFixtureRepo, ROOT, runBridge, preToolUse, startCore, tempDir, TEST_CORE_ENV, type RunningCore } from '../helpers/harness.js';
+import { samplePlan } from '../helpers/plan-fixture.js';
 
 const MCP_SERVER = path.join(ROOT, 'dist', 'plugin', 'mcp', 'server.mjs');
 
@@ -56,6 +57,7 @@ class McpClient {
 describe('JERRY MCP server (bundled)', () => {
   const base = tempDir('mcp');
   const repo = createFixtureRepo(path.join(base, 'repo'));
+  const otherRepo = createFixtureRepo(path.join(base, 'other-repo'));
   const home = path.join(base, 'home');
   let core: RunningCore;
   let client: McpClient;
@@ -77,13 +79,43 @@ describe('JERRY MCP server (bundled)', () => {
     return client;
   };
 
-  it('offers only read-only tools, and none that approves anything', async () => {
+  it('offers state, checks and plan submission, and nothing that approves anything', async () => {
     const mcp = await connect();
     const listed = (await mcp.request('tools/list'))['result'] as { tools: Array<{ name: string; annotations: { readOnlyHint: boolean } }> };
     const names = listed.tools.map((tool) => tool.name).sort();
-    expect(names).toEqual(['jerry_check_paths', 'jerry_get_state', 'jerry_list_deviations']);
-    expect(listed.tools.every((tool) => tool.annotations.readOnlyHint)).toBe(true);
+    expect(names).toEqual(['jerry_check_paths', 'jerry_get_state', 'jerry_list_deviations', 'jerry_submit_plan']);
+    expect(listed.tools.filter((tool) => !tool.annotations.readOnlyHint).map((tool) => tool.name)).toEqual(['jerry_submit_plan']);
     expect(names.some((name) => /approve|reject|exclude|done|complete/.test(name))).toBe(false);
+  });
+
+  it('submits a plan as a task waiting for approval, and a revision voids the approval', async () => {
+    const mcp = await connect();
+    // A second repository keeps these tasks out of the plan-state test, which expects none in `repo`.
+    const submitted = await mcp.call('jerry_submit_plan', { title: 'Greeting helper', repoPath: otherRepo, plan: samplePlan(otherRepo) });
+    expect(submitted.isError).toBe(false);
+    expect(submitted.structured).toMatchObject({ planVersion: 1, status: 'WAITING_FOR_APPROVAL' });
+    expect(submitted.text).toContain('Do not approve it yourself');
+    const taskId = submitted.structured['taskId'] as string;
+
+    const tasks = (await api(core, 'GET', '/api/v1/tasks')).body as Array<{ taskId: string; plan: { document?: { goal: string } }; planDecision: unknown }>;
+    const stored = tasks.find((task) => task.taskId === taskId)!;
+    expect(stored.plan.document?.goal).toContain('greeting helper');
+    expect(stored.planDecision).toBeNull();
+
+    await api(core, 'POST', `/api/v1/tasks/${taskId}/approvals`, { stage: 'PLAN', version: 1, decision: 'APPROVED' });
+    const revised = await mcp.call('jerry_submit_plan', { taskId, plan: { ...samplePlan(otherRepo), goal: 'Add a localised greeting helper.' } });
+    expect(revised.structured).toMatchObject({ taskId, planVersion: 2, status: 'WAITING_FOR_APPROVAL' });
+    const after = ((await api(core, 'GET', '/api/v1/tasks')).body as Array<{ taskId: string; planDecision: unknown }>).find((task) => task.taskId === taskId)!;
+    expect(after.planDecision).toBeNull();
+  });
+
+  it('rejects an incomplete plan with the fields to fix, and a new task without a title', async () => {
+    const mcp = await connect();
+    const { tests: _tests, ...withoutTests } = samplePlan(repo);
+    const incomplete = await mcp.call('jerry_submit_plan', { title: 'x', plan: withoutTests });
+    expect(incomplete.isError).toBe(true);
+    expect(incomplete.text).toContain('tests');
+    expect((await mcp.call('jerry_submit_plan', { plan: samplePlan(repo) })).text).toContain('needs a short title');
   });
 
   it('reports the live plan state: none, waiting, approved', async () => {

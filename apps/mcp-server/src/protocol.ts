@@ -19,6 +19,8 @@ export interface ToolDefinition {
   title: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  /** False for tools that submit something to JERRY (never for approvals: those do not exist here). */
+  readOnly: boolean;
   handler: (args: Record<string, unknown>) => Promise<ToolResult>;
 }
 
@@ -62,7 +64,13 @@ export function serve(serverInfo: { name: string; version: string }, instruction
         return;
       case 'tools/list':
         reply(request.id, {
-          tools: tools.map((tool) => ({ name: tool.name, title: tool.title, description: tool.description, inputSchema: tool.inputSchema, annotations: { readOnlyHint: true, openWorldHint: false } })),
+          tools: tools.map((tool) => ({
+            name: tool.name,
+            title: tool.title,
+            description: tool.description,
+            inputSchema: tool.inputSchema,
+            annotations: { readOnlyHint: tool.readOnly, destructiveHint: false, openWorldHint: false },
+          })),
         });
         return;
       case 'tools/call': {

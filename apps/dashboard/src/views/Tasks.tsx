@@ -3,6 +3,7 @@ import { defineComponent, ref } from 'vue';
 import { api } from '../api';
 import { Badge, type Tone } from '../components/Badge';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { PlanDocumentView } from '../components/PlanDocument';
 import { formatTime, taskStatus, type TaskStatus } from '../format';
 import { perform, state } from '../state';
 
@@ -78,6 +79,7 @@ export const Tasks = defineComponent({
                     </dd>,
                   ]}
                 </dl>
+                {task.plan.document !== undefined && <PlanDocumentView plan={task.plan.document} />}
                 {status !== 'APPROVED' && (
                   <div class="actions">
                     <button class="button button--primary" onClick={() => (pending.value = { task, decision: 'APPROVED' })}>

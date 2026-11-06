@@ -118,4 +118,11 @@ export const MIGRATIONS: Readonly<Record<string, Migration>> = {
       await db.schema.createIndex('hook_events_verdict').on('hook_events').columns(['verdict', 'occurred_at']).execute();
     },
   },
+
+  '0003_plan_documents': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // The full plan (spec §7.2) when Claude submitted one; NULL for scope-only plans.
+      await db.schema.alterTable('plans').addColumn('document_json', 'text').execute();
+    },
+  },
 };

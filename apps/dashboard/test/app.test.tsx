@@ -2,6 +2,7 @@
 import type { StoredEvent, TaskWithDecision } from '@jerry/contracts';
 import { flushPromises, mount } from '@vue/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { samplePlan } from '../../../tests/helpers/plan-fixture';
 import { App } from '../src/App';
 import { startDashboard, state } from '../src/state';
 
@@ -13,7 +14,7 @@ const waitingTask: TaskWithDecision = {
   title: 'Add login form',
   repoRoot: 'D:\\Work\\shop',
   createdAt: NOW,
-  plan: { version: 1, contentHash: `sha256:${'a'.repeat(64)}`, scope: ['src/auth/**'], createdAt: NOW },
+  plan: { version: 1, contentHash: `sha256:${'a'.repeat(64)}`, scope: ['src/auth/**'], createdAt: NOW, document: samplePlan('D:\\Work\\shop', ['src/auth/**']) },
   planDecision: null,
 };
 
@@ -102,6 +103,19 @@ describe('Dashboard app', () => {
     expect((approval.init?.headers as Record<string, string>)['x-jerry-csrf']).toBe(CSRF);
     expect(JSON.parse(String(approval.init?.body))).toEqual({ stage: 'PLAN', version: 1, decision: 'APPROVED', confirmTaskId: 'JRY-0002' });
     expect(state.notice).toBe('Approved JRY-0002 plan v1.');
+    wrapper.unmount();
+  });
+
+  it('shows the plan Claude submitted, section by section, before the decision', async () => {
+    const wrapper = await mountApp();
+    await wrapper.findAll('nav button').find((button) => button.text().startsWith('Plans'))!.trigger('click');
+    const text = wrapper.text();
+    expect(text).toContain('Add a greeting helper that formats a personalised welcome message.');
+    for (const heading of ['Changes (2)', 'Risks (1)', 'Steps (2)', 'Tests (1)', 'Manual QA (1)', 'Proposed commits', 'Definition of Done', 'Open questions (1)']) {
+      expect(text, heading).toContain(heading);
+    }
+    expect(text).toContain('feat(greeting): add greet helper');
+    expect(wrapper.text()).toContain('Should greetings be localised?');
     wrapper.unmount();
   });
 

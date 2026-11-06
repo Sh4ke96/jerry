@@ -30,6 +30,8 @@ export interface PlansTable {
   version: number;
   content_hash: string;
   scope_json: string;
+  /** Full plan document (JSON) when Claude submitted one; null for scope-only plans. */
+  document_json: string | null;
   created_at: string;
 }
 

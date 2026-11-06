@@ -333,13 +333,13 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     const body = parse(taskCreateRequestSchema, request.body);
     const repoRoot = findGitRoot(realPathOfNearestExisting(body.repoPath));
     if (repoRoot === null) throw new HttpError(400, `${body.repoPath} is not inside a Git repository`);
-    return reply.code(201).send(await store.createTask({ repoRoot, title: body.title, scope: body.scope }, new Date()));
+    return reply.code(201).send(await store.createTask({ repoRoot, title: body.title, scope: body.scope, ...(body.document === undefined ? {} : { document: body.document }), submittedBy: body.submittedBy }, new Date()));
   });
 
   app.post('/api/v1/tasks/:taskId/plan', { config: TOKEN_ONLY }, async (request) => {
     const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId);
     const body = parse(planReviseRequestSchema, request.body);
-    return store.revisePlan(taskId, body.scope, new Date());
+    return store.revisePlan(taskId, body.scope, new Date(), body.document, body.submittedBy);
   });
 
   app.post('/api/v1/tasks/:taskId/approvals', { config: TOKEN_OR_SESSION }, async (request, reply) => {

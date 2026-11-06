@@ -136,11 +136,60 @@ export const contentHashSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
 /** Repo-relative glob patterns, forward slashes, e.g. "src/**". */
 export const planScopeSchema = z.array(z.string().min(1)).min(1);
 
+const text = z.string().trim().min(1);
+
+/**
+ * The plan document (spec §7.2, Phase 3, the 18 sections). Claude drafts it with the /jerry:plan
+ * skill and submits it through MCP; the user approves exactly this document (its hash). The
+ * sections that make a plan reviewable are required; the rest may be empty lists.
+ */
+export const planDocumentSchema = z.object({
+  /** 1. Goal of the task. */
+  goal: text,
+  /** 2. Classification. */
+  classification: z.array(z.enum(['ui-ux', 'frontend', 'api-backend', 'database', 'infrastructure', 'security', 'docs', 'tests', 'refactoring', 'tooling'])).min(1),
+  /** 3. Repositories the change touches (absolute paths). */
+  repositories: z.array(text).min(1),
+  /** 4. Current state and discovery findings; unknowns are written as UNKNOWN, never guessed. */
+  currentState: text,
+  /** 5. Proposed changes. */
+  changes: z.array(z.object({ kind: z.enum(['add', 'change', 'remove']), target: text, description: text })).min(1),
+  /** 6. Impact on architecture and modules. */
+  architectureImpact: text,
+  /** 7. Dependencies and contracts between repositories. */
+  crossRepoDependencies: z.string().default(''),
+  /** 8. Risks, security, compatibility. */
+  risks: z.array(z.object({ risk: text, severity: z.enum(['low', 'medium', 'high']), mitigation: text })).default([]),
+  /** 8. Rollback. */
+  rollback: z.string().default(''),
+  /** 9. Files and areas in scope (repo-relative globs; this is what JERRY checks edits against) and out of scope. */
+  scope: z.object({ include: planScopeSchema, exclude: z.array(text).default([]) }),
+  /** 10 and 11. Implementation steps, with their order and dependencies. */
+  steps: z.array(z.object({ step: text, files: z.array(text).default([]), dependsOn: z.array(z.number().int().positive()).default([]) })).min(1),
+  /** 12. Tests to add or run. */
+  tests: z.array(z.object({ kind: z.enum(['unit', 'component', 'integration', 'api', 'e2e', 'manual']), description: text })).min(1),
+  /** 13. Regression plan. */
+  regression: z.string().default(''),
+  /** 14. Proposed commit subjects, per repository; JERRY never commits. */
+  commitSubjects: z.array(text).default([]),
+  /** 15. QA handover scenarios for a manual tester. */
+  qaScenarios: z.array(z.object({ title: text, steps: z.array(text).min(1), expected: text })).default([]),
+  /** 16. Optional artifact, demo or presentation. */
+  artifact: z.string().default(''),
+  /** 17. Definition of Done. */
+  definitionOfDone: z.array(text).min(1),
+  /** 18. Unresolved questions and decisions for the user. */
+  openQuestions: z.array(text).default([]),
+});
+export type PlanDocument = z.infer<typeof planDocumentSchema>;
+
 export const planSchema = z.object({
   version: z.number().int().positive(),
   contentHash: contentHashSchema,
   scope: planScopeSchema,
   createdAt: z.iso.datetime(),
+  /** The full plan when Claude submitted one; plans created with only a scope (CLI) have none. */
+  document: planDocumentSchema.optional(),
 });
 export type Plan = z.infer<typeof planSchema>;
 
@@ -173,11 +222,16 @@ export const taskCreateRequestSchema = z.object({
   repoPath: z.string().min(1),
   title: z.string().min(1),
   scope: planScopeSchema,
+  document: planDocumentSchema.optional(),
+  /** Who submitted the plan, for the audit log: the user (CLI) or Claude (MCP). Not a permission. */
+  submittedBy: z.enum(['user', 'claude']).default('user'),
 });
 export type TaskCreateRequest = z.infer<typeof taskCreateRequestSchema>;
 
 export const planReviseRequestSchema = z.object({
   scope: planScopeSchema,
+  document: planDocumentSchema.optional(),
+  submittedBy: z.enum(['user', 'claude']).default('user'),
 });
 export type PlanReviseRequest = z.infer<typeof planReviseRequestSchema>;
 

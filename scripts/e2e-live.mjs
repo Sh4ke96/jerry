@@ -185,6 +185,32 @@ const gTools = (await sessionEvents(g.sessionId)).map((event) => event.toolName)
 expect('G: the session called the JERRY MCP tool', gTools.some((tool) => tool.endsWith('__jerry_get_state')), gTools.join(', '));
 expect('G: the model reported the approved scope from the tool', g.text.includes('src/**'));
 
+// H — /jerry:plan: the model studies the repository, drafts a full plan and submits it; nothing is approved.
+const h = runClaude(
+  'H: /jerry:plan',
+  '/jerry:plan Add a function greet(name) in src/greet.ts that returns "Hello, <name>!", with a unit test.',
+  ['Read', 'Glob', 'Grep', 'Bash(git status:*)', 'Bash(git log:*)', 'mcp__plugin_jerry_jerry__jerry_get_state', 'mcp__plugin_jerry_jerry__jerry_submit_plan'],
+);
+const submittedPlans = await (async () => {
+  const { DatabaseSync } = await import('node:sqlite');
+  const db = new DatabaseSync(path.join(home, 'database', 'jerry.sqlite'), { readOnly: true });
+  try {
+    return db
+      .prepare("SELECT t.task_id, p.version, p.document_json, (SELECT COUNT(*) FROM approvals a WHERE a.task_id = t.task_id) AS approvals FROM tasks t JOIN plans p ON p.task_id = t.task_id WHERE t.task_id IN (SELECT subject FROM audit_log WHERE actor = 'claude-code' AND action = 'task.create')")
+      .all();
+  } finally {
+    db.close();
+  }
+})();
+const claudePlan = submittedPlans.find((row) => row.document_json !== null);
+expect('H: the skill submitted a plan with a full document', claudePlan !== undefined, submittedPlans.map((row) => `${row.task_id} v${row.version}`).join(', ') || 'no plan submitted');
+expect('H: the submitted plan is not approved', submittedPlans.every((row) => row.approvals === 0));
+expect('H: Claude told the user how to approve it', claudePlan !== undefined && h.text.includes(claudePlan.task_id) && /approve/i.test(h.text));
+if (claudePlan !== undefined) {
+  const document = JSON.parse(claudePlan.document_json);
+  console.log(`      plan ${claudePlan.task_id}: scope ${JSON.stringify(document.scope.include)}, ${document.changes.length} change(s), ${document.tests.length} test(s), ${document.openQuestions.length} open question(s)`);
+}
+
 const registered = await registeredSessionIds();
 expect('SessionStart hook registered the sessions that have it', [a, c].every((run) => run.sessionId !== null && registered.has(run.sessionId)), `${registered.size} session(s) registered`);
 

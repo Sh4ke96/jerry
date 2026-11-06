@@ -6,6 +6,6 @@ import { TOOLS } from './tools.js';
 serve(
   { name: 'jerry', version: JERRY_VERSION },
   // Kept short: it stays in the context of every session (token cost, see ADR 0008).
-  'Read-only JERRY state. Use these tools only when you need the live plan state; they cannot approve anything.',
+  'JERRY state, path checks and plan submission. Use them when you need the live plan state or submit a plan; nothing here can approve.',
   TOOLS,
 );
