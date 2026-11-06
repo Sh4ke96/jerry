@@ -1,4 +1,4 @@
-import type { ApprovalRecord, CoreStatus, ProjectProfile, RepositoryExclusion, RepositorySummary, StoredEvent, Task, TaskSummary, WorkflowTransition, WorkspaceGraph } from '@jerry/contracts';
+import type { ApprovalRecord, ArtifactDecision, CoreStatus, FinalReport, EvalRunDetail, EvalRunSummary, EvalStatus, Finding, Plan, PlanDrift, ReviewState, ProjectProfile, RepositoryExclusion, RepositorySummary, StoredEvent, Task, TaskSummary, WorkflowTransition, WorkspaceGraph } from '@jerry/contracts';
 
 export type TaskControlEvent = 'task.paused' | 'task.resumed' | 'task.cancelled';
 
@@ -74,6 +74,32 @@ export const api = {
       confirmTaskId,
     }),
   transitions: (taskId: string) => request<WorkflowTransition[]>('GET', `/api/v1/tasks/${encodeURIComponent(taskId)}/transitions`),
+  /** Every plan version, oldest first (ADR 0026). */
+  plans: (taskId: string) => request<Plan[]>('GET', `/api/v1/tasks/${encodeURIComponent(taskId)}/plans`),
+  /** The final report of a task (ADR 0041) and the Artifact decisions (ADR 0042). */
+  finalReport: (taskId: string) => request<FinalReport>('GET', `/api/v1/tasks/${encodeURIComponent(taskId)}/final-report`),
+  artifacts: () => request<ArtifactDecision[]>('GET', '/api/v1/artifacts'),
+  /** Eval runs, status and calibration (ADR 0036–0040). */
+  evalRuns: () => request<EvalRunSummary[]>('GET', '/api/v1/evals/runs'),
+  evalRun: (runId: string) => request<EvalRunDetail>('GET', `/api/v1/evals/runs/${encodeURIComponent(runId)}`),
+  evalStatus: () => request<EvalStatus>('GET', '/api/v1/evals/status'),
+  evalCalibration: () => request<Array<{ rubricId: string; labels: number; agreement: number; calibrated: boolean }>>('GET', '/api/v1/evals/calibration'),
+  /** The user's baseline choice, with a reason and the typed run ID. */
+  setEvalBaseline: (runId: string, note: string, confirm: string) => request<EvalRunSummary>('POST', '/api/v1/evals/baseline', { runId, note, confirm }),
+  /** The independent review of a task (ADR 0032–0035). */
+  review: (taskId: string) => request<ReviewState>('GET', `/api/v1/tasks/${encodeURIComponent(taskId)}/review`),
+  /** The user's decision on a review round's fix plan (stage REVIEW_FIX, version = round). */
+  decideFixPlan: (taskId: string, round: number, decision: 'APPROVED' | 'REJECTED', confirmTaskId: string, comment: string) =>
+    request<ApprovalRecord>('POST', `/api/v1/tasks/${encodeURIComponent(taskId)}/approvals`, { stage: 'REVIEW_FIX', version: round, decision, comment, confirmTaskId }),
+  /** The user waives the review, with a reason and the typed task ID. */
+  skipReview: (taskId: string, reason: string, confirmTaskId: string) => request<ReviewState>('POST', `/api/v1/tasks/${encodeURIComponent(taskId)}/review/skip`, { reason, confirmTaskId }),
+  /** Plan drift, step order and implementer assignments (ADR 0031). */
+  drift: (taskId: string) => request<PlanDrift>('GET', `/api/v1/tasks/${encodeURIComponent(taskId)}/drift`),
+  /** Quality findings of a task (ADR 0027), all statuses. */
+  findings: (taskId: string) => request<Finding[]>('GET', `/api/v1/findings?taskId=${encodeURIComponent(taskId)}&limit=500`),
+  /** The user's decision on a finding, always with a reason. */
+  setFindingStatus: (findingId: string, status: 'OPEN' | 'ACCEPTED' | 'WONT_FIX' | 'FALSE_POSITIVE', reason: string) =>
+    request<Finding>('POST', `/api/v1/findings/${encodeURIComponent(findingId)}/status`, { status, reason }),
   /** Pause, resume or cancel; cancelling needs the typed task ID. */
   control: (taskId: string, event: TaskControlEvent, confirmTaskId?: string) =>
     request<Task>('POST', `/api/v1/tasks/${encodeURIComponent(taskId)}/transitions`, {

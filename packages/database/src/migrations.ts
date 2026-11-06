@@ -309,4 +309,229 @@ export const MIGRATIONS: Readonly<Record<string, Migration>> = {
       await db.schema.createIndex('analysis_reports_task').on('analysis_reports').columns(['task_id', 'id']).execute();
     },
   },
+
+  '0011_task_goal': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // The goal of a task taken in before its plan (ADR 0024); null for tasks that began with a plan.
+      await db.schema.alterTable('tasks').addColumn('goal', 'text').execute();
+    },
+  },
+
+  '0012_findings': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Quality findings with their status history, and the check batches that produced them (ADR 0027).
+      // Evidence holds the offending line only, never whole files.
+      await db.schema
+        .createTable('findings')
+        .addColumn('id', 'integer', (column) => column.primaryKey().autoIncrement())
+        .addColumn('task_id', 'text', (column) => column.references('tasks.task_id'))
+        .addColumn('repo_root', 'text', (column) => column.notNull())
+        .addColumn('file', 'text', (column) => column.notNull())
+        .addColumn('rule_id', 'text', (column) => column.notNull())
+        .addColumn('rule_version', 'text', (column) => column.notNull())
+        .addColumn('fingerprint', 'text', (column) => column.notNull())
+        .addColumn('source', 'text', (column) => column.notNull())
+        .addColumn('category', 'text', (column) => column.notNull())
+        .addColumn('severity', 'text', (column) => column.notNull())
+        .addColumn('confidence', 'real', (column) => column.notNull())
+        .addColumn('line_start', 'integer', (column) => column.notNull())
+        .addColumn('line_end', 'integer', (column) => column.notNull())
+        .addColumn('title', 'text', (column) => column.notNull())
+        .addColumn('evidence', 'text', (column) => column.notNull())
+        .addColumn('why', 'text', (column) => column.notNull())
+        .addColumn('fix', 'text', (column) => column.notNull())
+        .addColumn('plan_related', 'integer', (column) => column.notNull().defaultTo(0))
+        .addColumn('status', 'text', (column) => column.notNull())
+        .addColumn('status_reason', 'text', (column) => column.notNull().defaultTo(''))
+        .addColumn('session_id', 'text')
+        .addColumn('agent_id', 'text')
+        .addColumn('fed_back_at', 'text')
+        .addColumn('first_seen_at', 'text', (column) => column.notNull())
+        .addColumn('last_seen_at', 'text', (column) => column.notNull())
+        .addColumn('created_at', 'text', (column) => column.notNull())
+        .addColumn('updated_at', 'text', (column) => column.notNull())
+        .execute();
+      await db.schema.createIndex('findings_identity').unique().on('findings').columns(['repo_root', 'task_id', 'file', 'rule_id', 'fingerprint']).execute();
+      await db.schema.createIndex('findings_task_status').on('findings').columns(['task_id', 'status']).execute();
+
+      await db.schema
+        .createTable('finding_events')
+        .addColumn('id', 'integer', (column) => column.primaryKey().autoIncrement())
+        .addColumn('finding_id', 'integer', (column) => column.notNull().references('findings.id'))
+        .addColumn('from_status', 'text')
+        .addColumn('to_status', 'text', (column) => column.notNull())
+        .addColumn('actor', 'text', (column) => column.notNull())
+        .addColumn('reason', 'text', (column) => column.notNull())
+        .addColumn('at', 'text', (column) => column.notNull())
+        .execute();
+      await db.schema.createIndex('finding_events_finding').on('finding_events').columns(['finding_id', 'id']).execute();
+
+      await db.schema
+        .createTable('quality_batches')
+        .addColumn('id', 'integer', (column) => column.primaryKey().autoIncrement())
+        .addColumn('task_id', 'text')
+        .addColumn('repo_root', 'text', (column) => column.notNull())
+        .addColumn('session_id', 'text')
+        .addColumn('files_json', 'text', (column) => column.notNull())
+        .addColumn('started_at', 'text', (column) => column.notNull())
+        .addColumn('duration_ms', 'integer', (column) => column.notNull())
+        .addColumn('new_count', 'integer', (column) => column.notNull())
+        .addColumn('fixed_count', 'integer', (column) => column.notNull())
+        .addColumn('error', 'text')
+        .execute();
+    },
+  },
+
+  '0013_test_runs': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Test commands Claude ran and how they ended (ADR 0030): the command as recorded (redacted),
+      // the result and the runner's one-line totals; never the output itself.
+      await db.schema
+        .createTable('test_runs')
+        .addColumn('id', 'integer', (column) => column.primaryKey().autoIncrement())
+        .addColumn('task_id', 'text', (column) => column.references('tasks.task_id'))
+        .addColumn('repo_root', 'text', (column) => column.notNull())
+        .addColumn('session_id', 'text')
+        .addColumn('agent_id', 'text')
+        .addColumn('event_id', 'text', (column) => column.notNull().unique())
+        .addColumn('command', 'text', (column) => column.notNull())
+        .addColumn('result', 'text', (column) => column.notNull())
+        .addColumn('exit_code', 'integer')
+        .addColumn('summary', 'text')
+        .addColumn('at', 'text', (column) => column.notNull())
+        .execute();
+      await db.schema.createIndex('test_runs_task').on('test_runs').columns(['task_id', 'at']).execute();
+    },
+  },
+
+  '0014_implementer_assignments': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Up to three implementers per task with disjoint files (ADR 0031); a new assignment set
+      // releases the previous one.
+      await db.schema
+        .createTable('implementer_assignments')
+        .addColumn('id', 'integer', (column) => column.primaryKey().autoIncrement())
+        .addColumn('task_id', 'text', (column) => column.notNull().references('tasks.task_id'))
+        .addColumn('label', 'text', (column) => column.notNull())
+        .addColumn('steps_json', 'text', (column) => column.notNull())
+        .addColumn('files_json', 'text', (column) => column.notNull())
+        .addColumn('agent_id', 'text')
+        .addColumn('session_id', 'text')
+        .addColumn('created_at', 'text', (column) => column.notNull())
+        .addColumn('released_at', 'text')
+        .execute();
+      await db.schema.createIndex('implementer_assignments_task').on('implementer_assignments').columns(['task_id', 'released_at']).execute();
+    },
+  },
+
+  '0015_reviews': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Independent review rounds (ADR 0032–0035): what each round had to cover, the reviewers'
+      // submissions, which findings each reviewer reported, the fix plan and the outcome.
+      await db.schema
+        .createTable('review_rounds')
+        .addColumn('id', 'integer', (column) => column.primaryKey().autoIncrement())
+        .addColumn('task_id', 'text', (column) => column.notNull().references('tasks.task_id'))
+        .addColumn('round', 'integer', (column) => column.notNull())
+        .addColumn('started_at', 'text', (column) => column.notNull())
+        .addColumn('changed_files_json', 'text', (column) => column.notNull())
+        .addColumn('completed_at', 'text')
+        .addColumn('completed_by', 'text')
+        .addColumn('passed_at', 'text')
+        .addColumn('skipped_at', 'text')
+        .addColumn('skip_reason', 'text')
+        .addColumn('fix_plan_json', 'text')
+        .addColumn('fix_plan_hash', 'text')
+        .addColumn('fixes_approved_at', 'text')
+        .addColumn('fixes_reported_at', 'text')
+        .addColumn('fixes_summary', 'text')
+        .execute();
+      await db.schema.createIndex('review_rounds_task').unique().on('review_rounds').columns(['task_id', 'round']).execute();
+
+      await db.schema
+        .createTable('review_submissions')
+        .addColumn('id', 'integer', (column) => column.primaryKey().autoIncrement())
+        .addColumn('task_id', 'text', (column) => column.notNull().references('tasks.task_id'))
+        .addColumn('round', 'integer', (column) => column.notNull())
+        .addColumn('role', 'text', (column) => column.notNull())
+        .addColumn('agent_id', 'text')
+        .addColumn('session_id', 'text')
+        .addColumn('files_reviewed_json', 'text', (column) => column.notNull())
+        .addColumn('summary', 'text', (column) => column.notNull())
+        .addColumn('gaps_json', 'text', (column) => column.notNull())
+        .addColumn('finding_count', 'integer', (column) => column.notNull())
+        .addColumn('independent', 'integer', (column) => column.notNull())
+        .addColumn('independence_note', 'text', (column) => column.notNull())
+        .addColumn('created_at', 'text', (column) => column.notNull())
+        .execute();
+      await db.schema.createIndex('review_submissions_round').unique().on('review_submissions').columns(['task_id', 'round', 'role']).execute();
+
+      await db.schema
+        .createTable('review_finding_sources')
+        .addColumn('finding_id', 'integer', (column) => column.notNull().references('findings.id'))
+        .addColumn('task_id', 'text', (column) => column.notNull())
+        .addColumn('round', 'integer', (column) => column.notNull())
+        .addColumn('role', 'text', (column) => column.notNull())
+        .execute();
+      await db.schema.createIndex('review_finding_sources_key').unique().on('review_finding_sources').columns(['finding_id', 'round', 'role']).execute();
+    },
+  },
+
+  '0016_evals': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Eval runs, the baseline history and human labels for rubric calibration (ADR 0039). Kept in
+      // JERRY's database, outside any project (spec §13.5).
+      await db.schema
+        .createTable('eval_runs')
+        .addColumn('id', 'integer', (column) => column.primaryKey().autoIncrement())
+        .addColumn('started_at', 'text', (column) => column.notNull())
+        .addColumn('finished_at', 'text', (column) => column.notNull())
+        .addColumn('jerry_version', 'text', (column) => column.notNull())
+        .addColumn('fingerprint_json', 'text', (column) => column.notNull())
+        .addColumn('label', 'text', (column) => column.notNull())
+        .addColumn('results_json', 'text', (column) => column.notNull())
+        .addColumn('created_at', 'text', (column) => column.notNull())
+        .execute();
+      await db.schema
+        .createTable('eval_baselines')
+        .addColumn('id', 'integer', (column) => column.primaryKey().autoIncrement())
+        .addColumn('run_id', 'integer', (column) => column.notNull().references('eval_runs.id'))
+        .addColumn('note', 'text', (column) => column.notNull())
+        .addColumn('set_at', 'text', (column) => column.notNull())
+        .execute();
+      await db.schema
+        .createTable('eval_labels')
+        .addColumn('id', 'integer', (column) => column.primaryKey().autoIncrement())
+        .addColumn('run_id', 'integer', (column) => column.notNull().references('eval_runs.id'))
+        .addColumn('case_id', 'text', (column) => column.notNull())
+        .addColumn('attempt', 'integer', (column) => column.notNull())
+        .addColumn('rubric_id', 'text', (column) => column.notNull())
+        .addColumn('human_passed', 'integer', (column) => column.notNull())
+        .addColumn('grader_passed', 'integer', (column) => column.notNull())
+        .addColumn('score', 'real')
+        .addColumn('labeled_at', 'text', (column) => column.notNull())
+        .execute();
+      await db.schema.createIndex('eval_labels_key').unique().on('eval_labels').columns(['run_id', 'case_id', 'attempt', 'rubric_id']).execute();
+    },
+  },
+
+  '0017_artifact_decisions': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // The user's choice about an Artifact for a task (ADR 0042): created by Claude (link only;
+      // the Artifact itself is Claude's) or declined. The latest decision of a task counts.
+      await db.schema
+        .createTable('artifact_decisions')
+        .addColumn('id', 'integer', (column) => column.primaryKey().autoIncrement())
+        .addColumn('task_id', 'text', (column) => column.notNull().references('tasks.task_id'))
+        .addColumn('decision', 'text', (column) => column.notNull())
+        .addColumn('kind', 'text')
+        .addColumn('title', 'text')
+        .addColumn('url', 'text')
+        .addColumn('reason', 'text', (column) => column.notNull().defaultTo(''))
+        .addColumn('session_id', 'text')
+        .addColumn('created_at', 'text', (column) => column.notNull())
+        .execute();
+      await db.schema.createIndex('artifact_decisions_task').on('artifact_decisions').columns(['task_id', 'id']).execute();
+    },
+  },
 };

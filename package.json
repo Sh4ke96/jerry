@@ -15,14 +15,17 @@
     "check": "tsc -p tsconfig.json && tsc -p apps/dashboard/tsconfig.json && vitest run",
     "jerry": "node dist/cli/jerry.mjs",
     "spike:bench": "node scripts/bench-hook.mjs",
-    "spike:live": "node scripts/e2e-live.mjs"
+    "spike:live": "node scripts/e2e-live.mjs",
+    "release": "node scripts/release.mjs"
   },
   "devDependencies": {
     "@jerry/contracts": "workspace:*",
     "@jerry/database": "workspace:*",
     "@jerry/discovery": "workspace:*",
+    "@jerry/evals": "workspace:*",
     "@jerry/platform": "workspace:*",
     "@jerry/policy-engine": "workspace:*",
+    "@jerry/quality": "workspace:*",
     "@jerry/trace-engine": "workspace:*",
     "@jerry/workflow": "workspace:*",
     "@types/node": "22.20.5",

@@ -14,6 +14,8 @@ export const ConfirmDialog = defineComponent({
     busy: { type: Boolean, default: false },
     /** Shows a comment field with this label (e.g. what Claude should change). */
     commentLabel: { type: String, default: undefined },
+    /** The comment must not be empty (e.g. the reason for dismissing a finding). */
+    commentRequired: { type: Boolean, default: false },
   },
   emits: {
     confirm: (typed: string, _comment: string) => typeof typed === 'string',
@@ -23,7 +25,7 @@ export const ConfirmDialog = defineComponent({
     const typed = ref('');
     const comment = ref('');
     const input = ref<HTMLInputElement | null>(null);
-    const matches = computed(() => typed.value.trim() === props.expected);
+    const matches = computed(() => typed.value.trim() === props.expected && (!props.commentRequired || comment.value.trim() !== ''));
     onMounted(() => nextTick(() => input.value?.focus()));
 
     const submit = (event: Event): void => {
@@ -39,7 +41,7 @@ export const ConfirmDialog = defineComponent({
           {props.commentLabel !== undefined && (
             <label class="field">
               <span>{props.commentLabel}</span>
-              <textarea value={comment.value} rows={3} maxlength={2000} onInput={(event: Event) => (comment.value = (event.target as HTMLTextAreaElement).value)} />
+              <textarea value={comment.value} rows={3} maxlength={2000} required={props.commentRequired} onInput={(event: Event) => (comment.value = (event.target as HTMLTextAreaElement).value)} />
             </label>
           )}
           <label class="field">

@@ -1,6 +1,6 @@
 import { eventEnvelopeSchema } from '@jerry/contracts';
 import { describe, expect, it } from 'vitest';
-import { buildEventEnvelope } from '../src/events.js';
+import { buildEventEnvelope, testSummaryOf } from '../src/events.js';
 import { redactText } from '../src/redaction.js';
 
 /**
@@ -99,5 +99,21 @@ describe('buildEventEnvelope: data minimization', () => {
 
   it('ignores events JERRY does not record', () => {
     expect(buildEventEnvelope({ ...common, hook_event_name: 'Notification' })).toBeNull();
+  });
+});
+
+describe('test summaries (ADR 0030)', () => {
+  it('keeps only the runner totals line, never the rest of the output', () => {
+    expect(testSummaryOf('lots of output\n Test Files  3 passed (3)\n      Tests  12 passed (12)\n   Duration  1s')).toBe('Tests 12 passed (12)');
+    expect(testSummaryOf('Tests:       1 failed, 4 passed, 5 total')).toBe('Tests: 1 failed, 4 passed, 5 total');
+    expect(testSummaryOf('===== 2 failed, 10 passed in 0.52s =====')).toBe('===== 2 failed, 10 passed in 0.52s =====');
+    expect(testSummaryOf('ok  \texample.com/pkg\t0.012s')).toBe('ok example.com/pkg 0.012s');
+    expect(testSummaryOf('\u001b[32m      Tests  3 passed (3)\u001b[39m')).toBe('Tests 3 passed (3)');
+    expect(testSummaryOf('password=hunter2 Tests leaked')).toBeNull();
+  });
+
+  it('adds the totals to a PostToolUse summary', () => {
+    const event = buildEventEnvelope({ ...common, hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'npx vitest run' }, tool_response: { stdout: 'x\n      Tests  2 passed (2)\n', stderr: '' } });
+    expect(event?.payload['response']).toMatchObject({ testSummary: 'Tests 2 passed (2)' });
   });
 });

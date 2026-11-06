@@ -281,6 +281,35 @@ describe('computeReportHash', () => {
 describe('subagents (ADR 0015, ADR 0023)', () => {
   const spawn = (toolName = 'Task'): GateCheckRequest => ({ sessionId: 's1', cwd: REPO, toolName, toolInput: {}, toolUseId: null, agentId: null });
 
+  it('passes the implementer checks the edit and its agent, and warns on their verdict (ADR 0031)', () => {
+    const state = approvedState(task(['src/**']));
+    const seen: Array<[string, string | null, string]> = [];
+    const check = (taskId: string, agentId: string | null, file: string) => {
+      seen.push([taskId, agentId, file]);
+      return file === 'src/b.ts' ? { ruleId: 'monitor.concurrent-write', reason: 'another subagent writes src/b.ts' } : null;
+    };
+    expect(evaluateGate({ ...write('src/a.ts'), agentId: 'impl-1' }, context(state, { implementerCheck: check }))).toMatchObject({ verdict: 'PASS', ruleId: 'monitor.in-approved-scope' });
+    expect(evaluateGate(write('src/b.ts'), context(state, { implementerCheck: check }))).toMatchObject({ verdict: 'WARN', ruleId: 'monitor.concurrent-write', taskId: 'JRY-0001' });
+    expect(seen).toEqual([
+      ['JRY-0001', 'impl-1', 'src/a.ts'],
+      ['JRY-0001', null, 'src/b.ts'],
+    ]);
+    // Never asked outside the approved scope, and never a block.
+    expect(evaluateGate(write('README.md'), context(state, { implementerCheck: () => ({ ruleId: 'monitor.concurrent-write', reason: 'x' }) })).ruleId).toBe('monitor.out-of-scope');
+  });
+
+  it('warns when a read-only JERRY agent writes or runs a modifying command (ADR 0033)', () => {
+    const state = approvedState(task(['src/**']));
+    const types: Record<string, string> = { rev: 'jerry:jerry-security-reviewer', ana: 'jerry:jerry-risk-analyst', imp: 'jerry:jerry-implementer' };
+    const ctx = context(state, { agentType: (agentId) => types[agentId] ?? null });
+    expect(evaluateGate({ ...write('src/a.ts'), agentId: 'rev' }, ctx)).toMatchObject({ verdict: 'WARN', ruleId: 'monitor.read-only-agent-write' });
+    expect(evaluateGate({ ...shell('npm install left-pad'), agentId: 'ana' }, ctx)).toMatchObject({ verdict: 'WARN', ruleId: 'monitor.read-only-agent-write' });
+    expect(evaluateGate({ ...shell('git status'), agentId: 'rev' }, ctx)).toMatchObject({ verdict: 'PASS' });
+    expect(evaluateGate({ ...write('src/a.ts'), agentId: 'imp' }, ctx)).toMatchObject({ verdict: 'PASS', ruleId: 'monitor.in-approved-scope' });
+    // Hard rules still come first.
+    expect(evaluateGate({ ...shell('git commit -am x'), agentId: 'rev' }, ctx).verdict).toBe('DENY');
+  });
+
   it('warns before a fourth concurrent subagent, and never blocks one', () => {
     expect(evaluateGate(spawn(), context(emptyState(), { activeSubagents: () => 2 }))).toMatchObject({ verdict: 'PASS' });
     expect(evaluateGate(spawn('Agent'), context(emptyState(), { activeSubagents: () => 3 }))).toMatchObject({ verdict: 'WARN', ruleId: 'monitor.subagent-cap', reason: expect.stringContaining('at most 3') });

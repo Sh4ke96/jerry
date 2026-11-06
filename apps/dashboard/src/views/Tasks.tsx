@@ -1,14 +1,23 @@
-import type { TaskSummary, WorkflowTransition } from '@jerry/contracts';
-import { availableEvents, STATE_LABELS } from '@jerry/workflow';
-import { defineComponent, reactive, ref } from 'vue';
+import type { ArtifactDecision, PlanDrift, TaskSummary, WorkflowTransition } from '@jerry/contracts';
+import { availableEvents, diffPlans, STATE_LABELS, WORK_STATES, type PlanDiff } from '@jerry/workflow';
+import { defineComponent, onMounted, reactive, ref } from 'vue';
 import { api } from '../api';
 import { Badge } from '../components/Badge';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { AnalysisReports } from '../components/AnalysisReports';
+import { FindingsPanel } from '../components/Findings';
+import { ArtifactsList, FinalReportView } from '../components/FinalReport';
 import { ImplementationReportView } from '../components/ImplementationReport';
 import { PlanDocumentView } from '../components/PlanDocument';
-import { formatTime, isOpen, stateTone } from '../format';
+import { PlanDiffView } from '../components/PlanDiff';
+import { PlanDriftView } from '../components/PlanDrift';
+import { PlanGradeView } from '../components/PlanGrade';
+import { ReviewPanel } from '../components/Review';
+import { formatTime, isIntake, isOpen, stateTone } from '../format';
 import { handleError, perform, state } from '../state';
+
+/** States in which the task card shows the independent review (ADR 0032). */
+const REVIEW_STATES: ReadonlySet<string> = new Set(['CODE_REVIEW', 'REVIEW_REPORT', 'WAIT_REVIEW_FIX_APPROVAL', 'FIX_IMPLEMENTATION', 'REVERIFICATION', 'FINAL_REPORT']);
 
 /** Decisions that need the task ID typed, like their CLI prompts. Pause and resume are one click. */
 type ConfirmedAction = 'approve' | 'reject' | 'accept' | 'request-changes' | 'cancel';
@@ -74,6 +83,27 @@ export const Tasks = defineComponent({
     const busy = ref(false);
     /** Loaded on demand; null while loading. */
     const histories = reactive<Record<string, WorkflowTransition[] | null>>({});
+    /** Open plan comparisons: the current version against the one before (ADR 0026). */
+    const diffs = reactive<Record<string, PlanDiff | null>>({});
+    /** Open final reports (ADR 0041) and the Artifact decisions (ADR 0042). */
+    const finalReports = reactive<Record<string, boolean>>({});
+    const artifacts = ref<ArtifactDecision[]>([]);
+    onMounted(() => void api.artifacts().then((list) => (artifacts.value = list), handleError));
+    /** Open drift views (ADR 0031), loaded on demand: Git is read for them. */
+    const drifts = reactive<Record<string, PlanDrift | null>>({});
+    const toggleDrift = async (taskId: string): Promise<void> => {
+      if (drifts[taskId] !== undefined) {
+        delete drifts[taskId];
+        return;
+      }
+      drifts[taskId] = null;
+      try {
+        drifts[taskId] = await api.drift(taskId);
+      } catch (error) {
+        delete drifts[taskId];
+        handleError(error);
+      }
+    };
 
     const run = (task: TaskSummary, action: ConfirmedAction, typed: string, comment: string): Promise<boolean> => {
       const report = task.lastReport;
@@ -124,6 +154,24 @@ export const Tasks = defineComponent({
         histories[taskId] = await api.transitions(taskId);
       } catch (error) {
         delete histories[taskId];
+        handleError(error);
+      }
+    };
+
+    const toggleDiff = async (task: TaskSummary): Promise<void> => {
+      if (diffs[task.taskId] !== undefined) {
+        delete diffs[task.taskId];
+        return;
+      }
+      diffs[task.taskId] = null;
+      try {
+        const versions = await api.plans(task.taskId);
+        const newer = versions.find((plan) => plan.version === task.plan.version);
+        const older = versions.find((plan) => plan.version === task.plan.version - 1);
+        if (newer === undefined || older === undefined) delete diffs[task.taskId];
+        else diffs[task.taskId] = diffPlans(older, newer);
+      } catch (error) {
+        delete diffs[task.taskId];
         handleError(error);
       }
     };
@@ -186,6 +234,27 @@ export const Tasks = defineComponent({
           </button>,
         );
       }
+      if (WORK_STATES.has(task.state) && task.plan.document !== undefined) {
+        buttons.push(
+          <button key="drift" class="button button--quiet" onClick={() => void toggleDrift(task.taskId)}>
+            {drifts[task.taskId] === undefined ? 'Plan drift' : 'Hide drift'}
+          </button>,
+        );
+      }
+      if (task.plan.version > 1) {
+        buttons.push(
+          <button key="diff" class="button button--quiet" onClick={() => void toggleDiff(task)}>
+            {diffs[task.taskId] === undefined ? `Changes since v${task.plan.version - 1}` : 'Hide changes'}
+          </button>,
+        );
+      }
+      if (task.lastReport !== null) {
+        buttons.push(
+          <button key="final-report" class="button button--quiet" onClick={() => (finalReports[task.taskId] = !finalReports[task.taskId])}>
+            {finalReports[task.taskId] === true ? 'Hide final report' : 'Final report'}
+          </button>,
+        );
+      }
       buttons.push(
         <button key="history" class="button button--quiet" onClick={() => toggleHistory(task.taskId)}>
           {histories[task.taskId] === undefined ? 'History' : 'Hide history'}
@@ -226,11 +295,11 @@ export const Tasks = defineComponent({
           <Badge tone={stateTone(task.state)}>{STATE_LABELS[task.state]}</Badge>
         </header>
         <dl class="facts">
+          {task.goal !== undefined && [<dt key="goal-label">Goal</dt>, <dd key="goal-value">{task.goal}</dd>]}
           <dt>Plan</dt>
-          <dd>
-            version {task.plan.version} · created {formatTime(task.plan.createdAt)}
-          </dd>
-          <dt>Scope</dt>
+          <dd>{isIntake(task) ? `none yet: analysis first · taken in ${formatTime(task.plan.createdAt)}` : `version ${task.plan.version} · created ${formatTime(task.plan.createdAt)}`}</dd>
+          {/* An intake's scope is only the area to analyse; nothing is approved yet (ADR 0024). */}
+          <dt>{isIntake(task) ? 'Analysis focus' : 'Scope'}</dt>
           <dd class="chips">
             {task.plan.scope.map((glob) => (
               <code class="chip" key={glob}>
@@ -251,6 +320,15 @@ export const Tasks = defineComponent({
           ]}
           <dt>Sessions</dt>
           <dd>{sessionsText(task)}</dd>
+          {task.lastTestRun !== null && [
+            <dt key="tests-label">Last tests</dt>,
+            <dd key="tests-value">
+              <Badge tone={task.lastTestRun.result === 'PASS' ? 'pass' : task.lastTestRun.result === 'FAIL' ? 'deny' : 'warn'}>{task.lastTestRun.result}</Badge> <code>{task.lastTestRun.command}</code>{' '}
+              <span class="muted small">
+                {task.lastTestRun.summary ?? (task.lastTestRun.exitCode === null ? '' : `exit ${task.lastTestRun.exitCode}`)} · {formatTime(task.lastTestRun.at)} · run by Claude, seen by JERRY
+              </span>
+            </dd>,
+          ]}
           {task.lastReport !== null && [
             <dt key="report-label">Report</dt>,
             <dd key="report-value">
@@ -276,6 +354,9 @@ export const Tasks = defineComponent({
           </section>
         )}
         <AnalysisReports analyses={task.analyses} runs={task.agentRuns} />
+        {REVIEW_STATES.has(task.state) && <ReviewPanel task={task} />}
+        <FindingsPanel task={task} />
+        {task.planGrade !== null && !isIntake(task) && task.lastReport === null && <PlanGradeView grade={task.planGrade} />}
         {task.lastReport !== null &&
           (task.state === 'WAIT_IMPLEMENTATION_ACCEPTANCE' ? (
             <ImplementationReportView report={task.lastReport} />
@@ -315,6 +396,11 @@ export const Tasks = defineComponent({
           </section>
         )}
         {actions(task)}
+        {finalReports[task.taskId] === true && <FinalReportView taskId={task.taskId} />}
+        {drifts[task.taskId] === null && <p class="muted small">Reading the repository…</p>}
+        {drifts[task.taskId] != null && <PlanDriftView drift={drifts[task.taskId]!} />}
+        {diffs[task.taskId] === null && <p class="muted small">Loading plan versions…</p>}
+        {diffs[task.taskId] != null && <PlanDiffView diff={diffs[task.taskId]!} />}
         {history(task.taskId)}
       </article>
     );
@@ -334,6 +420,7 @@ export const Tasks = defineComponent({
             </section>
           )}
           {open.map(card)}
+          <ArtifactsList decisions={artifacts.value} />
           {closed.length > 0 && (
             <details class="panel">
               <summary>Finished and cancelled ({closed.length})</summary>

@@ -22,6 +22,8 @@ export interface TasksTable {
   current_plan_version: number;
   /** Workflow state (spec §7.1); changed only through validated transitions. */
   state: string;
+  /** What a task taken in before its plan should achieve (ADR 0024); null otherwise. */
+  goal: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -222,6 +224,182 @@ export interface HookEventsTable {
   created_at: string;
 }
 
+/** Quality findings (ADR 0027); identity is repo, task, file, rule and fingerprint. */
+export interface FindingsTable {
+  id: Generated<number>;
+  task_id: string | null;
+  repo_root: string;
+  file: string;
+  rule_id: string;
+  rule_version: string;
+  fingerprint: string;
+  source: string;
+  category: string;
+  severity: string;
+  confidence: number;
+  line_start: number;
+  line_end: number;
+  title: string;
+  evidence: string;
+  why: string;
+  fix: string;
+  plan_related: Generated<number>;
+  status: string;
+  status_reason: Generated<string>;
+  session_id: string | null;
+  agent_id: string | null;
+  /** When Claude was last told about it; feedback goes out once per finding. */
+  fed_back_at: string | null;
+  first_seen_at: string;
+  last_seen_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Every status change of a finding, by the user or Core. */
+export interface FindingEventsTable {
+  id: Generated<number>;
+  finding_id: number;
+  from_status: string | null;
+  to_status: string;
+  actor: string;
+  reason: string;
+  at: string;
+}
+
+/** One run of the quality checks over a batch of changed files. */
+export interface QualityBatchesTable {
+  id: Generated<number>;
+  task_id: string | null;
+  repo_root: string;
+  session_id: string | null;
+  files_json: string;
+  started_at: string;
+  duration_ms: number;
+  new_count: number;
+  fixed_count: number;
+  error: string | null;
+}
+
+/** A test command Claude ran and its result (ADR 0030). */
+export interface TestRunsTable {
+  id: Generated<number>;
+  task_id: string | null;
+  repo_root: string;
+  session_id: string | null;
+  agent_id: string | null;
+  event_id: string;
+  command: string;
+  /** PASS, FAIL or INTERRUPTED. */
+  result: string;
+  exit_code: number | null;
+  summary: string | null;
+  at: string;
+}
+
+/** An implementer's part of a plan (ADR 0031). */
+export interface ImplementerAssignmentsTable {
+  id: Generated<number>;
+  task_id: string;
+  label: string;
+  steps_json: string;
+  files_json: string;
+  agent_id: string | null;
+  session_id: string | null;
+  created_at: string;
+  released_at: string | null;
+}
+
+/** One independent review round of a task (ADR 0032–0035). */
+export interface ReviewRoundsTable {
+  id: Generated<number>;
+  task_id: string;
+  round: number;
+  started_at: string;
+  changed_files_json: string;
+  completed_at: string | null;
+  completed_by: string | null;
+  passed_at: string | null;
+  skipped_at: string | null;
+  skip_reason: string | null;
+  fix_plan_json: string | null;
+  fix_plan_hash: string | null;
+  fixes_approved_at: string | null;
+  fixes_reported_at: string | null;
+  fixes_summary: string | null;
+}
+
+/** A reviewer's submission for a round; one per role and round (a resubmission replaces it). */
+export interface ReviewSubmissionsTable {
+  id: Generated<number>;
+  task_id: string;
+  round: number;
+  role: string;
+  agent_id: string | null;
+  session_id: string | null;
+  files_reviewed_json: string;
+  summary: string;
+  gaps_json: string;
+  finding_count: number;
+  independent: number;
+  independence_note: string;
+  created_at: string;
+}
+
+/** Which reviewer reported a finding in which round (findings are shared across reviewers). */
+export interface ReviewFindingSourcesTable {
+  finding_id: number;
+  task_id: string;
+  round: number;
+  role: string;
+}
+
+/** An eval run with its full per-case results (ADR 0039). */
+export interface EvalRunsTable {
+  id: Generated<number>;
+  started_at: string;
+  finished_at: string;
+  jerry_version: string;
+  fingerprint_json: string;
+  label: string;
+  results_json: string;
+  created_at: string;
+}
+
+/** Baseline history; the latest row is the current baseline. Only the user sets one. */
+export interface EvalBaselinesTable {
+  id: Generated<number>;
+  run_id: number;
+  note: string;
+  set_at: string;
+}
+
+/** A human's verdict on a rubric grader's result, for calibration. */
+export interface EvalLabelsTable {
+  id: Generated<number>;
+  run_id: number;
+  case_id: string;
+  attempt: number;
+  rubric_id: string;
+  human_passed: number;
+  grader_passed: number;
+  score: number | null;
+  labeled_at: string;
+}
+
+/** The user's choice about an Artifact for a task (ADR 0042). */
+export interface ArtifactDecisionsTable {
+  id: Generated<number>;
+  task_id: string;
+  decision: string;
+  kind: string | null;
+  title: string | null;
+  url: string | null;
+  reason: Generated<string>;
+  session_id: string | null;
+  created_at: string;
+}
+
 export interface JerrySchema {
   hook_events: HookEventsTable;
   repositories: RepositoriesTable;
@@ -238,6 +416,18 @@ export interface JerrySchema {
   project_profiles: ProjectProfilesTable;
   agent_runs: AgentRunsTable;
   analysis_reports: AnalysisReportsTable;
+  findings: FindingsTable;
+  finding_events: FindingEventsTable;
+  quality_batches: QualityBatchesTable;
+  test_runs: TestRunsTable;
+  implementer_assignments: ImplementerAssignmentsTable;
+  review_rounds: ReviewRoundsTable;
+  review_submissions: ReviewSubmissionsTable;
+  review_finding_sources: ReviewFindingSourcesTable;
+  eval_runs: EvalRunsTable;
+  eval_baselines: EvalBaselinesTable;
+  eval_labels: EvalLabelsTable;
+  artifact_decisions: ArtifactDecisionsTable;
   settings: SettingsTable;
   audit_log: AuditLogTable;
 }

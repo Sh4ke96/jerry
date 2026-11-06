@@ -38,7 +38,9 @@ export const AnalysisReports = defineComponent({
                 <section key={analysis.id} class="analysis__report">
                   <h4>
                     {ROLE_LABEL[report.role] ?? report.role} <Badge tone={CONFIDENCE_TONE[report.confidence.level] ?? 'neutral'}>{report.confidence.level} confidence</Badge>{' '}
-                    <span class="muted small">{formatTime(analysis.createdAt)}</span>
+                    <span class="muted small">
+                      #{analysis.id} · {formatTime(analysis.createdAt)}
+                    </span>
                   </h4>
                   <p class="muted small">
                     {report.filesRead.length} file(s) read · citations {citations.checked - problems.length}/{citations.checked} verified

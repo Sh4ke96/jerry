@@ -1,0 +1,12 @@
+{
+  "name": "@jerry/evals",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@jerry/contracts": "workspace:*",
+    "@jerry/quality": "workspace:*",
+    "zod": "4.6.7"
+  }
+}

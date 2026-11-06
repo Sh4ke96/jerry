@@ -29,6 +29,12 @@ export interface GitReader {
   snapshot(repoRoot: string): Promise<GitSnapshot>;
   /** Repo-relative files that differ from `baseHead` (working tree and index), plus untracked files. */
   changedSince(repoRoot: string, baseHead: string | null): Promise<string[]>;
+  /**
+   * Zero-context diff of one repo-relative file against HEAD (ADR 0029), or null when there is
+   * nothing to compare with (untracked file, no commit yet). External diff drivers and textconv
+   * filters are switched off: JERRY never runs programs the repository configures.
+   */
+  fileDiff(repoRoot: string, file: string): Promise<string | null>;
 }
 
 const MAX_STATUS_ENTRIES = 5000;
@@ -122,6 +128,15 @@ export const gitReader: GitReader = {
       if (diff.code === 0) for (const file of diff.stdout.split('\0')) if (file !== '') changed.add(file);
     }
     return [...changed].sort();
+  },
+
+  async fileDiff(repoRoot, file) {
+    const diff = await git(repoRoot, ['diff', '-U0', '--no-color', '--no-ext-diff', '--no-textconv', 'HEAD', '--', file]);
+    if (diff.code !== 0) return null;
+    if (diff.stdout.trim() !== '') return diff.stdout;
+    // No difference: a tracked, unchanged file, or an untracked one (diff does not show those).
+    const tracked = await git(repoRoot, ['ls-files', '--error-unmatch', '--', file]);
+    return tracked.code === 0 ? '' : null;
   },
 };
 

@@ -17,6 +17,7 @@ import { buildCoreApp, gateEvaluator } from './app.js';
 import { BrowserSessions } from './auth.js';
 import { drainSpool, importLegacyGateLog } from './events.js';
 import { StateStore } from './state-store.js';
+import { QualityScheduler } from './quality-scheduler.js';
 
 const SPOOL_DRAIN_INTERVAL_MS = 15_000;
 const RETENTION_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -61,8 +62,12 @@ async function main(): Promise<void> {
   const build = buildHash(fileURLToPath(import.meta.url));
   let boundPort = configuredPort;
   const sessions = new BrowserSessions();
+  // The quiet period before quality checks (ADR 0029); tests shorten it.
+  const debounce = Number(process.env['JERRY_QUALITY_DEBOUNCE_MS']);
+  const quality = new QualityScheduler({ store, git: store.gitReader, ...(Number.isInteger(debounce) && debounce >= 0 && debounce <= 60_000 ? { debounceMs: debounce } : {}) });
   const createApp = (): FastifyInstance =>
     buildCoreApp({
+      quality,
       token,
       store,
       jerryHome: home,

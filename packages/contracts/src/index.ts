@@ -75,6 +75,8 @@ export const gateDecisionSchema = z.object({
   reason: z.string().min(1),
   taskId: z.string().nullable(),
   repoRoot: z.string().nullable(),
+  /** New quality findings for Claude (ADR 0029), delivered with the next guarded call; never a block. */
+  feedback: z.string().optional(),
 });
 export type GateDecision = z.infer<typeof gateDecisionSchema>;
 
@@ -181,6 +183,11 @@ export const planDocumentSchema = z.object({
   definitionOfDone: z.array(text).min(1),
   /** 18. Unresolved questions and decisions for the user. */
   openQuestions: z.array(text).default([]),
+  /**
+   * The analysis the plan is built on (ADR 0024): the IDs of the analysts' reports it uses and the
+   * gaps they left. Optional and without a default, so plans submitted before it keep their hash.
+   */
+  analysis: z.object({ reports: z.array(z.number().int().positive()), gaps: z.array(text).default([]) }).optional(),
 });
 export type PlanDocument = z.infer<typeof planDocumentSchema>;
 
@@ -278,6 +285,24 @@ export const reportEvidenceSchema = z.object({
     })
     .nullable()
     .default(null),
+  /**
+   * Continuous quality at the time of the report (ADR 0027–0031): open findings, the test runs
+   * JERRY saw against what the report claims, and plan drift. Absent in reports made before M5.
+   */
+  quality: z
+    .object({
+      openFindings: z.number().int().nonnegative(),
+      /** Open P1 and P2 findings: "FND-3 P1 src/a.ts:12 Secret written into the code". */
+      serious: z.array(z.string()),
+      /** The latest test run JERRY saw for the task. */
+      lastTestRun: z.object({ command: z.string(), result: z.enum(['PASS', 'FAIL', 'INTERRUPTED']), summary: z.string().nullable(), at: z.iso.datetime() }).nullable(),
+      /** Checks the report marks PASS that JERRY saw end otherwise ("npm test: JERRY saw FAIL at …"). */
+      claimedVsObserved: z.array(z.string()),
+      /** Changed files no plan step names, and steps not started. */
+      unplannedFiles: z.array(z.string()),
+      untouchedSteps: z.array(z.string()),
+    })
+    .optional(),
 });
 export type ReportEvidence = z.infer<typeof reportEvidenceSchema>;
 
@@ -295,7 +320,8 @@ export const implementationReportRecordSchema = z.object({
 export type ImplementationReportRecord = z.infer<typeof implementationReportRecordSchema>;
 
 /** PLAN binds to a plan version and hash; IMPLEMENTATION to a report version and hash. */
-export const approvalStageSchema = z.enum(['PLAN', 'IMPLEMENTATION']);
+/** PLAN: the plan version; IMPLEMENTATION: the report version; REVIEW_FIX: the review round's fix plan (ADR 0034). */
+export const approvalStageSchema = z.enum(['PLAN', 'IMPLEMENTATION', 'REVIEW_FIX']);
 export const approvalDecisionSchema = z.enum(['APPROVED', 'REJECTED']);
 
 export const approvalRecordSchema = z.object({
@@ -326,6 +352,8 @@ export const taskSchema = z.object({
   /** Where the task is in the workflow (spec §7.1); changed only by Core's transition validator. */
   state: workflowStateSchema,
   plan: planSchema,
+  /** The goal given at intake, for tasks that began with analysis instead of a plan (ADR 0024). */
+  goal: z.string().optional(),
 });
 export type Task = z.infer<typeof taskSchema>;
 
@@ -375,6 +403,17 @@ export const planReviseRequestSchema = z.object({
   scope: planScopeSchema,
   document: planDocumentSchema.optional(),
   submittedBy: z.enum(['user', 'claude']).default('user'),
+  origin: callOriginSchema.optional(),
+});
+
+/** Task intake before a plan (ADR 0024): a title, the goal and the area to analyse. */
+export const taskIntakeRequestSchema = z.object({
+  repoPath: z.string().min(1),
+  title: z.string().trim().min(1),
+  goal: z.string().trim().min(1),
+  /** Repo-relative globs of the area to analyse; the intake plan's scope until the real plan replaces it. */
+  focus: planScopeSchema,
+  submittedBy: z.enum(['user', 'claude']).default('claude'),
   origin: callOriginSchema.optional(),
 });
 
@@ -605,7 +644,399 @@ export const agentRunSchema = z.object({
 export type AgentRun = z.infer<typeof agentRunSchema>;
 
 /** A task as lists show it: decisions, session activity, the latest checkpoint and report. */
+/**
+ * JERRY's deterministic completeness check of a plan (ADR 0025). Informational: it never blocks an
+ * approval; it shows the user and Claude what the plan leaves out.
+ */
+export const planGradeCheckSchema = z.object({
+  id: z.string(),
+  /** major: the plan cannot be reviewed well without it; minor: worth adding. */
+  weight: z.enum(['major', 'minor']),
+  passed: z.boolean(),
+  detail: z.string(),
+});
+export const planGradeSchema = z.object({
+  planVersion: z.number().int().positive(),
+  /** scope-only: no plan document to grade (CLI plans and intakes). */
+  level: z.enum(['complete', 'mostly-complete', 'incomplete', 'scope-only']),
+  /** Weighted share of passed checks, 0–100 (major checks count three times). */
+  score: z.number().int().min(0).max(100),
+  checks: z.array(planGradeCheckSchema),
+});
+export type PlanGrade = z.infer<typeof planGradeSchema>;
+export type PlanGradeCheck = z.infer<typeof planGradeCheckSchema>;
+
+/**
+ * A quality finding (spec §12.4, ADR 0027). Core records and resolves findings; only the user
+ * dismisses one (ACCEPTED, WONT_FIX, FALSE_POSITIVE) and always with a reason.
+ */
+export const FINDING_STATUSES = ['OPEN', 'ACCEPTED', 'FIXED', 'WONT_FIX', 'FALSE_POSITIVE'] as const;
+export const findingStatusSchema = z.enum(FINDING_STATUSES);
+export type FindingStatus = z.infer<typeof findingStatusSchema>;
+export const findingSeveritySchema = z.enum(['P1', 'P2', 'P3', 'P4']);
+export type FindingSeverity = z.infer<typeof findingSeveritySchema>;
+export const findingIdSchema = z.string().regex(/^FND-\d+$/);
+
+export const findingSchema = z.object({
+  findingId: findingIdSchema,
+  taskId: taskIdSchema.nullable(),
+  repoRoot: z.string(),
+  ruleId: z.string(),
+  ruleVersion: z.string(),
+  source: z.enum(['static', 'ai', 'test', 'security', 'review']),
+  category: z.string(),
+  severity: findingSeveritySchema,
+  /** 0–1: how sure the rule is that this is a real problem. */
+  confidence: z.number().min(0).max(1),
+  file: z.string(),
+  lineStart: z.number().int().positive(),
+  lineEnd: z.number().int().positive(),
+  title: z.string(),
+  evidence: z.string(),
+  whyItMatters: z.string(),
+  suggestedFix: z.string(),
+  /** In a file the approved plan names (its steps or changes), not just somewhere in scope. */
+  planRelated: z.boolean(),
+  status: findingStatusSchema,
+  statusReason: z.string(),
+  sessionId: z.string().nullable(),
+  agentId: z.string().nullable(),
+  firstSeenAt: z.iso.datetime(),
+  lastSeenAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+});
+export type Finding = z.infer<typeof findingSchema>;
+
+/** One step in a finding's life. */
+export const findingEventSchema = z.object({
+  findingId: findingIdSchema,
+  from: findingStatusSchema.nullable(),
+  to: findingStatusSchema,
+  actor: z.enum(['user', 'core']),
+  reason: z.string(),
+  at: z.iso.datetime(),
+});
+export type FindingEvent = z.infer<typeof findingEventSchema>;
+
+/** The user's decision on a finding; reopening is OPEN. FIXED is Core's, from a later check. */
+export const findingStatusRequestSchema = z.object({
+  status: z.enum(['OPEN', 'ACCEPTED', 'WONT_FIX', 'FALSE_POSITIVE']),
+  reason: z.string().trim().min(1).max(500),
+});
+
+/** A test command Claude ran, as JERRY saw it end (ADR 0030); the output itself is never stored. */
+export const testRunSchema = z.object({
+  taskId: taskIdSchema.nullable(),
+  sessionId: z.string().nullable(),
+  agentId: z.string().nullable(),
+  command: z.string(),
+  result: z.enum(['PASS', 'FAIL', 'INTERRUPTED']),
+  exitCode: z.number().int().nullable(),
+  /** The runner's one-line totals, e.g. "Tests 12 passed (12)". */
+  summary: z.string().nullable(),
+  at: z.iso.datetime(),
+});
+export type TestRun = z.infer<typeof testRunSchema>;
+
+/** Which tests to run for the changes so far, and the command limited to them (ADR 0030). */
+export const targetedTestsSchema = z.object({
+  changed: z.array(z.string()),
+  files: z.array(z.string()),
+  untested: z.array(z.string()),
+  command: z.string().nullable(),
+  projectCommand: z.string().nullable(),
+  lastRuns: z.array(testRunSchema),
+});
+export type TargetedTestsAnswer = z.infer<typeof targetedTestsSchema>;
+
+/** One implementer's part of an approved plan (ADR 0031): plan steps and the files only it edits. */
+export const implementerAssignmentSchema = z.object({
+  label: z.string().trim().min(1).max(40),
+  steps: z.array(z.number().int().positive()).min(1),
+  /** Repo-relative files or globs; by default the files of its steps. */
+  files: z.array(z.string().trim().min(1)).default([]),
+});
+export const assignmentRequestSchema = z.object({
+  assignments: z.array(implementerAssignmentSchema).min(1),
+  origin: callOriginSchema.optional(),
+});
+export const assignmentSchema = z.object({
+  taskId: taskIdSchema,
+  label: z.string(),
+  steps: z.array(z.number().int().positive()),
+  files: z.array(z.string()),
+  /** The implementer subagent bound to it by its first edit, if any yet. */
+  agentId: z.string().nullable(),
+  createdAt: z.iso.datetime(),
+});
+export type Assignment = z.infer<typeof assignmentSchema>;
+
+/** Where the work strays from the plan (ADR 0031); informational. */
+export const planDriftSchema = z.object({
+  taskId: taskIdSchema,
+  /** Files changed in scope that no plan step or change names. */
+  unplannedFiles: z.array(z.string()),
+  /** Steps none of whose files changed yet. */
+  untouchedSteps: z.array(z.object({ number: z.number().int().positive(), step: z.string() })),
+  /** Plan steps in parallel layers (DAG), and steps that cannot be ordered. */
+  layers: z.array(z.array(z.number().int().positive())),
+  blockedSteps: z.array(z.number().int().positive()),
+  assignments: z.array(assignmentSchema),
+});
+export type PlanDrift = z.infer<typeof planDriftSchema>;
+
+/** The three independent reviewers (ADR 0015, 0032). */
+export const REVIEWER_ROLES = ['jerry-correctness-reviewer', 'jerry-security-reviewer', 'jerry-design-reviewer'] as const;
+export const reviewerRoleSchema = z.enum(REVIEWER_ROLES);
+export type ReviewerRole = z.infer<typeof reviewerRoleSchema>;
+/** Initial review plus at most two re-reviews; then the user decides (spec §12.5, ADR 0035). */
+export const MAX_REVIEW_ROUNDS = 3;
+
+/** One reviewer's result for a round (ADR 0032): what it read and what it found. */
+export const reviewSubmissionSchema = z.object({
+  role: reviewerRoleSchema,
+  /** Repo-relative files the reviewer read in full; the coverage ledger is built from them. */
+  filesReviewed: z.array(z.string().trim().min(1)),
+  summary: z.string().trim().min(1),
+  findings: z
+    .array(
+      z.object({
+        title: z.string().trim().min(1).max(200),
+        severity: findingSeveritySchema,
+        confidence: z.number().min(0).max(1).default(0.7),
+        file: z.string().trim().min(1),
+        line: z.number().int().positive(),
+        lineEnd: z.number().int().positive().optional(),
+        evidence: z.string().trim().min(1).max(500),
+        whyItMatters: z.string().trim().min(1),
+        suggestedFix: z.string().trim().min(1),
+      }),
+    )
+    .default([]),
+  /** What it could not check and why. */
+  gaps: z.array(z.string().trim().min(1)).default([]),
+});
+export type ReviewSubmission = z.infer<typeof reviewSubmissionSchema>;
+export const reviewSubmissionRequestSchema = z.object({ review: reviewSubmissionSchema, origin: callOriginSchema.optional() });
+
+/** Claude's remediation plan for review findings (ADR 0034); only the user approves it. */
+export const fixPlanSchema = z.object({
+  summary: z.string().trim().min(1),
+  items: z.array(z.object({ findings: z.array(findingIdSchema).min(1), change: z.string().trim().min(1), files: z.array(z.string().trim().min(1)).min(1) })).min(1),
+  tests: z.array(z.string().trim().min(1)).default([]),
+  /** Findings the plan does not fix, each with the reason (the user may dismiss them). */
+  notFixed: z.array(z.object({ finding: findingIdSchema, reason: z.string().trim().min(1) })).default([]),
+});
+export type FixPlan = z.infer<typeof fixPlanSchema>;
+export const fixPlanRequestSchema = z.object({ plan: fixPlanSchema, origin: callOriginSchema.optional() });
+export const fixesReportRequestSchema = z.object({ summary: z.string().trim().min(1).max(4000), origin: callOriginSchema.optional() });
+export const reviewSkipRequestSchema = z.object({ reason: z.string().trim().min(1).max(500), confirmTaskId: z.string().optional() });
+
+export const reviewRoundSchema = z.object({
+  round: z.number().int().positive(),
+  startedAt: z.iso.datetime(),
+  completedAt: z.iso.datetime().nullable(),
+  /** Files this round had to cover. */
+  changedFiles: z.array(z.string()),
+  submissions: z.array(
+    z.object({
+      role: reviewerRoleSchema,
+      agentId: z.string().nullable(),
+      filesReviewed: z.array(z.string()),
+      summary: z.string(),
+      findings: z.number().int().nonnegative(),
+      gaps: z.array(z.string()),
+      /** Not independent: it edited the task, or it is the main session that implemented. */
+      independent: z.boolean(),
+      independenceNote: z.string(),
+      at: z.iso.datetime(),
+    }),
+  ),
+  uncovered: z.array(z.string()),
+  fixPlan: fixPlanSchema.nullable(),
+  fixPlanHash: contentHashSchema.nullable(),
+  fixesSummary: z.string().nullable(),
+  passedAt: z.iso.datetime().nullable(),
+  skippedAt: z.iso.datetime().nullable(),
+  skipReason: z.string().nullable(),
+});
+export type ReviewRound = z.infer<typeof reviewRoundSchema>;
+
+export const reviewStateSchema = z.object({
+  taskId: taskIdSchema,
+  state: workflowStateSchema,
+  outcome: z.enum(['passed', 'skipped']).nullable(),
+  rounds: z.array(reviewRoundSchema),
+  maxRounds: z.number().int().positive(),
+  /** Review findings still open, most severe first. */
+  openFindings: z.array(findingSchema),
+});
+export type ReviewState = z.infer<typeof reviewStateSchema>;
+
+// --- Final report and the optional Artifact (ADR 0041–0042) ------------------------------------
+
+/** Only claude.ai artifact links are recorded (ADR 0042): the Artifact is Claude's, the link is JERRY's. */
+export const artifactUrlSchema = z.url().refine((value) => /^https:\/\/claude\.ai\/(code\/)?artifact\/[\w-]+(?:[/?#][^\s]*)?$/.test(value), 'a https://claude.ai/…/artifact/… link');
+export const ARTIFACT_KINDS = ['stakeholder-presentation', 'architecture-before-after', 'ui-flows', 'endpoint-contract-map', 'other'] as const;
+/** The user's choice about an Artifact for a task: created by Claude (with its link), or declined. */
+export const artifactDecisionRequestSchema = z.discriminatedUnion('decision', [
+  z.object({ decision: z.literal('created'), kind: z.enum(ARTIFACT_KINDS), title: z.string().trim().min(1).max(200), url: artifactUrlSchema, origin: callOriginSchema.optional() }),
+  z.object({ decision: z.literal('declined'), reason: z.string().trim().max(500).default(''), origin: callOriginSchema.optional() }),
+]);
+export const artifactDecisionSchema = z.object({
+  taskId: taskIdSchema,
+  decision: z.enum(['created', 'declined']),
+  kind: z.enum(ARTIFACT_KINDS).nullable(),
+  title: z.string().nullable(),
+  url: z.string().nullable(),
+  reason: z.string(),
+  at: z.iso.datetime(),
+});
+export type ArtifactDecision = z.infer<typeof artifactDecisionSchema>;
+
+/** The final report of a task (spec Phase 9, ADR 0041), assembled by Core from what it recorded. */
+export const finalReportSchema = z.object({
+  taskId: taskIdSchema,
+  title: z.string(),
+  state: workflowStateSchema,
+  /** A draft until the task is DONE. */
+  status: z.enum(['final', 'draft']),
+  completedAt: z.iso.datetime().nullable(),
+  generatedAt: z.iso.datetime(),
+  goal: z.string(),
+  /** Changes per repository, from the accepted implementation report. */
+  repositories: z.array(z.object({ repository: z.string(), changes: z.array(z.object({ path: z.string(), kind: z.string(), description: z.string() })) })),
+  diffSummary: z.object({ files: z.number().int(), added: z.number().int(), modified: z.number().int(), deleted: z.number().int(), renamed: z.number().int(), seenByGit: z.array(z.string()), unreported: z.array(z.string()) }),
+  tests: z.object({
+    checks: z.array(z.object({ kind: z.string(), command: z.string(), result: z.string(), details: z.string() })),
+    observedRuns: z.array(z.object({ command: z.string(), result: z.string(), summary: z.string().nullable(), at: z.iso.datetime() })),
+    claimedVsObserved: z.array(z.string()),
+  }),
+  qa: z.array(z.record(z.string(), z.unknown())),
+  security: z.object({ risks: z.array(z.object({ risk: z.string(), severity: z.string(), mitigation: z.string() })), openFindings: z.array(z.string()), securityFindings: z.array(z.string()) }),
+  review: z
+    .object({
+      outcome: z.string(),
+      rounds: z.number().int(),
+      reviewers: z.array(z.object({ role: z.string(), independent: z.boolean(), note: z.string() })),
+      findings: z.object({ total: z.number().int(), fixed: z.number().int(), open: z.array(z.string()) }),
+      uncovered: z.array(z.string()),
+    })
+    .nullable(),
+  rules: z.object({ skills: z.array(z.object({ name: z.string(), used: z.boolean(), note: z.string() })), deviations: z.number().int(), blocked: z.number().int(), planDeviations: z.array(z.string()) }),
+  commitSubjects: z.array(z.string()),
+  artifact: z.object({ planned: z.string(), decision: z.enum(['created', 'declined', 'not-asked']), kind: z.string().nullable(), title: z.string().nullable(), url: z.string().nullable() }),
+  /** What was checked and what was not (spec Phase 9: coverage ledger). */
+  coverage: z.object({ reviewedFiles: z.array(z.string()), notReviewed: z.array(z.string()), checksNotRun: z.array(z.string()) }),
+  limitations: z.array(z.string()),
+  decisions: z.array(z.string()),
+  definitionOfDone: z.object({ items: z.array(z.string()), passed: z.boolean(), evidence: z.array(z.object({ id: z.string(), blocking: z.boolean(), passed: z.boolean(), detail: z.string() })) }),
+});
+export type FinalReport = z.infer<typeof finalReportSchema>;
+
+// --- Evals (ADR 0036–0040) ---------------------------------------------------------------------
+
+export const evalOutcomeSchema = z.enum(['PASS', 'FAIL', 'FLAKY', 'ERROR']);
+export const evalAttemptSchema = z.object({
+  attempt: z.number().int().positive(),
+  outcome: z.enum(['PASS', 'FAIL', 'ERROR']),
+  harnessError: z.string().nullable(),
+  durationMs: z.number().int().nonnegative(),
+  costUsd: z.number().nullable(),
+  sessionId: z.string().nullable(),
+  output: z.string(),
+  graders: z.array(z.object({ grader: z.string(), kind: z.enum(['deterministic', 'execution', 'rubric']), passed: z.boolean().nullable(), detail: z.string(), score: z.number().optional() })),
+});
+export const evalCaseResultSchema = z.object({
+  caseId: z.string(),
+  suite: z.enum(['regression', 'capability']),
+  kind: z.string(),
+  critical: z.boolean(),
+  outcome: evalOutcomeSchema,
+  attempts: z.array(evalAttemptSchema),
+});
+export type EvalCaseResult = z.infer<typeof evalCaseResultSchema>;
+export const jerryFingerprintSchema = z.object({ total: z.string(), components: z.object({ skills: z.string(), agents: z.string(), hooks: z.string(), rules: z.string() }) });
+export const evalRunSubmissionSchema = z.object({
+  startedAt: z.iso.datetime(),
+  finishedAt: z.iso.datetime(),
+  jerryVersion: z.string(),
+  fingerprint: jerryFingerprintSchema,
+  label: z.string().max(200).default(''),
+  results: z.array(evalCaseResultSchema).min(1),
+});
+export const evalRunSummarySchema = z.object({
+  runId: z.string(),
+  startedAt: z.iso.datetime(),
+  finishedAt: z.iso.datetime(),
+  jerryVersion: z.string(),
+  fingerprint: jerryFingerprintSchema,
+  label: z.string(),
+  counts: z.object({ PASS: z.number().int(), FAIL: z.number().int(), FLAKY: z.number().int(), ERROR: z.number().int() }),
+  isBaseline: z.boolean(),
+});
+export type EvalRunSummary = z.infer<typeof evalRunSummarySchema>;
+export const evalComparisonSchema = z.object({
+  baselineRunId: z.string().nullable(),
+  cases: z.array(
+    z.object({
+      caseId: z.string(),
+      critical: z.boolean(),
+      baseline: evalOutcomeSchema.nullable(),
+      current: evalOutcomeSchema.nullable(),
+      comparison: z.enum(['REGRESSION', 'FIXED', 'UNCHANGED', 'FLAKY', 'NEW', 'MISSING', 'ERROR']),
+    }),
+  ),
+  regressions: z.array(z.string()),
+  /** A regression in a critical safety case blocks a JERRY release (spec §13.5). */
+  releaseBlocked: z.boolean(),
+});
+export const evalRunDetailSchema = evalRunSummarySchema.extend({ results: z.array(evalCaseResultSchema), comparison: evalComparisonSchema });
+export type EvalRunDetail = z.infer<typeof evalRunDetailSchema>;
+export const evalBaselineRequestSchema = z.object({ runId: z.string().regex(/^EVR-\d+$/), note: z.string().trim().min(1).max(500), confirm: z.string().optional() });
+export const evalLabelRequestSchema = z.object({
+  runId: z.string().regex(/^EVR-\d+$/),
+  caseId: z.string().min(1),
+  attempt: z.number().int().positive(),
+  rubricId: z.string().regex(/^[a-z0-9-]+$/),
+  humanPassed: z.boolean(),
+});
+export const evalCalibrationSchema = z.array(z.object({ rubricId: z.string(), labels: z.number().int(), agreement: z.number(), calibrated: z.boolean() }));
+export const evalStatusSchema = z.object({
+  baselineRunId: z.string().nullable(),
+  latestRunId: z.string().nullable(),
+  fingerprint: jerryFingerprintSchema.nullable(),
+  /** Components that changed since the baseline was measured: the evals should run again. */
+  changedSinceBaseline: z.array(z.string()),
+  releaseBlocked: z.boolean(),
+});
+export type EvalStatus = z.infer<typeof evalStatusSchema>;
+
+/** GET /api/v1/findings query: status is a comma-separated list. */
+export const findingsQuerySchema = z.object({
+  taskId: taskIdSchema.optional(),
+  repoPath: z.string().min(1).optional(),
+  status: z.string().regex(/^[A-Za-z_]+(,[A-Za-z_]+)*$/).optional(),
+  file: z.string().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(200),
+});
+
+/** Open findings of a task, by severity, for summaries and the session context. */
+export const findingCountsSchema = z.object({
+  open: z.number().int().nonnegative(),
+  bySeverity: z.object({ P1: z.number().int(), P2: z.number().int(), P3: z.number().int(), P4: z.number().int() }),
+  fixed: z.number().int().nonnegative(),
+  dismissed: z.number().int().nonnegative(),
+});
+export type FindingCounts = z.infer<typeof findingCountsSchema>;
+
 export const taskSummarySchema = taskWithDecisionSchema.extend({
+  /** Quality findings of the task (ADR 0027); open tasks only. */
+  findings: findingCountsSchema.nullable().default(null),
+  /** The latest test command Claude ran for the task (ADR 0030). */
+  lastTestRun: testRunSchema.nullable().default(null),
+  /** JERRY's completeness check of the current plan, for open tasks (ADR 0025). */
+  planGrade: planGradeSchema.nullable().default(null),
   /** The latest final checks, if any were run. */
   finalCheck: completionCheckSchema.nullable(),
   activity: taskActivitySchema,

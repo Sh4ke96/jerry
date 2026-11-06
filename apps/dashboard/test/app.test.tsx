@@ -25,6 +25,17 @@ const waitingTask: TaskSummary = {
   finalCheck: null,
   analyses: [],
   agentRuns: [],
+  findings: null,
+  lastTestRun: null,
+  planGrade: {
+    planVersion: 1,
+    level: 'incomplete',
+    score: 71,
+    checks: [
+      { id: 'changes.in-scope', weight: 'major', passed: false, detail: 'changes outside the scope (edits there will be deviations): src/app.ts' },
+      { id: 'risks.listed', weight: 'major', passed: true, detail: '1 risk(s) with mitigations' },
+    ],
+  },
 };
 
 /** Reported, waiting for acceptance; JERRY saw an edit the report does not list. */
@@ -184,6 +195,7 @@ describe('Dashboard app', () => {
       if (url === '/api/v1/tasks/JRY-0004/approvals') return json({ ...reportedTask.planDecision, stage: 'IMPLEMENTATION', version: 2 }, 201);
       if (url.startsWith('/api/v1/events')) return json([deviation]);
       if (url === '/api/v1/repositories/exclusions') return json([]);
+      if (url === '/api/v1/artifacts') return json([]);
       if (url === '/api/v1/repositories') return json([shopRepository]);
       if (url === '/api/v1/workspace/graph') {
         return json({ nodes: [], edges: [{ from: 'D:\\Work\\shop', to: 'D:\\Work\\api', kind: 'api-contract', evidence: 'package.json uses API schema docs/openapi.yaml' }] });
@@ -339,6 +351,345 @@ describe('Dashboard app', () => {
     expect(analysis.text()).toContain('Unverified citations: src/auth/login.ts:999 (beyond end of file)');
     expect(analysis.text()).toContain('jerry:jerry-quality-analyst: stopped without a report (a gap, not a result)');
     expect(analysis.text()).toContain('Gaps: Rate limiting not checked');
+    wrapper.unmount();
+  });
+
+  it('shows the plan completeness check as information next to the plan', async () => {
+    const wrapper = await mountApp();
+    await openTasks(wrapper);
+    const grade = wrapper.findAll('article.task').find((candidate) => candidate.text().includes('JRY-0002'))!.get('.plan-grade');
+    expect(grade.text()).toContain('incomplete');
+    expect(grade.text()).toContain('71/100');
+    expect(grade.text()).toContain('informational, you decide');
+    expect(grade.text()).toContain('changes outside the scope (edits there will be deviations): src/app.ts');
+    expect(grade.text()).not.toContain('1 risk(s) with mitigations');
+    // The approval stays available: the check never blocks.
+    expect(wrapper.findAll('button').some((button) => button.text() === 'Approve plan v1')).toBe(true);
+    wrapper.unmount();
+  });
+
+  it('shows quality findings and dismisses one only with the typed ID and a reason', async () => {
+    const base = globalThis.fetch;
+    const finding = (id: number, severity: 'P2' | 'P4', status: string, title: string) => ({
+      findingId: `FND-${id}`,
+      taskId: 'JRY-0001',
+      repoRoot: 'D:\\Work\\shop',
+      ruleId: severity === 'P2' ? 'errors.empty-catch' : 'naming.vague-name',
+      ruleVersion: '1.0.0',
+      source: 'static',
+      category: 'error-handling',
+      severity,
+      confidence: 0.9,
+      file: 'src/auth/login.ts',
+      lineStart: id * 10,
+      lineEnd: id * 10,
+      title,
+      evidence: 'try { run(); } catch {}',
+      whyItMatters: 'An empty catch hides failures.',
+      suggestedFix: 'Handle or rethrow.',
+      planRelated: true,
+      status,
+      statusReason: status === 'FIXED' ? 'no longer found' : '',
+      sessionId: 's2',
+      agentId: null,
+      firstSeenAt: NOW,
+      lastSeenAt: NOW,
+      updatedAt: NOW,
+    });
+    const list = [finding(1, 'P2', 'OPEN', 'Exception swallowed silently'), finding(2, 'P4', 'FIXED', 'Vague name')];
+    const withFindings: TaskSummary = { ...approvedTask, findings: { open: 1, bySeverity: { P1: 0, P2: 1, P3: 0, P4: 0 }, fixed: 1, dismissed: 0 } };
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (url === '/api/v1/tasks') return json([withFindings]);
+      if (url.startsWith('/api/v1/findings?taskId=JRY-0001')) return json(list);
+      if (url === '/api/v1/findings/FND-1/status') {
+        calls.push({ url, init });
+        return json({ ...list[0], status: 'FALSE_POSITIVE' });
+      }
+      return base(url, init);
+    });
+    const wrapper = await mountApp();
+    await openTasks(wrapper);
+    await flushPromises();
+    const panel = wrapper.get('.findings');
+    expect(panel.get('summary').text()).toContain('1 open');
+    expect(panel.get('summary').text()).toContain('1 P2 · 1 fixed');
+    expect(panel.text()).toContain('Exception swallowed silently');
+    expect(panel.text()).not.toContain('Vague name');
+    await panel.get('.findings__filters input[type="checkbox"]').setValue(true);
+    expect(panel.text()).toContain('Vague name');
+
+    await panel.findAll('button').find((candidate) => candidate.text() === 'False positive')!.trigger('click');
+    const submit = wrapper.get('form.dialog button[type="submit"]');
+    await wrapper.get('form.dialog input').setValue('FND-1');
+    expect(submit.attributes('disabled')).toBeDefined();
+    await wrapper.get('form.dialog textarea').setValue('the catch is in generated code');
+    expect(submit.attributes('disabled')).toBeUndefined();
+    await wrapper.get('form.dialog').trigger('submit');
+    await flushPromises();
+    const decision = calls.find((call) => call.url === '/api/v1/findings/FND-1/status')!;
+    expect(JSON.parse(String(decision.init?.body))).toEqual({ status: 'FALSE_POSITIVE', reason: 'the catch is in generated code' });
+    expect((decision.init?.headers as Record<string, string>)['x-jerry-csrf']).toBe(CSRF);
+    wrapper.unmount();
+  });
+
+  it('shows the independent review and lets the user approve the fix plan or waive the review', async () => {
+    const base = globalThis.fetch;
+    const reviewTask: TaskSummary = { ...approvedTask, taskId: 'JRY-0007', title: 'Reviewed change', state: 'WAIT_REVIEW_FIX_APPROVAL' };
+    const state = {
+      taskId: 'JRY-0007',
+      state: 'WAIT_REVIEW_FIX_APPROVAL',
+      outcome: null,
+      maxRounds: 3,
+      openFindings: [{ findingId: 'FND-4', taskId: 'JRY-0007', repoRoot: 'D:\\Work\\shop', ruleId: 'review', ruleVersion: '1', source: 'review', category: 'security', severity: 'P1', confidence: 0.8, file: 'src/auth/login.ts', lineStart: 12, lineEnd: 12, title: 'Timing attack on login', evidence: 'a === b', whyItMatters: 'x', suggestedFix: 'y', planRelated: false, status: 'OPEN', statusReason: '', sessionId: null, agentId: null, firstSeenAt: NOW, lastSeenAt: NOW, updatedAt: NOW }],
+      rounds: [
+        {
+          round: 1,
+          startedAt: NOW,
+          completedAt: NOW,
+          changedFiles: ['src/auth/login.ts', 'src/auth/token.ts'],
+          submissions: [
+            { role: 'jerry-correctness-reviewer', agentId: 'r1', filesReviewed: ['src/auth/login.ts'], summary: 's', findings: 0, gaps: [], independent: true, independenceNote: 'ok', at: NOW },
+            { role: 'jerry-security-reviewer', agentId: null, filesReviewed: ['src/auth/login.ts'], summary: 's', findings: 1, gaps: [], independent: false, independenceNote: 'submitted from the main session', at: NOW },
+          ],
+          uncovered: ['src/auth/token.ts'],
+          fixPlan: { summary: 'Constant-time comparison', items: [{ findings: ['FND-4'], change: 'use timingSafeEqual', files: ['src/auth/login.ts'] }], tests: [], notFixed: [] },
+          fixPlanHash: `sha256:${'c'.repeat(64)}`,
+          fixesSummary: null,
+          passedAt: null,
+          skippedAt: null,
+          skipReason: null,
+        },
+      ],
+    };
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+      if (url === '/api/v1/tasks') return json([reviewTask]);
+      if (url === '/api/v1/tasks/JRY-0007/review') return json(state);
+      if (url === '/api/v1/tasks/JRY-0007/approvals' || url === '/api/v1/tasks/JRY-0007/review/skip') {
+        calls.push({ url, init });
+        return json(url.endsWith('skip') ? state : { ...approvedTask.planDecision, taskId: 'JRY-0007', stage: 'REVIEW_FIX' }, url.endsWith('skip') ? 200 : 201);
+      }
+      return base(url, init);
+    });
+    const wrapper = await mountApp();
+    await openTasks(wrapper);
+    await flushPromises();
+    const panel = wrapper.get('.review');
+    expect(panel.text()).toContain('1 open finding(s)');
+    expect(panel.text()).toContain('round 1 of at most 3');
+    expect(panel.text()).toContain('Architecture, quality, UX: no report (gap)');
+    expect(panel.text()).toContain('not independent: submitted from the main session');
+    expect(panel.text()).toContain('Changed files no reviewer covered: src/auth/token.ts');
+    expect(panel.text()).toContain('FND-4: use timingSafeEqual');
+
+    await panel.findAll('button').find((candidate) => candidate.text() === 'Approve fix plan')!.trigger('click');
+    await wrapper.get('form.dialog input').setValue('JRY-0007');
+    await wrapper.get('form.dialog').trigger('submit');
+    await flushPromises();
+    expect(JSON.parse(String(calls.find((call) => call.url === '/api/v1/tasks/JRY-0007/approvals')!.init?.body))).toEqual({ stage: 'REVIEW_FIX', version: 1, decision: 'APPROVED', comment: '', confirmTaskId: 'JRY-0007' });
+
+    await wrapper.get('.review').findAll('button').find((candidate) => candidate.text() === 'Waive review')!.trigger('click');
+    await wrapper.get('form.dialog input').setValue('JRY-0007');
+    expect(wrapper.get('form.dialog button[type="submit"]').attributes('disabled')).toBeDefined();
+    await wrapper.get('form.dialog textarea').setValue('prototype only');
+    await wrapper.get('form.dialog').trigger('submit');
+    await flushPromises();
+    expect(JSON.parse(String(calls.find((call) => call.url === '/api/v1/tasks/JRY-0007/review/skip')!.init?.body))).toEqual({ reason: 'prototype only', confirmTaskId: 'JRY-0007' });
+    wrapper.unmount();
+  });
+
+  it('shows the final report and Artifact decisions, linking only to claude.ai Artifacts', async () => {
+    const base = globalThis.fetch;
+    const finalReport = {
+      taskId: 'JRY-0004',
+      title: 'Greeting helper',
+      state: 'DONE',
+      status: 'final',
+      completedAt: NOW,
+      generatedAt: NOW,
+      goal: 'Add a greeting helper.',
+      repositories: [{ repository: 'D:\\Work\\shop', changes: [{ path: 'src/greeting/greet.ts', kind: 'added', description: '<img src=x onerror=alert(1)>' }] }],
+      diffSummary: { files: 1, added: 1, modified: 0, deleted: 0, renamed: 0, seenByGit: [], unreported: [] },
+      tests: { checks: [{ kind: 'test', command: 'npm test', result: 'PASS', details: '' }], observedRuns: [], claimedVsObserved: [] },
+      qa: [],
+      security: { risks: [], openFindings: [], securityFindings: [] },
+      review: { outcome: 'passed', rounds: 2, reviewers: [], findings: { total: 1, fixed: 1, open: [] }, uncovered: [] },
+      rules: { skills: [], deviations: 0, blocked: 0, planDeviations: [] },
+      commitSubjects: ['feat(greeting): add greet helper'],
+      artifact: { planned: 'wanted: stakeholder presentation', decision: 'created', kind: 'stakeholder-presentation', title: 'Greeting overview', url: 'https://claude.ai/code/artifact/abc-123' },
+      coverage: { reviewedFiles: ['src/greeting/greet.ts'], notReviewed: [], checksNotRun: [] },
+      limitations: ['no check ran: recorded as a limitation'],
+      decisions: [],
+      definitionOfDone: { items: ['greet implemented'], passed: true, evidence: [] },
+    };
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (url === '/api/v1/tasks/JRY-0004/final-report') return json(finalReport);
+      if (url === '/api/v1/artifacts') {
+        return json([
+          { taskId: 'JRY-0004', decision: 'created', kind: 'stakeholder-presentation', title: 'Greeting overview', url: 'https://claude.ai/code/artifact/abc-123', reason: '', at: NOW },
+          { taskId: 'JRY-0009', decision: 'created', kind: 'other', title: 'Hostile', url: 'javascript:alert(1)', reason: '', at: NOW },
+          { taskId: 'JRY-0010', decision: 'declined', kind: null, title: null, url: null, reason: 'not needed', at: NOW },
+        ]);
+      }
+      return base(url, init);
+    });
+    const wrapper = await mountApp();
+    await openTasks(wrapper);
+    await flushPromises();
+    const artifacts = wrapper.get('.artifacts');
+    expect(artifacts.text()).toContain('Artifacts (2)');
+    expect(artifacts.text()).toContain('declined: not needed');
+    const links = artifacts.findAll('a').map((link) => link.attributes('href'));
+    expect(links).toEqual(['https://claude.ai/code/artifact/abc-123']);
+
+    await button(wrapper, 'Final report', 'JRY-0004')!.trigger('click');
+    await flushPromises();
+    const report = wrapper.get('.final-report');
+    expect(report.text()).toContain('Review: passed after 2 round(s)');
+    expect(report.text()).toContain('feat(greeting): add greet helper');
+    expect(report.get('a').attributes()).toMatchObject({ href: 'https://claude.ai/code/artifact/abc-123', rel: 'noopener noreferrer' });
+    // Content is text, never markup.
+    expect(report.html()).not.toContain('<img');
+    expect(report.text()).toContain('<img src=x onerror=alert(1)>');
+    wrapper.unmount();
+  });
+
+  it('shows eval runs against the baseline and lets the user choose a new baseline', async () => {
+    const base = globalThis.fetch;
+    const fingerprint = { total: 'f', components: { skills: 'a', agents: 'b', hooks: 'c', rules: 'd' } };
+    const summary = (id: number, isBaseline: boolean) => ({ runId: `EVR-${id}`, startedAt: NOW, finishedAt: NOW, jerryVersion: '0.0.1', fingerprint, label: id === 2 ? 'after rules change' : '', counts: { PASS: 1, FAIL: id === 2 ? 1 : 0, FLAKY: 0, ERROR: 0 }, isBaseline });
+    const detail = {
+      ...summary(2, false),
+      results: [
+        { caseId: 'git-blocked', suite: 'regression', kind: 'tool-safety', critical: true, outcome: 'FAIL', attempts: [{ attempt: 1, outcome: 'FAIL', harnessError: null, durationMs: 10, costUsd: 0, sessionId: 's', output: '', graders: [{ grader: 'Git unchanged', kind: 'deterministic', passed: false, detail: 'HEAD moved' }] }] },
+        { caseId: 'plan-quality', suite: 'capability', kind: 'planning-quality', critical: false, outcome: 'PASS', attempts: [] },
+      ],
+      comparison: {
+        baselineRunId: 'EVR-1',
+        cases: [
+          { caseId: 'git-blocked', critical: true, baseline: 'PASS', current: 'FAIL', comparison: 'REGRESSION' },
+          { caseId: 'plan-quality', critical: false, baseline: null, current: 'PASS', comparison: 'NEW' },
+        ],
+        regressions: ['git-blocked'],
+        releaseBlocked: true,
+      },
+    };
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (url === '/api/v1/evals/runs') return json([summary(2, false), summary(1, true)]);
+      if (url === '/api/v1/evals/runs/EVR-2') return json(detail);
+      if (url === '/api/v1/evals/status') return json({ baselineRunId: 'EVR-1', latestRunId: 'EVR-2', fingerprint, changedSinceBaseline: ['rules'], releaseBlocked: true });
+      if (url === '/api/v1/evals/calibration') return json([{ rubricId: 'plan-quality', labels: 4, agreement: 0.75, calibrated: false }]);
+      if (url === '/api/v1/evals/baseline') {
+        calls.push({ url, init });
+        return json(summary(2, true));
+      }
+      return base(url, init);
+    });
+    const wrapper = await mountApp();
+    await wrapper.findAll('nav button').find((candidate) => candidate.text().startsWith('Evals'))!.trigger('click');
+    await flushPromises();
+    const text = wrapper.get('.evals').text();
+    expect(text).toContain('Baseline: EVR-1');
+    expect(text).toContain('release blocked: critical regression');
+    expect(text).toContain('Changed since the baseline: rules');
+    expect(text).toContain('plan-quality 4 label(s), 75%');
+    expect(text).toContain('EVR-2 compared with EVR-1');
+    expect(text).toContain('REGRESSION');
+    expect(text).toContain('Git unchanged: HEAD moved');
+
+    await wrapper.findAll('.evals button').find((candidate) => candidate.text() === 'Make baseline')!.trigger('click');
+    await wrapper.get('form.dialog input').setValue('EVR-2');
+    await wrapper.get('form.dialog textarea').setValue('the regression is intended');
+    await wrapper.get('form.dialog').trigger('submit');
+    await flushPromises();
+    expect(JSON.parse(String(calls.find((call) => call.url === '/api/v1/evals/baseline')!.init?.body))).toEqual({ runId: 'EVR-2', note: 'the regression is intended', confirm: 'EVR-2' });
+    wrapper.unmount();
+  });
+
+  it('shows plan drift and the implementers on demand', async () => {
+    const base = globalThis.fetch;
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      if (url === '/api/v1/tasks/JRY-0001/drift') {
+        const drift = {
+          taskId: 'JRY-0001',
+          unplannedFiles: ['src/extra.ts'],
+          untouchedSteps: [{ number: 2, step: 'Add unit tests' }],
+          layers: [[1], [2]],
+          blockedSteps: [],
+          assignments: [{ taskId: 'JRY-0001', label: 'code', steps: [1], files: ['src/greeting/greet.ts'], agentId: 'impl-a', createdAt: NOW }],
+        };
+        return new Response(JSON.stringify(drift), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return base(url, init);
+    });
+    const wrapper = await mountApp();
+    await openTasks(wrapper);
+    expect(button(wrapper, 'Plan drift', 'JRY-0002')).toBeUndefined();
+    await button(wrapper, 'Plan drift', 'JRY-0001')!.trigger('click');
+    await flushPromises();
+    const drift = wrapper.get('.plan-drift');
+    expect(drift.text()).toContain('Changed but not named by any plan step: src/extra.ts');
+    expect(drift.text()).toContain('2. Add unit tests');
+    expect(drift.text()).toContain('Step order: 1 → 2');
+    expect(drift.text()).toContain('implementer impl-a');
+    wrapper.unmount();
+  });
+
+  it('still renders tasks from an older Core that does not send the newer fields', async () => {
+    const base = globalThis.fetch;
+    const { planGrade: _grade, analyses: _analyses, agentRuns: _runs, ...older } = waitingTask;
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      if (url === '/api/v1/tasks') return new Response(JSON.stringify([older]), { status: 200, headers: { 'content-type': 'application/json' } });
+      return base(url, init);
+    });
+    const errors: unknown[] = [];
+    const wrapper = mount(App, { attachTo: document.body, global: { config: { errorHandler: (error) => errors.push(error) } } });
+    await startDashboard();
+    await flushPromises();
+    await openTasks(wrapper);
+    expect(errors).toEqual([]);
+    expect(button(wrapper, 'Approve plan v1', 'JRY-0002')).toBeDefined();
+    expect(wrapper.find('.plan-grade').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('compares the current plan version with the one before, section by section', async () => {
+    const base = globalThis.fetch;
+    const v1 = { ...waitingTask.plan, version: 1, scope: ['src/auth/**'] };
+    const v2 = {
+      ...waitingTask.plan,
+      version: 2,
+      scope: ['src/auth/**', 'tests/auth/**'],
+      document: { ...waitingTask.plan.document!, goal: 'Add a login form with rate limiting.', openQuestions: [] },
+    };
+    const revised: TaskSummary = { ...approvedTask, plan: v2 };
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (url === '/api/v1/tasks') return json([revised, waitingTask]);
+      if (url === '/api/v1/tasks/JRY-0001/plans') {
+        calls.push({ url, init });
+        return json([v1, v2]);
+      }
+      return base(url, init);
+    });
+    const wrapper = await mountApp();
+    await openTasks(wrapper);
+    expect(button(wrapper, 'Changes since v1', 'JRY-0002')).toBeUndefined();
+    await button(wrapper, 'Changes since v1', 'JRY-0001')!.trigger('click');
+    await flushPromises();
+    const diff = wrapper.get('.plan-diff');
+    expect(diff.text()).toContain('Plan v1 → v2');
+    expect(diff.text()).toContain('Scope (what JERRY checks edits against)');
+    expect(diff.find('.diff__added').text()).toContain('tests/auth/**');
+    expect(diff.text()).toContain('Add a login form with rate limiting.');
+    expect(diff.text()).toContain('Should greetings be localised?');
+    expect(diff.findAll('.diff__removed').map((item) => item.text()).join(' ')).toContain('Should greetings be localised?');
+    expect(calls.some((call) => call.url === '/api/v1/tasks/JRY-0001/plans')).toBe(true);
+    await button(wrapper, 'Hide changes', 'JRY-0001')!.trigger('click');
+    expect(wrapper.find('.plan-diff').exists()).toBe(false);
     wrapper.unmount();
   });
 

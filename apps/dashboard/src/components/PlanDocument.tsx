@@ -154,6 +154,25 @@ export const PlanDocumentView = defineComponent({
             plan.openQuestions.length === 0,
             true,
           )}
+          {plan.analysis !== undefined &&
+            section(
+              `Based on analysis (${plan.analysis.reports.length} report(s), ${plan.analysis.gaps.length} gap(s))`,
+              <div>
+                <p>
+                  Analysis reports:{' '}
+                  {plan.analysis.reports.length === 0 ? <span class="muted">none</span> : plan.analysis.reports.map((id) => <code key={id} class="chip">#{id}</code>)}
+                </p>
+                {plan.analysis.gaps.length > 0 && (
+                  <ul class="list">
+                    {plan.analysis.gaps.map((gap, index) => (
+                      <li key={index}>{gap}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>,
+              false,
+              plan.analysis.gaps.length > 0,
+            )}
         </div>
       );
     };

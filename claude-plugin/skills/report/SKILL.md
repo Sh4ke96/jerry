@@ -31,6 +31,10 @@ the repository, not what the plan intended.
 - Recorded deviations: call `jerry_list_deviations` and explain every WARN that belongs to this task, either as
   a plan deviation with its reason or as a mistake you corrected.
 - Differences from the plan: steps skipped, added or done differently, files outside the scope, and why.
+- Quality findings: call `jerry_list_findings`. Fix open P1 and P2 findings first, or list each still open in
+  `risks` with the reason. JERRY adds its own count to the report, so leaving one out does not hide it.
+- Test results: report what really ran. JERRY records how your test commands ended and points out a check the
+  report calls PASS that it saw fail.
 
 ## 3. Write the report
 
@@ -45,7 +49,7 @@ the repository, not what the plan intended.
 | `risks` | open findings and risks: `risk`, `severity` (low / medium / high / critical), `mitigation` |
 | `commitSubjects` | proposed subjects in the repository's convention (`git log --oneline -20`); the user commits |
 | `qaScenarios` | manual QA scenarios (see below) |
-| `artifact` | optional; never write it into the repository |
+| `artifact` | leave empty: the optional Artifact is offered after DONE with `/jerry:artifact`, only if the user wants one |
 
 Each QA scenario (spec §15.1) has `id` (QA-1, QA-2…), `priority` (P1 / P2 / P3), `title`, `location` (screen,
 UI path, endpoint or command), `roles`, `preconditions`, `testData`, `steps`, `expected`, `negative` (what must

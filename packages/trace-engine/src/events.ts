@@ -60,7 +60,29 @@ export function summarizeToolResponse(response: unknown): Record<string, unknown
   for (const stream of ['stdout', 'stderr']) {
     if (typeof fields[stream] === 'string') summary[`${stream}Length`] = (fields[stream] as string).length;
   }
+  const tests = testSummaryOf(`${typeof fields['stdout'] === 'string' ? fields['stdout'] : ''}\n${typeof fields['stderr'] === 'string' ? fields['stderr'] : ''}`);
+  if (tests !== null) summary['testSummary'] = tests;
   return summary;
+}
+
+/**
+ * The one line a test runner prints with its totals (vitest, jest, pytest, go, phpunit), and
+ * nothing else of the output (ADR 0030). Only digits and fixed words pass the pattern.
+ */
+export function testSummaryOf(output: string): string | null {
+  const patterns = [
+    /^\s*Tests:?\s+\d+ (?:failed|passed|skipped|todo|total)(?:\s*[,|]?\s*\d+ (?:failed|passed|skipped|todo|total))*(?:\s*\(\d+\))?\s*$/m,
+    /^=+ (?:\d+ (?:failed|passed|skipped|errors?|warnings?|xfailed|xpassed)[, ]*)+(?: in [\d.]+s)? =+$/m,
+    /^(?:ok|FAIL)\s+\S+\s+[\d.]+s$/m,
+    /^(?:OK \(\d+ tests?, \d+ assertions?\)|Tests: \d+, Assertions: \d+(?:, (?:Failures|Errors|Skipped): \d+)*\.)$/m,
+  ];
+  // Colour codes would hide the words from the patterns.
+  const plain = output.replace(/\u001b\[[0-9;]*m/g, '');
+  for (const pattern of patterns) {
+    const match = pattern.exec(plain);
+    if (match !== null) return match[0].trim().replace(/\s+/g, ' ').slice(0, 160);
+  }
+  return null;
 }
 
 export interface EnvelopeOverrides {

@@ -5,10 +5,12 @@ import { backupNow, restoreFromBackup, showBackups } from './db-commands.js';
 import { doctor } from './doctor.js';
 import { showEvents } from './events-command.js';
 import { install, uninstall } from './install-commands.js';
+import { evalStatus, labelRun, listCases, listRuns, runEvals, runPluginEval, setBaseline, showRun } from './eval-commands.js';
+import { listFindings, setFindingStatus, showFinding } from './findings-commands.js';
 import { excludeRepository, includeRepository, listExcludedRepositories } from './repo-commands.js';
 import { graphCommand, profileCommand, scanCommand } from './scan-command.js';
 import { showStatus } from './status-command.js';
-import { controlTask, createTask, decide, listTasks, revisePlan, showTask } from './task-commands.js';
+import { controlTask, createTask, decide, listTasks, revisePlan, showFinalReport, showPlanDiff, showReview, showTask, skipReview } from './task-commands.js';
 import { openDashboard } from './ui-command.js';
 
 /** Repeatable option without a default, so a required one is really required. */
@@ -20,11 +22,12 @@ function positiveInteger(value: string): number {
   return parsed;
 }
 
-function stage(value: string): 'PLAN' | 'IMPLEMENTATION' {
+function stage(value: string): 'PLAN' | 'IMPLEMENTATION' | 'REVIEW_FIX' {
   const normalized = value.toLowerCase();
   if (normalized === 'plan') return 'PLAN';
   if (normalized === 'implementation') return 'IMPLEMENTATION';
-  throw new InvalidArgumentError('must be "plan" or "implementation"');
+  if (normalized === 'review-fix') return 'REVIEW_FIX';
+  throw new InvalidArgumentError('must be "plan", "implementation" or "review-fix"');
 }
 
 const program = new Command()
@@ -87,13 +90,18 @@ for (const [verb, event, description] of controls) {
     .action((taskId: string, options: { reason: string }) => controlTask(taskId, event, options.reason));
 }
 
-program
-  .command('plan')
-  .description('Revise a plan')
+const plan = program.command('plan').description('Revise or compare plans');
+plan
   .command('revise <taskId>')
   .description('Create the next plan version with a new scope (earlier approvals stop applying)')
   .requiredOption('--scope <glob>', 'repo-relative glob (repeatable)', collect)
   .action((taskId: string, options: { scope: string[] }) => revisePlan(taskId, options.scope));
+plan
+  .command('diff <taskId>')
+  .description('Show what changed between two plan versions (default: the latest against the one before)')
+  .option('--from <version>', 'older version')
+  .option('--to <version>', 'newer version')
+  .action((taskId: string, options: { from?: string; to?: string }) => showPlanDiff(taskId, options));
 
 for (const decision of ['approve', 'reject'] as const) {
   program
@@ -106,7 +114,7 @@ for (const decision of ['approve', 'reject'] as const) {
     .requiredOption('--stage <stage>', 'what is decided: plan or implementation', stage)
     .requiredOption('--version <n>', 'the plan or report version you reviewed', positiveInteger)
     .option('--comment <text>', decision === 'approve' ? 'note stored with the decision' : 'what should change (stored with the decision and shown to Claude)', '')
-    .action((taskId: string, options: { stage: 'PLAN' | 'IMPLEMENTATION'; version: number; comment: string }) =>
+    .action((taskId: string, options: { stage: 'PLAN' | 'IMPLEMENTATION' | 'REVIEW_FIX'; version: number; comment: string }) =>
       decide({ taskId, stage: options.stage, version: options.version, decision: decision === 'approve' ? 'APPROVED' : 'REJECTED', comment: options.comment }),
     );
 }
@@ -141,6 +149,70 @@ program
   .action((options: { session?: string; verdict?: string; limit: number }) =>
     showEvents({ limit: options.limit, ...(options.session === undefined ? {} : { sessionId: options.session }), ...(options.verdict === undefined ? {} : { verdict: options.verdict }) }),
   );
+
+program
+  .command('report <taskId>')
+  .description('Show the final report of a task (a draft until it is DONE)')
+  .option('--json', 'print the report as JSON', false)
+  .action((taskId: string, options: { json: boolean }) => showFinalReport(taskId, options));
+
+const review = program.command('review').description('Independent code review of a task (three JERRY reviewers)');
+review.command('show <taskId>').description('Show the review rounds, coverage, independence and open findings').action((taskId: string) => showReview(taskId));
+review
+  .command('skip <taskId>')
+  .description('Waive the review (interactive; a reason is required); the final checks run')
+  .option('--reason <text>', 'why')
+  .action((taskId: string, options: { reason?: string }) => skipReview(taskId, options));
+
+const findings = program.command('findings').description('Quality findings JERRY recorded while Claude worked');
+findings
+  .command('list', { isDefault: true })
+  .description('List open findings (newest checks first)')
+  .option('--task <taskId>', 'only this task')
+  .option('--repo <path>', 'only this repository')
+  .option('--all', 'include fixed and dismissed findings', false)
+  .action((options: { task?: string; repo?: string; all: boolean }) => listFindings(options));
+findings.command('show <findingId>').description('Show a finding with its evidence and history').action((findingId: string) => showFinding(findingId));
+findings
+  .command('set <findingId> <status>')
+  .description('Decide on a finding: open, accepted, wont_fix or false_positive (interactive; a reason is required)')
+  .option('--reason <text>', 'why')
+  .action((findingId: string, status: string, options: { reason?: string }) => setFindingStatus(findingId, status, options));
+
+const evals = program.command('eval').description('JERRY evals: golden cases with real Claude Code sessions, baselines and regressions');
+evals
+  .command('list')
+  .description('List the golden cases')
+  .option('--dir <path>', 'case directory (default: ./evals/cases, else the bundled cases)')
+  .option('--suite <suite>', 'regression or capability')
+  .action((options: { dir?: string; suite?: string }) => listCases(options));
+evals
+  .command('run')
+  .description('Run cases (real Claude Code sessions in temp fixtures; costs tokens) and compare with the baseline')
+  .option('--dir <path>', 'case directory')
+  .option('--suite <suite>', 'regression or capability')
+  .option('--case <id>', 'only this case (repeatable)', collect)
+  .option('--repeats <n>', 'attempts per case', positiveInteger)
+  .option('--parallel <n>', 'sessions at once (at most 3)', positiveInteger)
+  .option('--model <model>', 'model for every case')
+  .option('--label <text>', 'a note for this run')
+  .option('--keep-failed', 'keep the fixtures of failed attempts', false)
+  .action((options: { dir?: string; suite?: string; case?: string[]; repeats?: number; parallel?: number; model?: string; label?: string; keepFailed: boolean }) => runEvals(options));
+evals.command('runs').description('List eval runs').action(() => listRuns());
+evals.command('show <runId>').description('Show a run, compared with the baseline').action((runId: string) => showRun(runId));
+evals.command('status').description('Baseline, what changed since it, calibration').action(() => evalStatus());
+evals
+  .command('baseline <runId>')
+  .description('Make a run the baseline (interactive; a reason is required)')
+  .option('--note <text>', 'why')
+  .action((runId: string, options: { note?: string }) => setBaseline(runId, options));
+evals.command('label <runId> <caseId> <attempt> <rubricId> <verdict>').description('Label a rubric result pass or fail (interactive), for calibration').action((runId: string, caseId: string, attempt: string, rubricId: string, verdict: string) => labelRun(runId, caseId, attempt, rubricId, verdict));
+evals
+  .command('plugin')
+  .description('Run the Claude Code plugin evals of the JERRY plugin (isolated JERRY home, never published)')
+  .option('--runs <n>', 'runs per case', positiveInteger)
+  .option('--trust', 'pass --trust-plugin (the JERRY plugin is yours)', false)
+  .action((options: { runs?: number; trust: boolean }) => runPluginEval(options));
 
 const db = program.command('db').description('JERRY database');
 db.command('backup').description('Back up the database now (Core must be running)').action(() => backupNow());

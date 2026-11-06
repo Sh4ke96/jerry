@@ -49,16 +49,26 @@ Fill every section of the plan document (spec §7.2):
 | `regression` | what could break elsewhere and how you will check it |
 | `commitSubjects` | proposed commit subjects in the repository's convention; the user commits |
 | `qaScenarios` | manual test scenarios: title, steps, expected result |
-| `artifact` | optional demo or presentation, or empty |
+| `artifact` | ask the user whether they want Claude to create an Artifact when the task is done (stakeholder presentation, architecture before/after, UI flows, endpoint and contract map); write their answer, e.g. `wanted: stakeholder presentation`, or leave it empty when they do not want one |
 | `definitionOfDone` | verifiable conditions |
 | `openQuestions` | decisions the user has to make |
+| `analysis` | only after `/jerry:analyze`: `reports` (the analysis report IDs the plan uses) and `gaps` (missing analysts, unverified citations, what could not be checked) |
+
+If the task was analysed first, call `jerry_get_analysis` with its task ID and build the plan from the
+reports: their risks become plan risks with mitigations, their recommendations become changes, steps or
+tests, their gaps become open questions or `UNKNOWN`. Cite only report IDs of that task; JERRY refuses others.
 
 ## 3. Submit it
 
+- Task taken in with `/jerry:analyze` (`jerry_start_task`): `jerry_submit_plan` with its `taskId`. This
+  closes the analysis and sends the plan to the user.
 - New task: `jerry_submit_plan` with a short `title` and the `plan`.
 - Change to an existing plan: `jerry_submit_plan` with its `taskId`. This creates the next version, and the earlier
   approval no longer applies.
 - If JERRY rejects the plan as incomplete, fix the reported fields and submit again.
+- JERRY's answer includes `completeness`: a deterministic check of the plan, such as changes outside the
+  scope, step order, tests that fit the change, unknowns without questions, or analysis reports not cited. It
+  is information, not a block. Mention what it found to the user. Revise the plan only if the user asks.
 
 ## 4. Hand over to the user
 

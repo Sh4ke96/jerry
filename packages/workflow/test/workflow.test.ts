@@ -9,8 +9,20 @@ describe('workflow transitions (spec §7.1)', () => {
     expect(go(null, 'plan.submitted', 'claude')).toEqual({ ok: true, to: 'WAIT_PLAN_APPROVAL' });
     expect(go('WAIT_PLAN_APPROVAL', 'plan.approved')).toEqual({ ok: true, to: 'IMPLEMENTATION' });
     expect(go('IMPLEMENTATION', 'report.submitted', 'claude')).toEqual({ ok: true, to: 'WAIT_IMPLEMENTATION_ACCEPTANCE' });
-    expect(go('WAIT_IMPLEMENTATION_ACCEPTANCE', 'implementation.accepted')).toEqual({ ok: true, to: 'FINAL_REPORT' });
+    expect(go('WAIT_IMPLEMENTATION_ACCEPTANCE', 'implementation.accepted')).toEqual({ ok: true, to: 'CODE_REVIEW' });
+    expect(go('CODE_REVIEW', 'review.reported', 'core')).toEqual({ ok: true, to: 'REVIEW_REPORT' });
+    expect(go('REVIEW_REPORT', 'review.passed', 'core')).toEqual({ ok: true, to: 'FINAL_REPORT' });
     expect(go('FINAL_REPORT', 'task.completed', 'core')).toEqual({ ok: true, to: 'DONE' });
+  });
+
+  it('walks the analysis-first path: discovery, analysis, plan draft, approval', () => {
+    expect(go(null, 'task.started', 'claude')).toEqual({ ok: true, to: 'DISCOVERY' });
+    expect(go('DISCOVERY', 'analysis.started', 'core')).toEqual({ ok: true, to: 'PARALLEL_ANALYSIS' });
+    expect(go('PARALLEL_ANALYSIS', 'analysis.completed', 'core')).toEqual({ ok: true, to: 'PLAN_DRAFT' });
+    expect(go('PLAN_DRAFT', 'plan.revised', 'claude')).toEqual({ ok: true, to: 'WAIT_PLAN_APPROVAL' });
+    // A small change may skip the analysts: the plan goes straight from discovery to approval.
+    expect(go('DISCOVERY', 'plan.revised', 'claude')).toEqual({ ok: true, to: 'WAIT_PLAN_APPROVAL' });
+    expect(go('IMPLEMENTATION', 'analysis.started', 'core')).toMatchObject({ ok: false });
   });
 
   it('loops back on rejection, revision and requested changes', () => {
@@ -64,11 +76,32 @@ describe('workflow transitions (spec §7.1)', () => {
     }
   });
 
-  it('creates tasks only through a first plan', () => {
-    for (const event of WORKFLOW_EVENTS.filter((candidate) => candidate !== 'plan.submitted')) {
+  it('creates tasks only through a first plan or a task intake', () => {
+    for (const event of WORKFLOW_EVENTS.filter((candidate) => candidate !== 'plan.submitted' && candidate !== 'task.started')) {
       expect(go(null, event, 'user').ok, event).toBe(false);
     }
     expect(go('IMPLEMENTATION', 'plan.submitted', 'claude').ok).toBe(false);
+  });
+
+  it('runs the independent review loop between acceptance and the final checks (ADR 0032)', () => {
+    expect(go('WAIT_IMPLEMENTATION_ACCEPTANCE', 'implementation.accepted')).toEqual({ ok: true, to: 'CODE_REVIEW' });
+    expect(go('CODE_REVIEW', 'review.reported', 'core')).toEqual({ ok: true, to: 'REVIEW_REPORT' });
+    expect(go('REVIEW_REPORT', 'review.passed', 'core')).toEqual({ ok: true, to: 'FINAL_REPORT' });
+    expect(go('REVIEW_REPORT', 'fixes.proposed', 'claude')).toEqual({ ok: true, to: 'WAIT_REVIEW_FIX_APPROVAL' });
+    expect(go('WAIT_REVIEW_FIX_APPROVAL', 'fixes.proposed', 'claude')).toEqual({ ok: true, to: 'WAIT_REVIEW_FIX_APPROVAL' });
+    expect(go('WAIT_REVIEW_FIX_APPROVAL', 'fixes.approved')).toEqual({ ok: true, to: 'FIX_IMPLEMENTATION' });
+    expect(go('WAIT_REVIEW_FIX_APPROVAL', 'fixes.rejected')).toEqual({ ok: true, to: 'REVIEW_REPORT' });
+    expect(go('FIX_IMPLEMENTATION', 'fixes.reported', 'claude')).toEqual({ ok: true, to: 'REVERIFICATION' });
+    expect(go('REVERIFICATION', 'review.reported', 'core')).toEqual({ ok: true, to: 'REVIEW_REPORT' });
+    expect(go('REVIEW_REPORT', 'review.skipped')).toEqual({ ok: true, to: 'FINAL_REPORT' });
+    expect(go('REVIEW_REPORT', 'changes.requested')).toEqual({ ok: true, to: 'IMPLEMENTATION' });
+    // Only the user approves fixes, waives the review, or sends the work back; only Core passes a review.
+    for (const actor of ['claude', 'core'] as const) {
+      expect(go('WAIT_REVIEW_FIX_APPROVAL', 'fixes.approved', actor).ok).toBe(false);
+      expect(go('REVIEW_REPORT', 'review.skipped', actor).ok).toBe(false);
+    }
+    expect(go('REVIEW_REPORT', 'review.passed', 'claude').ok).toBe(false);
+    expect(go('REVIEW_REPORT', 'review.passed', 'user').ok).toBe(false);
   });
 
   it('lists what each actor can do next', () => {

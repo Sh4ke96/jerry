@@ -51,7 +51,7 @@ describe('guards accept exactly what the Zod schemas accept', () => {
 
   it('gate decision', () => {
     const base = { verdict: 'WARN', ruleId: 'monitor.out-of-scope', reason: 'outside the scope', taskId: 'JRY-0001', repoRoot: 'D:/Work' };
-    expectEquivalent(isGateDecision, gateDecisionSchema, variants(base, { verdict: ['PASS', 'DENY', 'ASK', 'warn', ...UNUSUAL], ruleId: UNUSUAL, reason: UNUSUAL, taskId: UNUSUAL, repoRoot: UNUSUAL }));
+    expectEquivalent(isGateDecision, gateDecisionSchema, variants(base, { verdict: ['PASS', 'DENY', 'ASK', 'warn', ...UNUSUAL], ruleId: UNUSUAL, reason: UNUSUAL, taskId: UNUSUAL, repoRoot: UNUSUAL, feedback: [undefined, 'two new findings', ...UNUSUAL] }));
   });
 
   it('session registration response', () => {

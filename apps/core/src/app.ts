@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import {
   approvalRequestSchema,
@@ -9,6 +11,20 @@ import {
   repositoryExclusionRequestSchema,
   sessionRegistrationSchema,
   taskCreateRequestSchema,
+  taskIntakeRequestSchema,
+  findingIdSchema,
+  findingStatusRequestSchema,
+  findingStatusSchema,
+  findingsQuerySchema,
+  assignmentRequestSchema,
+  fixPlanRequestSchema,
+  fixesReportRequestSchema,
+  reviewSkipRequestSchema,
+  reviewSubmissionRequestSchema,
+  evalBaselineRequestSchema,
+  evalLabelRequestSchema,
+  evalRunSubmissionSchema,
+  artifactDecisionRequestSchema,
   taskIdSchema,
   taskTransitionRequestSchema,
   checkpointRequestSchema,
@@ -27,17 +43,22 @@ import {
   type TaskDetail,
   type TaskSummary,
 } from '@jerry/contracts';
-import { absolutePath, approvedPlansForRepo, comparablePath, evaluateGate, isRepoExcluded, relativeInside } from '@jerry/policy-engine';
-import { isTerminal } from '@jerry/workflow';
+import { absolutePath, approvedPlansForRepo, comparablePath, evaluateGate, gradePlan, isRepoExcluded, relativeInside } from '@jerry/policy-engine';
+import { isTerminal, WORK_STATES } from '@jerry/workflow';
 import { buildEventEnvelope } from '@jerry/trace-engine';
 import type { z } from 'zod';
 import { BrowserSessions, clearedSessionCookie, CSRF_HEADER, readCookie, safeEqual, SESSION_COOKIE, sessionCookie, type BrowserSession } from './auth.js';
 import { evaluatePending, withRepoRoot } from './events.js';
 import { checkCitations } from './citations.js';
 import { ProfileService } from './profiles.js';
+import { QualityScheduler } from './quality-scheduler.js';
+import { EvalStore } from './eval-store.js';
+import { buildFinalReport } from './final-report.js';
+import { jerryFingerprint, type JerryFingerprint } from '@jerry/evals';
+import { collectTestRun, targetedTestsFor } from './test-runs.js';
 import { findGitRoot, realPathOfNearestExisting } from './repo-fs.js';
 import { StateError, type StateStore } from './state-store.js';
-import { readDashboardFile } from './static-files.js';
+import { loadDashboard } from './static-files.js';
 import { DASHBOARD_SECURITY_HEADERS, dashboardPlaceholderPage, HTML_SECURITY_HEADERS, signedOutPage } from './ui.js';
 
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -73,6 +94,8 @@ export interface CoreAppOptions {
   onShutdownRequested: () => void;
   /** Project profiles (ADR 0020); tests may pass one with a fake PATH lookup. */
   profiles?: ProfileService;
+  /** Continuous quality checks (ADR 0029); tests may pass one with a short debounce. */
+  quality?: QualityScheduler;
 }
 
 export class HttpError extends Error {
@@ -98,6 +121,8 @@ export function gateEvaluator(store: StateStore, protectedRoots: readonly string
       isExcluded: (repoRoot) => isRepoExcluded(snapshot, repoRoot, process.platform),
       isUserChangedFile: (taskId, relativePath) => store.isUserChangedFile(taskId, relativePath),
       activeSubagents: (sessionId) => store.activeSubagents(sessionId),
+      implementerCheck: (taskId, agentId, relativePath) => store.implementerCheck(taskId, agentId, relativePath),
+      agentType: (agentId) => store.agentTypeOf(agentId),
     });
   };
 }
@@ -112,6 +137,9 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   const sessions = options.sessions ?? new BrowserSessions();
   const evaluate = gateEvaluator(store, options.protectedRoots);
   const profiles = options.profiles ?? new ProfileService(store);
+  // Read once: a running Core serves the dashboard of its own version, even after a new build or install.
+  const dashboard = loadDashboard(options.dashboardDir);
+  const quality = options.quality ?? new QualityScheduler({ store, git: store.gitReader });
   const app = Fastify({ logger: false, bodyLimit: MAX_BODY_BYTES, return503OnClosing: true });
   const origins = (): string[] => [`http://127.0.0.1:${options.port()}`, `http://localhost:${options.port()}`];
 
@@ -119,6 +147,12 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
 
   // 1. DNS rebinding: only our own loopback host names are answered.
   // 2. Identify the caller: bearer token (CLI, hooks) or browser session (dashboard).
+  // Finish running checks on close; a scheduler passed in (shared across app instances) is stopped by its owner.
+  app.addHook('onClose', async () => {
+    await quality.idle();
+    if (options.quality === undefined) quality.stop();
+  });
+
   app.addHook('onRequest', async (request) => {
     const host = request.headers.host ?? '';
     if (!origins().some((origin) => origin === `http://${host}`)) throw new HttpError(421, 'Unexpected Host header');
@@ -165,7 +199,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
 
   // --- dashboard (browser session) -----------------------------------------------------------
   app.get('/', { config: SESSION_ONLY, errorHandler: htmlErrors }, async (_request, reply) => {
-    const index = readDashboardFile(options.dashboardDir, '', 'index.html');
+    const index = dashboard.read('', 'index.html');
     if (index === null) {
       return reply.headers(HTML_SECURITY_HEADERS).type('text/html; charset=utf-8').send(dashboardPlaceholderPage(JERRY_VERSION));
     }
@@ -173,7 +207,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   });
 
   app.get('/assets/:name', { config: SESSION_ONLY }, async (request, reply) => {
-    const file = readDashboardFile(options.dashboardDir, 'assets', (request.params as { name: string }).name);
+    const file = dashboard.read('assets', (request.params as { name: string }).name);
     if (file === null) throw new HttpError(404, 'No such dashboard asset');
     // Content-hashed file names: safe to cache for good, but only in this user's browser.
     return reply.header('cache-control', 'private, max-age=31536000, immutable').type(file.contentType).send(file.body);
@@ -181,13 +215,13 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
 
   // The manifest and icons are fetched without cookies when the dashboard is installed as an app; they hold no data.
   app.get('/manifest.webmanifest', async (_request, reply) => {
-    const file = readDashboardFile(options.dashboardDir, '', 'manifest.webmanifest');
+    const file = dashboard.read('', 'manifest.webmanifest');
     if (file === null) throw new HttpError(404, 'The dashboard is not built');
     return reply.type(file.contentType).send(file.body);
   });
 
   app.get('/icons/:name', async (request, reply) => {
-    const file = readDashboardFile(options.dashboardDir, 'icons', (request.params as { name: string }).name);
+    const file = dashboard.read('icons', (request.params as { name: string }).name);
     if (file === null) throw new HttpError(404, 'No such icon');
     return reply.type(file.contentType).send(file.body);
   });
@@ -250,17 +284,28 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     );
     if (event !== null) await store.recordEvents([withRepoRoot(event)], now, false);
     // One warning per file and task about the user's uncommitted changes (previews do not count).
-    if (decision.ruleId === 'monitor.user-uncommitted-file' && decision.taskId !== null && decision.repoRoot !== null) {
-      const target = gateRequest.toolInput['file_path'] ?? gateRequest.toolInput['notebook_path'];
-      const relative = typeof target === 'string' ? relativeInside(absolutePath(realPathOfNearestExisting(absolutePath(target, gateRequest.cwd, process.platform)), gateRequest.cwd, process.platform), decision.repoRoot, process.platform) : null;
-      if (relative !== null) store.markUserFileWarned(decision.taskId, relative);
+    const target = gateRequest.toolInput['file_path'] ?? gateRequest.toolInput['notebook_path'];
+    const relative =
+      typeof target === 'string' && decision.repoRoot !== null ? relativeInside(absolutePath(realPathOfNearestExisting(absolutePath(target, gateRequest.cwd, process.platform)), gateRequest.cwd, process.platform), decision.repoRoot, process.platform) : null;
+    if (decision.ruleId === 'monitor.user-uncommitted-file' && decision.taskId !== null && relative !== null) store.markUserFileWarned(decision.taskId, relative);
+    // Who edits which file (ADR 0031): concurrent writes, and an implementer's first edit binds it to its assignment.
+    if (decision.verdict !== 'DENY' && decision.taskId !== null && relative !== null) await store.noteWrite(decision.taskId, relative, gateRequest.agentId ?? null, now);
+    // New quality findings of the work this session does, each told once (ADR 0029).
+    if (decision.verdict !== 'DENY') {
+      const feedback = await qualityFeedback(store, gateRequest.sessionId, now);
+      if (feedback !== null) return { ...decision, feedback };
     }
     return decision;
   });
 
   app.post('/api/v1/events', { config: TOKEN_ONLY }, async (request, reply) => {
     const body = parse(eventIngestRequestSchema, request.body);
-    const inserted = await store.recordEvents(body.events.map((event) => withRepoRoot(evaluatePending(event, evaluate))), new Date(), false);
+    const events = body.events.map((event) => withRepoRoot(evaluatePending(event, evaluate)));
+    const inserted = await store.recordEvents(events, new Date(), false);
+    // Edits feed the continuous quality checks (ADR 0029); they run later, after a quiet period.
+    for (const event of events) quality.observe(event);
+    // How Claude's test commands ended (ADR 0030); never their output.
+    for (const event of events) await collectTestRun(store, event);
     return reply.code(202).send({ accepted: body.events.length, inserted });
   });
 
@@ -416,6 +461,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
 
   app.post('/api/v1/tasks', { config: TOKEN_ONLY }, async (request, reply) => {
     const body = parse(taskCreateRequestSchema, request.body);
+    if ((body.document?.analysis?.reports.length ?? 0) > 0) throw new HttpError(400, 'a new task has no analysis reports to cite; start it with an intake (jerry_start_task) first');
     const repoRoot = findGitRoot(realPathOfNearestExisting(body.repoPath));
     if (repoRoot === null) throw new HttpError(400, `${body.repoPath} is not inside a Git repository`);
     const sessionId = await store.resolveOrigin(body.origin);
@@ -424,9 +470,25 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
       .send(await store.createTask({ repoRoot, title: body.title, scope: body.scope, ...(body.document === undefined ? {} : { document: body.document }), submittedBy: body.submittedBy, sessionId }, new Date()));
   });
 
+  /** Task intake before a plan (ADR 0024): DISCOVERY with the area to analyse; nothing is approved. */
+  app.post('/api/v1/tasks/intake', { config: TOKEN_ONLY }, async (request, reply) => {
+    const body = parse(taskIntakeRequestSchema, request.body);
+    const repoRoot = findGitRoot(realPathOfNearestExisting(body.repoPath));
+    if (repoRoot === null) throw new HttpError(400, `${body.repoPath} is not inside a Git repository`);
+    const sessionId = await store.resolveOrigin(body.origin);
+    return reply.code(201).send(await store.startTask({ repoRoot, title: body.title, goal: body.goal, focus: body.focus, submittedBy: body.submittedBy, sessionId }, new Date()));
+  });
+
   app.post('/api/v1/tasks/:taskId/plan', { config: TOKEN_ONLY }, async (request) => {
     const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId);
     const body = parse(planReviseRequestSchema, request.body);
+    // A plan may cite only this task's analysis reports (ADR 0024).
+    const cited = body.document?.analysis?.reports ?? [];
+    if (cited.length > 0) {
+      const known = new Set((await store.analysesOf(taskId)).map((record) => record.id));
+      const unknown = cited.filter((id) => !known.has(id));
+      if (unknown.length > 0) throw new HttpError(400, `the plan cites analysis report(s) ${unknown.join(', ')} that ${taskId} does not have`);
+    }
     return store.revisePlan(taskId, body.scope, new Date(), body.document, body.submittedBy, await store.resolveOrigin(body.origin));
   });
 
@@ -461,6 +523,154 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   app.get('/api/v1/tasks/:taskId/transitions', { config: TOKEN_OR_SESSION }, async (request) => {
     const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId);
     return store.listTransitions(taskId);
+  });
+
+  /** Quality findings (ADR 0027), newest first: by task, repository, status or file. */
+  app.get('/api/v1/findings', { config: TOKEN_OR_SESSION }, async (request) => {
+    const query = parse(findingsQuerySchema, request.query);
+    const repoRoot = query.repoPath === undefined ? undefined : (findGitRoot(realPathOfNearestExisting(query.repoPath)) ?? undefined);
+    return store.findings({
+      ...(query.taskId === undefined ? {} : { taskId: query.taskId }),
+      ...(repoRoot === undefined ? {} : { repoRoot }),
+      ...(query.status === undefined ? {} : { statuses: query.status.split(',').map((status) => findingStatusSchema.parse(status.trim().toUpperCase())) }),
+      ...(query.file === undefined ? {} : { file: query.file }),
+      limit: query.limit,
+    });
+  });
+
+  app.get('/api/v1/findings/:findingId', { config: TOKEN_OR_SESSION }, async (request) => {
+    const findingId = parse(findingIdSchema, (request.params as { findingId: string }).findingId.toUpperCase());
+    const [finding] = await store.findings({ findingId });
+    if (finding === undefined) throw new HttpError(404, `Unknown finding ${findingId}`);
+    return { ...finding, history: await store.findingHistory(findingId) };
+  });
+
+  /** The user's decision on a finding, with a reason; the CLI asks in a terminal, the dashboard in a dialog. */
+  app.post('/api/v1/findings/:findingId/status', { config: TOKEN_OR_SESSION }, async (request) => {
+    const findingId = parse(findingIdSchema, (request.params as { findingId: string }).findingId.toUpperCase());
+    const body = parse(findingStatusRequestSchema, request.body);
+    const fromDashboard = request.client?.kind === 'session';
+    return store.setFindingStatus(findingId, body.status, body.reason, new Date(), fromDashboard ? 'dashboard' : 'cli');
+  });
+
+  /** Up to three implementers with disjoint files (ADR 0031); Claude's orchestrator records them through MCP. */
+  app.post('/api/v1/tasks/:taskId/assignments', { config: TOKEN_ONLY }, async (request, reply) => {
+    const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId.toUpperCase());
+    const body = parse(assignmentRequestSchema, request.body);
+    return reply.code(201).send(await store.assignWork(taskId, body.assignments, await store.resolveOrigin(body.origin), new Date()));
+  });
+
+  // --- Final report and the optional Artifact (ADR 0041–0042) ------------------------------------
+
+  /** The final report, assembled from stored facts; a draft until the task is DONE. */
+  app.get('/api/v1/tasks/:taskId/final-report', { config: TOKEN_OR_SESSION }, async (request) => {
+    const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId.toUpperCase());
+    const task = store.snapshot().tasks.find((candidate) => candidate.taskId === taskId);
+    if (task === undefined) throw new HttpError(404, `Unknown task ${taskId}`);
+    return buildFinalReport(store, task);
+  });
+
+  /** The user's choice about an Artifact, recorded by the skill through MCP (ADR 0042). */
+  app.post('/api/v1/tasks/:taskId/artifact', { config: TOKEN_ONLY }, async (request, reply) => {
+    const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId.toUpperCase());
+    const body = parse(artifactDecisionRequestSchema, request.body);
+    const { origin, ...decision } = body;
+    return reply.code(201).send(await store.recordArtifactDecision(taskId, decision, await store.resolveOrigin(origin), new Date()));
+  });
+
+  app.get('/api/v1/artifacts', { config: TOKEN_OR_SESSION }, async () => store.artifactDecisions());
+
+  // --- Evals (ADR 0036–0040) ---------------------------------------------------------------------
+  const evals = new EvalStore(store.kysely);
+  // The plugin this Core ships with (dist/plugin next to dist/core): what the evals measure.
+  const ownFingerprint = (): JerryFingerprint | null => {
+    const pluginDir = options.dashboardDir === undefined ? null : path.resolve(options.dashboardDir, '..', '..', 'plugin');
+    return pluginDir !== null && fs.existsSync(pluginDir) ? jerryFingerprint(pluginDir) : null;
+  };
+
+  /** A finished eval run, recorded by the CLI runner. */
+  app.post('/api/v1/evals/runs', { config: TOKEN_ONLY }, async (request, reply) => reply.code(201).send(await evals.recordRun(parse(evalRunSubmissionSchema, request.body), new Date())));
+  app.get('/api/v1/evals/runs', { config: TOKEN_OR_SESSION }, async () => evals.runs());
+  app.get('/api/v1/evals/runs/:runId', { config: TOKEN_OR_SESSION }, async (request) => evals.run((request.params as { runId: string }).runId));
+  app.get('/api/v1/evals/status', { config: TOKEN_OR_SESSION }, async () => evals.status(ownFingerprint()));
+  app.get('/api/v1/evals/calibration', { config: TOKEN_OR_SESSION }, async () => evals.calibration());
+
+  /** The user's baseline choice: the dashboard also needs the run ID typed (ADR 0039). */
+  app.post('/api/v1/evals/baseline', { config: TOKEN_OR_SESSION }, async (request) => {
+    const body = parse(evalBaselineRequestSchema, request.body);
+    if (request.client?.kind === 'session' && body.confirm?.trim().toUpperCase() !== body.runId.toUpperCase()) throw new HttpError(400, `Type ${body.runId} to confirm the new baseline`);
+    return evals.setBaseline(body.runId, body.note, new Date());
+  });
+
+  /** A human label of a rubric result, for calibration. */
+  app.post('/api/v1/evals/labels', { config: TOKEN_OR_SESSION }, async (request, reply) => {
+    await evals.label(parse(evalLabelRequestSchema, request.body), new Date());
+    return reply.code(201).send(await evals.calibration());
+  });
+
+  // --- Independent review (ADR 0032–0035) -------------------------------------------------------
+  const taskParam = (request: { params: unknown }): string => parse(taskIdSchema, (request.params as { taskId: string }).taskId.toUpperCase());
+
+  /** A reviewer's submission (through MCP); tied to its subagent run through the hook's record. */
+  app.post('/api/v1/tasks/:taskId/reviews', { config: TOKEN_ONLY }, async (request, reply) => {
+    const body = parse(reviewSubmissionRequestSchema, request.body);
+    const [sessionId, agentId] = await Promise.all([store.resolveOrigin(body.origin), store.resolveAgent(body.origin)]);
+    return reply.code(201).send(await store.submitReview(taskParam(request), body.review, sessionId, agentId, new Date()));
+  });
+
+  /** Claude closes a round although a reviewer did not report (the gap stays visible). */
+  app.post('/api/v1/tasks/:taskId/reviews/finish', { config: TOKEN_ONLY }, async (request) => store.finishReview(taskParam(request), new Date()));
+
+  app.get('/api/v1/tasks/:taskId/review', { config: TOKEN_OR_SESSION }, async (request) => store.reviewState(taskParam(request)));
+
+  /** Claude's remediation plan; the user decides on it like on a plan (stage REVIEW_FIX). */
+  app.post('/api/v1/tasks/:taskId/fix-plan', { config: TOKEN_ONLY }, async (request, reply) => {
+    const body = parse(fixPlanRequestSchema, request.body);
+    return reply.code(201).send(await store.proposeFixes(taskParam(request), body.plan, await store.resolveOrigin(body.origin), new Date()));
+  });
+
+  /** The approved fixes are done; the same reviewers check again. */
+  app.post('/api/v1/tasks/:taskId/fixes', { config: TOKEN_ONLY }, async (request, reply) => {
+    const body = parse(fixesReportRequestSchema, request.body);
+    return reply.code(201).send(await store.reportFixes(taskParam(request), body.summary, await store.resolveOrigin(body.origin), new Date()));
+  });
+
+  /** The user waives the review with a reason; the dashboard also needs the typed task ID. */
+  app.post('/api/v1/tasks/:taskId/review/skip', { config: TOKEN_OR_SESSION }, async (request) => {
+    const taskId = taskParam(request);
+    const body = parse(reviewSkipRequestSchema, request.body);
+    const fromDashboard = request.client?.kind === 'session';
+    if (fromDashboard && body.confirmTaskId?.trim().toUpperCase() !== taskId) throw new HttpError(400, `Type ${taskId} to confirm waiving the review`);
+    return store.skipReview(taskId, body.reason, new Date(), fromDashboard ? 'dashboard' : 'cli');
+  });
+
+  /** The task's current implementer assignments (ADR 0031); cheap, no Git. */
+  app.get('/api/v1/tasks/:taskId/assignments', { config: TOKEN_OR_SESSION }, async (request) => {
+    const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId.toUpperCase());
+    if (!store.snapshot().tasks.some((candidate) => candidate.taskId === taskId)) throw new HttpError(404, `Unknown task ${taskId}`);
+    return store.assignmentsOf(taskId);
+  });
+
+  /** Where the work strays from the plan, the step layers and the assignments (ADR 0031). */
+  app.get('/api/v1/tasks/:taskId/drift', { config: TOKEN_OR_SESSION }, async (request) => {
+    const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId.toUpperCase());
+    const task = store.snapshot().tasks.find((candidate) => candidate.taskId === taskId);
+    if (task === undefined) throw new HttpError(404, `Unknown task ${taskId}`);
+    return store.planDrift(task);
+  });
+
+  /** The tests that belong to the task's changes, and the command limited to them (ADR 0030). */
+  app.get('/api/v1/tasks/:taskId/targeted-tests', { config: TOKEN_OR_SESSION }, async (request) => {
+    const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId.toUpperCase());
+    const task = store.snapshot().tasks.find((candidate) => candidate.taskId === taskId);
+    if (task === undefined) throw new HttpError(404, `Unknown task ${taskId}`);
+    return targetedTestsFor(store, task);
+  });
+
+  /** Every plan version, oldest first; the dashboard and CLI diff them (ADR 0026). */
+  app.get('/api/v1/tasks/:taskId/plans', { config: TOKEN_OR_SESSION }, async (request) => {
+    const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId);
+    return store.planVersions(taskId);
   });
 
   /** Pause, resume or cancel: user decisions, like approvals (the CLI asks in a terminal, the dashboard asks for the typed ID). */
@@ -516,13 +726,32 @@ function sameRepo(a: string, b: string): boolean {
 
 const NO_ACTIVITY = { activity: { sessionCount: 0, lastSessionId: null, lastActivityAt: null, lastSessionEndedAt: null }, lastCheckpoint: null };
 
+/**
+ * Findings Claude has not heard about yet, for the tasks in implementation this session works on
+ * (ADR 0029). Compact on purpose: it goes into Claude's context with a tool call.
+ */
+async function qualityFeedback(store: StateStore, sessionId: string, now: Date): Promise<string | null> {
+  const working = new Set(store.snapshot().tasks.filter((task) => WORK_STATES.has(task.state)).map((task) => task.taskId));
+  const tasks = (await store.tasksOfSession(sessionId)).filter((taskId) => working.has(taskId));
+  const lines: string[] = [];
+  for (const taskId of tasks) {
+    for (const finding of await store.takeFeedback(taskId, now)) {
+      lines.push(`- ${finding.findingId} ${finding.severity} ${finding.file}:${finding.lineStart} ${finding.title}: ${finding.evidence} → ${finding.suggestedFix}`);
+    }
+  }
+  if (lines.length === 0) return null;
+  return [`JERRY quality: ${lines.length} new finding(s) in your changes (only changed lines are checked):`, ...lines, 'Fix them within the approved scope, or tell the user why not; jerry_list_findings lists all open ones. The user dismisses findings, not you.'].join('\n');
+}
+
 async function summarize(store: StateStore, tasks: readonly Task[]): Promise<TaskSummary[]> {
-  const [activity, reports, checks] = await Promise.all([store.taskActivity(), store.latestReports(), store.latestCompletionChecks()]);
+  const [activity, reports, checks, findingCounts, testRuns] = await Promise.all([store.taskActivity(), store.latestReports(), store.latestCompletionChecks(), store.findingCounts(), store.latestTestRuns()]);
   const summaries: TaskSummary[] = [];
   for (const task of tasks) {
     const report = reports.get(task.taskId) ?? null;
     // Analyses matter while a task is open; finished tasks keep them in their details only.
     const open = !isTerminal(task.state);
+    const analyses = open ? await store.analysesOf(task.taskId) : [];
+    const agentRuns = open ? await store.agentRunsOf(task.taskId) : [];
     summaries.push({
       ...task,
       planDecision: store.planDecision(task.taskId),
@@ -530,8 +759,12 @@ async function summarize(store: StateStore, tasks: readonly Task[]): Promise<Tas
       ...(activity.get(task.taskId) ?? NO_ACTIVITY),
       lastReport: report,
       reportDecision: report === null ? null : store.reportDecision(report),
-      analyses: open ? await store.analysesOf(task.taskId) : [],
-      agentRuns: open ? await store.agentRunsOf(task.taskId) : [],
+      analyses,
+      agentRuns,
+      // Informational (ADR 0025): it never blocks an approval.
+      planGrade: open ? gradePlan({ planVersion: task.plan.version, document: task.plan.document, analyses, agentRuns, caseInsensitive: process.platform === 'win32' }) : null,
+      findings: findingCounts.get(task.taskId) ?? null,
+      lastTestRun: testRuns.get(task.taskId) ?? null,
     });
   }
   return summaries;

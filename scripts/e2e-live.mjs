@@ -42,7 +42,8 @@ git('add', '.');
 git('commit', '-q', '-m', 'initial');
 const initialHead = git('rev-parse', 'HEAD').stdout.trim();
 
-const env = { ...process.env, JERRY_HOME: home, JERRY_CORE_PORT: '0' };
+// A short quiet period, so quality findings are ready by the model's next tool call (ADR 0029).
+const env = { ...process.env, JERRY_HOME: home, JERRY_CORE_PORT: '0', JERRY_QUALITY_DEBOUNCE_MS: '300' };
 const results = [];
 const expect = (name, ok, detail = '') => {
   results.push({ name, ok, detail });
@@ -105,10 +106,10 @@ const hooksConfig = JSON.parse(fs.readFileSync(hooksFile, 'utf8'));
 delete hooksConfig.hooks.SessionStart;
 fs.writeFileSync(hooksFile, JSON.stringify(hooksConfig, null, 2));
 
-function runClaude(label, prompt, allowedTools, plugin = pluginDir, extraArgs = []) {
+function runClaude(label, prompt, allowedTools, plugin = pluginDir, extraArgs = [], timeoutMs = 300_000) {
   const args = ['-p', prompt, '--plugin-dir', plugin, '--model', model, '--permission-mode', 'acceptEdits', '--output-format', 'json', '--no-session-persistence', ...extraArgs, '--allowedTools', ...allowedTools];
   const started = Date.now();
-  const result = spawnSync(claude, args, { cwd: repo, env, encoding: 'utf8', timeout: 300_000, windowsHide: true });
+  const result = spawnSync(claude, args, { cwd: repo, env, encoding: 'utf8', timeout: timeoutMs, windowsHide: true });
   let parsed = null;
   try {
     parsed = JSON.parse(result.stdout);
@@ -270,6 +271,29 @@ expect('K1: Claude told the user how to accept it', k1.text.includes(task.taskId
 const k2 = runClaude('K2: /jerry:commit-message', '/jerry:commit-message', ['Read', 'Bash(git status:*)', 'Bash(git diff:*)', 'Bash(git log:*)', 'mcp__plugin_jerry_jerry__jerry_get_state']);
 expect('K2: Claude proposed a commit message and left Git alone', /```/.test(k2.text) && gitUntouched(), k2.text.slice(0, 200));
 const accepted = await coreApi(info, 'POST', `/api/v1/tasks/${task.taskId}/approvals`, { stage: 'IMPLEMENTATION', version: 1, decision: 'APPROVED', comment: 'live check' });
+
+// R — independent review: the accepted implementation goes to three read-only reviewers (ADR 0032).
+expect('R: accepting the implementation starts the independent review', (await coreApi(info, 'GET', `/api/v1/tasks/${task.taskId}`)).state === 'CODE_REVIEW');
+const r = runClaude(
+  'R: /jerry:review',
+  `/jerry:review ${task.taskId}. Run the three JERRY reviewers now and report what they found. If there are open findings, do not write a fix plan: just tell me.`,
+  ['Task', 'Agent', 'Read', 'Grep', 'Glob', ...['get_state', 'get_review', 'submit_review', 'finish_review', 'get_project_profile'].map((tool) => `mcp__plugin_jerry_jerry__jerry_${tool}`)],
+  pluginDir,
+  [],
+  600_000,
+);
+const rSubmissions = await readDb('SELECT role, agent_id, independent FROM review_submissions WHERE task_id = ? AND round = 1 ORDER BY role', task.taskId);
+expect('R: all three reviewers submitted a review', rSubmissions.length === 3, JSON.stringify(rSubmissions));
+expect('R: the reviews came from separate, independent reviewer subagents', rSubmissions.length === 3 && rSubmissions.every((row) => row.agent_id !== null && row.independent === 1), JSON.stringify(rSubmissions));
+const rEvents = await readDb('SELECT event_type, agent_type, agent_id, tool_name, rule_id FROM hook_events WHERE session_id = ?', r.sessionId);
+const rReviewers = new Set(rEvents.filter((row) => row.event_type === 'SubagentStart' && /-reviewer$/.test(row.agent_type ?? '')).map((row) => row.agent_id));
+expect('R: at most three reviewers, and they only read', rReviewers.size >= 1 && rReviewers.size <= 3 && !rEvents.some((row) => rReviewers.has(row.agent_id) && /^(Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell)$/.test(row.tool_name ?? '')), `${rReviewers.size} reviewer(s)`);
+const reviewed = await coreApi(info, 'GET', `/api/v1/tasks/${task.taskId}/review`);
+expect('R: the round closed with a decision by Core (passed, or findings for the user)', reviewed.rounds?.[0]?.completedAt != null && ['DONE', 'REVIEW_REPORT'].includes(reviewed.state), `${reviewed.state}, ${reviewed.openFindings?.length ?? '?'} open finding(s)`);
+const rHistory = await coreApi(info, 'GET', `/api/v1/tasks/${task.taskId}/transitions`);
+expect('R: no fix started without the user (no fix plan approval by anyone else)', !rHistory.some((step) => step.event === 'fixes.approved'), rHistory.map((step) => step.event).join(', ').slice(0, 200));
+// The user (this script) waives the rest when the reviewers left findings: the final checks then run.
+if (reviewed.state === 'REVIEW_REPORT') await coreApi(info, 'POST', `/api/v1/tasks/${task.taskId}/review/skip`, { reason: 'live check: findings noted' });
 const final = await coreApi(info, 'GET', `/api/v1/tasks/${task.taskId}`);
 expect(
   'K: the user accepted exactly report v1; Core ran its final checks and set DONE',
@@ -278,6 +302,22 @@ expect(
 );
 const doneHistory = await coreApi(info, 'GET', `/api/v1/tasks/${task.taskId}/transitions`);
 expect('K: DONE was set by Core, not by a model or the user', doneHistory.at(-1)?.event === 'task.completed' && doneHistory.at(-1)?.actor === 'core', JSON.stringify(doneHistory.at(-1)));
+
+// S — the final report, and the Artifact as the user's choice (ADR 0041–0042). Headless sessions cannot
+// answer a question tool, so the user's answer ("no") is in the prompt; creating a real Artifact would
+// publish to the account, which is left to interactive use.
+const finalReport = await coreApi(info, 'GET', `/api/v1/tasks/${task.taskId}/final-report`);
+expect('S: the DONE task has a final report from recorded facts', finalReport.status === 'final' && finalReport.definitionOfDone?.passed === true && (finalReport.commitSubjects ?? []).length > 0, `${finalReport.status}, DoD ${finalReport.definitionOfDone?.passed}`);
+const s = runClaude(
+  'S: /jerry:artifact, the user says no',
+  `/jerry:artifact ${task.taskId}. My answer to your question is already here: no, I do not want an Artifact for this task.`,
+  ['mcp__plugin_jerry_jerry__jerry_get_final_report', 'mcp__plugin_jerry_jerry__jerry_record_artifact', 'mcp__plugin_jerry_jerry__jerry_get_state'],
+);
+const sDecision = (await coreApi(info, 'GET', `/api/v1/tasks/${task.taskId}/final-report`)).artifact;
+expect('S: the decline was recorded and no Artifact was created', sDecision?.decision === 'declined' && sDecision.url === null, JSON.stringify(sDecision));
+const sTools = (await sessionEvents(s.sessionId)).map((event) => event.toolName).filter(Boolean);
+// The answer was already "no": recording the decline is all there is to do, and nothing is created.
+expect('S: Claude recorded the decline and created nothing', sTools.some((tool) => tool.endsWith('__jerry_record_artifact')) && !sTools.some((tool) => /Artifact$|^Write$|^Edit$/.test(tool)), sTools.join(', ').slice(0, 200));
 
 // M — project profile: Claude learns the project's own test command from JERRY, without searching.
 const m = runClaude(
@@ -317,6 +357,129 @@ expect(
   JSON.stringify(nAnalysis?.citations ?? nDetail.analyses ?? nDetail).slice(0, 240),
 );
 await coreApi(info, 'POST', `/api/v1/tasks/${nTask.taskId}/transitions`, { event: 'task.cancelled' });
+
+// O — /jerry:analyze: intake, at most three read-only analysts, then a plan built on their reports.
+const o = runClaude(
+  'O: /jerry:analyze',
+  '/jerry:analyze Make the answer in src/app.ts configurable through the environment variable APP_ANSWER, falling back to 42. Keep it short: use only the architecture and risk analysts.',
+  [
+    'Task',
+    'Agent',
+    'Read',
+    'Grep',
+    'Glob',
+    'Bash(git status:*)',
+    'Bash(git log:*)',
+    ...['get_state', 'get_project_profile', 'start_task', 'submit_analysis_report', 'get_analysis', 'submit_plan'].map((tool) => `mcp__plugin_jerry_jerry__jerry_${tool}`),
+  ],
+  pluginDir,
+  [],
+  600_000,
+);
+const oRows = await (async () => {
+  const { DatabaseSync } = await import('node:sqlite');
+  const db = new DatabaseSync(path.join(home, 'database', 'jerry.sqlite'), { readOnly: true });
+  try {
+    return {
+      events: db.prepare('SELECT event_type, agent_type, agent_id, tool_name FROM hook_events WHERE session_id = ?').all(o.sessionId),
+      intakes: db.prepare("SELECT subject FROM audit_log WHERE actor = 'claude-code' AND action = 'task.intake'").all(),
+    };
+  } finally {
+    db.close();
+  }
+})();
+const oTaskId = oRows.intakes.at(-1)?.subject;
+expect('O: the skill took the task in before planning (Discovery)', oTaskId !== undefined, oRows.events.map((row) => row.tool_name ?? row.event_type).join(', ').slice(0, 240));
+const oStarts = oRows.events.filter((row) => row.event_type === 'SubagentStart');
+expect('O: at most three subagents, all JERRY analysts', oStarts.length >= 1 && oStarts.length <= 3 && oStarts.every((row) => /jerry-.*-analyst/.test(row.agent_type ?? '')), oStarts.map((row) => row.agent_type).join(', '));
+const oAnalystIds = new Set(oStarts.map((row) => row.agent_id));
+expect('O: the analysts only read', !oRows.events.some((row) => oAnalystIds.has(row.agent_id) && /^(Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell)$/.test(row.tool_name ?? '')));
+if (oTaskId !== undefined) {
+  const oDetail = await coreApi(info, 'GET', `/api/v1/tasks/${oTaskId}`);
+  const reportIds = new Set((oDetail.analyses ?? []).map((record) => record.id));
+  expect('O: the analysts’ reports are stored on the task', reportIds.size >= 1, `${reportIds.size} report(s), state ${oDetail.state}`);
+  const cited = oDetail.plan?.document?.analysis?.reports ?? [];
+  expect(
+    'O: the plan cites the analysis reports and waits for the user',
+    oDetail.state === 'WAIT_PLAN_APPROVAL' && oDetail.planDecision === null && cited.length >= 1 && cited.every((id) => reportIds.has(id)),
+    `state ${oDetail.state}, cited ${JSON.stringify(cited)}`,
+  );
+  await coreApi(info, 'POST', `/api/v1/tasks/${oTaskId}/transitions`, { event: 'task.cancelled' });
+}
+
+/** Rows of JERRY's database, read through a read-only connection. */
+async function readDb(sql, ...params) {
+  const { DatabaseSync } = await import('node:sqlite');
+  const db = new DatabaseSync(path.join(home, 'database', 'jerry.sqlite'), { readOnly: true });
+  try {
+    return db.prepare(sql).all(...params);
+  } finally {
+    db.close();
+  }
+}
+
+// P — continuous quality: JERRY finds problems in the lines Claude writes, tells Claude, and sees them fixed.
+const pTask = await coreApi(info, 'POST', '/api/v1/tasks', { repoPath: repo, title: 'Live quality', scope: ['src/**'] });
+await coreApi(info, 'POST', `/api/v1/tasks/${pTask.taskId}/approvals`, { stage: 'PLAN', version: 1, decision: 'APPROVED' });
+const p = runClaude(
+  'P: quality findings fed back and fixed',
+  [
+    'Do these steps in order.',
+    'Step 1: use the Write tool to create src/save.ts with exactly these three lines:',
+    'export async function save(write: () => Promise<void>): Promise<void> {',
+    '  await write().catch(() => {}); // TODO',
+    '}',
+    'Step 2: use Bash to run exactly: node -e "setTimeout(() => {}, 2500)"',
+    'Step 3: call the jerry_list_findings tool, then fix every finding it lists in src/save.ts with the Edit tool (handle or rethrow the error, and turn the TODO into a real comment or remove it).',
+    'Step 4: use Bash to run exactly: node -e "setTimeout(() => {}, 2500)" and then tell me which findings you fixed.',
+  ].join('\n'),
+  ['Read', 'Write', 'Edit', 'Bash(node -e:*)', 'mcp__plugin_jerry_jerry__jerry_list_findings', 'mcp__plugin_jerry_jerry__jerry_get_state'],
+);
+const pFindings = await readDb('SELECT rule_id, status FROM findings WHERE task_id = ? AND file = ?', pTask.taskId, 'src/save.ts');
+expect('P: JERRY found problems in the lines Claude wrote', pFindings.length >= 1, pFindings.map((row) => `${row.rule_id}:${row.status}`).join(', ') || 'no findings');
+expect('P: the findings were fixed in the same session (FIXED by JERRY)', pFindings.length >= 1 && pFindings.every((row) => row.status === 'FIXED'), pFindings.map((row) => `${row.rule_id}:${row.status}`).join(', '));
+const pTools = (await sessionEvents(p.sessionId)).map((event) => event.toolName).filter(Boolean);
+expect('P: Claude read the findings through MCP', pTools.some((tool) => tool.endsWith('__jerry_list_findings')), pTools.join(', ').slice(0, 200));
+await coreApi(info, 'POST', `/api/v1/tasks/${pTask.taskId}/transitions`, { event: 'task.cancelled' });
+
+// Q — implementers: the orchestrator splits an approved plan between two implementers on disjoint files.
+const qPlan = {
+  goal: 'Add greet and farewell helpers.',
+  classification: ['api-backend'],
+  repositories: [repo],
+  currentState: 'src/app.ts exports a constant.',
+  changes: [
+    { kind: 'add', target: 'src/greet.ts', description: 'greet(name)' },
+    { kind: 'add', target: 'src/farewell.ts', description: 'farewell(name)' },
+  ],
+  architectureImpact: 'Two leaf modules.',
+  risks: [{ risk: 'None significant', severity: 'low', mitigation: 'Small change' }],
+  scope: { include: ['src/**'], exclude: [] },
+  steps: [
+    { step: 'Create src/greet.ts exporting greet(name) that returns `Hello, ${name}!`', files: ['src/greet.ts'], dependsOn: [] },
+    { step: 'Create src/farewell.ts exporting farewell(name) that returns `Bye, ${name}!`', files: ['src/farewell.ts'], dependsOn: [] },
+  ],
+  tests: [{ kind: 'manual', description: 'read the files' }],
+  definitionOfDone: ['both files exist'],
+};
+const qTask = await coreApi(info, 'POST', '/api/v1/tasks', { repoPath: repo, title: 'Live implementers', scope: ['src/**'], document: qPlan });
+await coreApi(info, 'POST', `/api/v1/tasks/${qTask.taskId}/approvals`, { stage: 'PLAN', version: 1, decision: 'APPROVED' });
+const q = runClaude(
+  'Q: two implementers on disjoint files',
+  `Task ${qTask.taskId} has an approved JERRY plan with two independent steps. First call jerry_assign_work for ${qTask.taskId} with two assignments: label "greet" with step 1, and label "farewell" with step 2. Then start two jerry-implementer subagents (from the jerry plugin) in parallel, in one message: one does step 1 (only src/greet.ts), the other step 2 (only src/farewell.ts). Do not edit files yourself. When both are done, summarise.`,
+  ['Task', 'Agent', 'Read', 'Write', 'Edit', 'mcp__plugin_jerry_jerry__jerry_assign_work', 'mcp__plugin_jerry_jerry__jerry_get_state', 'mcp__plugin_jerry_jerry__jerry_check_paths', 'mcp__plugin_jerry_jerry__jerry_get_project_profile', 'mcp__plugin_jerry_jerry__jerry_list_findings'],
+  pluginDir,
+  [],
+  600_000,
+);
+const qAssignments = await readDb('SELECT label, agent_id FROM implementer_assignments WHERE task_id = ? AND released_at IS NULL ORDER BY label', qTask.taskId);
+expect('Q: the orchestrator recorded two disjoint assignments', qAssignments.length === 2, JSON.stringify(qAssignments));
+const qStarts = (await readDb("SELECT agent_type FROM hook_events WHERE session_id = ? AND event_type = 'SubagentStart'", q.sessionId)).map((row) => row.agent_type);
+expect('Q: at most three subagents, implementers only', qStarts.length >= 1 && qStarts.length <= 3 && qStarts.every((type) => /jerry-implementer/.test(type ?? '')), qStarts.join(', '));
+expect('Q: each implementer was bound to its assignment by its first edit', qAssignments.length === 2 && qAssignments.every((row) => row.agent_id !== null), JSON.stringify(qAssignments));
+const qWarnings = await readDb("SELECT rule_id FROM hook_events WHERE session_id = ? AND rule_id IN ('monitor.implementer-scope', 'monitor.concurrent-write')", q.sessionId);
+expect('Q: no implementer strayed outside its files', qWarnings.length === 0 && exists('src/greet.ts') && exists('src/farewell.ts'), qWarnings.map((row) => row.rule_id).join(', '));
+await coreApi(info, 'POST', `/api/v1/tasks/${qTask.taskId}/transitions`, { event: 'task.cancelled' });
 
 // L — Git baseline: the user's uncommitted work is protected, and Git sees what shell commands changed.
 fs.writeFileSync(path.join(repo, 'src', 'app.ts'), 'export const answer = 43; // user edit, uncommitted\n');
@@ -446,9 +609,10 @@ if (autostarted !== null) await coreApi(autostarted, 'POST', '/api/v1/shutdown',
 expect('No JERRY or harness files in repo', !['.jerry', '.harness'].some(exists), exists('.claude') ? 'note: .claude/ exists (created by Claude Code, not JERRY)' : '');
 const status = git('status', '--porcelain', '--untracked-files=all').stdout.trim().split('\n').filter(Boolean);
 expect(
-  'Repo changes are exactly the expected edits (seven new files, and src/app.ts with the user’s and Claude’s lines)',
+  'Repo changes are exactly the expected edits (ten new files, and src/app.ts with the user’s and Claude’s lines)',
   // trim() also takes the leading space of the first porcelain line, hence the optional space.
-  status.length === 8 && status.filter((line) => line.startsWith('?? ')).length === 7 && status.some((line) => /^ ?M src\/app\.ts$/.test(line)),
+  // Seven files from A–L, src/save.ts from P, src/greet.ts and src/farewell.ts from Q.
+  status.length === 11 && status.filter((line) => line.startsWith('?? ')).length === 10 && ['src/save.ts', 'src/greet.ts', 'src/farewell.ts'].every((file) => status.includes(`?? ${file}`)) && status.some((line) => /^ ?M src\/app\.ts$/.test(line)),
   status.join(' | '),
 );
 

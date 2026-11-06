@@ -4,7 +4,7 @@
  * The Zod schemas in index.ts are built from these same lists, so there is one source of truth.
  */
 
-export const JERRY_VERSION = '0.0.1-m0';
+export const JERRY_VERSION = '0.1.0';
 
 export const EVENT_SCHEMA_VERSION = 1;
 
@@ -48,6 +48,9 @@ export const WORKFLOW_STATES = [
 
 /** What moves a task between states. */
 export const WORKFLOW_EVENTS = [
+  'task.started',
+  'analysis.started',
+  'analysis.completed',
   'plan.submitted',
   'plan.revised',
   'plan.approved',
@@ -55,6 +58,13 @@ export const WORKFLOW_EVENTS = [
   'report.submitted',
   'changes.requested',
   'implementation.accepted',
+  'review.reported',
+  'review.passed',
+  'review.skipped',
+  'fixes.proposed',
+  'fixes.approved',
+  'fixes.rejected',
+  'fixes.reported',
   'task.completed',
   'task.paused',
   'task.resumed',

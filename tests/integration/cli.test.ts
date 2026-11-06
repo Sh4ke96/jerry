@@ -31,7 +31,7 @@ describe('jerry CLI (Commander)', () => {
   });
 
   it('validates arguments before doing anything', () => {
-    expect(jerry(['approve', 'JRY-0001', '--stage', 'review', '--version', '1']).stderr).toContain('must be "plan" or "implementation"');
+    expect(jerry(['approve', 'JRY-0001', '--stage', 'review', '--version', '1']).stderr).toContain('must be "plan", "implementation" or "review-fix"');
     expect(jerry(['approve', 'JRY-0001', '--stage', 'plan', '--version', 'two']).stderr).toContain('must be a positive integer');
     expect(jerry(['task', 'create', '--repo', '.', '--title', 'x']).stderr).toContain("required option '--scope <glob>' not specified");
     expect(jerry(['events', '--limit', '0']).stderr).toContain('must be a positive integer');
@@ -91,6 +91,37 @@ describe('jerry CLI (Commander)', () => {
         expect(refused.stderr, verb).toContain('interactive terminal');
       }
       expect(jerry(['task', 'show', 'JRY-0001'], { JERRY_HOME: home }).stdout).toContain('(WAIT_PLAN_APPROVAL)');
+      // A scope-only plan is graded as such, for information.
+      expect(shown.stdout).toContain('completeness: scope-only (0/100, informational)');
+    } finally {
+      await core.stop();
+    }
+  });
+
+  it('jerry plan diff: shows what changed between plan versions', async () => {
+    const home = path.join(base, 'diff-home');
+    const repo = path.join(base, 'diff-repo');
+    fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+    const core = await startCore(home);
+    try {
+      jerry(['task', 'create', '--repo', repo, '--title', 'Diff flow', '--scope', 'src/**'], { JERRY_HOME: home });
+      expect(jerry(['plan', 'diff', 'JRY-0001'], { JERRY_HOME: home }).stdout).toContain('there is nothing to compare');
+      expect(jerry(['plan', 'revise', 'JRY-0001', '--scope', 'src/**', '--scope', 'tests/**'], { JERRY_HOME: home }).exitCode).toBe(0);
+      jerry(['plan', 'revise', 'JRY-0001', '--scope', 'tests/**'], { JERRY_HOME: home });
+
+      const latest = jerry(['plan', 'diff', 'jry-0001'], { JERRY_HOME: home });
+      expect(latest.exitCode, latest.stderr).toBe(0);
+      expect(latest.stdout).toContain('JRY-0001 plan v2 → v3');
+      expect(latest.stdout).toContain('    - src/**');
+      expect(latest.stdout).not.toContain('+ tests/**');
+
+      const first = jerry(['plan', 'diff', 'JRY-0001', '--from', '1', '--to', '2'], { JERRY_HOME: home });
+      expect(first.stdout).toContain('JRY-0001 plan v1 → v2');
+      expect(first.stdout).toContain('    + tests/**');
+
+      const wrong = jerry(['plan', 'diff', 'JRY-0001', '--from', '3', '--to', '1'], { JERRY_HOME: home });
+      expect(wrong.exitCode).toBe(1);
+      expect(wrong.stderr).toContain('--from older --to newer');
     } finally {
       await core.stop();
     }

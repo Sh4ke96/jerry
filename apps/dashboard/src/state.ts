@@ -31,10 +31,32 @@ export const state = reactive<DashboardState>({
   refreshedAt: null,
 });
 
+/**
+ * Fills fields that an older Core does not send yet with their defaults, so the dashboard never
+ * breaks on a version mismatch (it renders less, not nothing).
+ */
+export function withDefaults(task: TaskSummary): TaskSummary {
+  const partial = task as Partial<TaskSummary> & Pick<TaskSummary, 'taskId'>;
+  return {
+    ...task,
+    planDecision: partial.planDecision ?? null,
+    finalCheck: partial.finalCheck ?? null,
+    lastCheckpoint: partial.lastCheckpoint ?? null,
+    lastReport: partial.lastReport ?? null,
+    reportDecision: partial.reportDecision ?? null,
+    analyses: partial.analyses ?? [],
+    agentRuns: partial.agentRuns ?? [],
+    planGrade: partial.planGrade ?? null,
+    findings: partial.findings ?? null,
+    lastTestRun: partial.lastTestRun ?? null,
+    activity: partial.activity ?? { sessionCount: 0, lastSessionId: null, lastActivityAt: null, lastSessionEndedAt: null },
+  };
+}
+
 export async function refresh(): Promise<void> {
   try {
     const [status, tasks, events, exclusions, repositories, graph] = await Promise.all([api.status(), api.tasks(), api.events({ limit: 300 }), api.exclusions(), api.repositories(), api.workspaceGraph()]);
-    Object.assign(state, { status, tasks, events, exclusions, repositories, graph, refreshedAt: new Date(), phase: 'ready', error: null });
+    Object.assign(state, { status, tasks: tasks.map(withDefaults), events, exclusions, repositories, graph, refreshedAt: new Date(), phase: 'ready', error: null });
   } catch (error) {
     handleError(error);
   }

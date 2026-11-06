@@ -36,7 +36,17 @@ export interface GateContext {
   isUserChangedFile?(taskId: string, relativePath: string): boolean;
   /** Subagents the session started and has not finished (ADR 0023); absent where unknown. */
   activeSubagents?(sessionId: string): number;
+  /**
+   * Implementer checks of an in-scope edit (ADR 0031): concurrent writes to one file, and an
+   * implementer outside its assignment. `agentId` is null for the main session. Warnings only.
+   */
+  implementerCheck?(taskId: string, agentId: string | null, relativePath: string): { ruleId: string; reason: string } | null;
+  /** The plugin agent type of a subagent (e.g. "jerry:jerry-security-reviewer"), when known (ADR 0033). */
+  agentType?(agentId: string): string | null;
 }
+
+/** JERRY's read-only roles: analysts and reviewers never write (ADR 0022, 0033). */
+const READ_ONLY_AGENT = /jerry-[\w-]*-(?:analyst|reviewer)$/;
 
 /**
  * Commands only the user may run. Read-only ones (status, doctor, task list/show, repo list, core
@@ -127,6 +137,15 @@ function hardRulesForShell(command: string, dialect: 'bash' | 'powershell', cwd:
 }
 
 function evaluateMonitoring(action: ToolAction, request: GateCheckRequest, context: GateContext): GateDecision {
+  // A read-only JERRY agent that writes or runs a modifying command (ADR 0033): warned, not blocked;
+  // blocking would be a new hard rule, which is the product owner's decision.
+  if (request.agentId !== null && request.agentId !== undefined) {
+    const type = context.agentType?.(request.agentId) ?? null;
+    const writes = action.kind === 'file-write' || action.kind === 'file-write-unknown' || action.kind === 'shell-opaque' || (action.kind === 'shell' && !assessShellCommand(action.command, action.dialect).readOnly);
+    if (writes && type !== null && READ_ONLY_AGENT.test(type)) {
+      return decision('WARN', 'monitor.read-only-agent-write', `${type} is a read-only JERRY agent, but ${request.toolName} may change files. It proceeds and is recorded; a review or analysis must not change the code it judges.`);
+    }
+  }
   switch (action.kind) {
     case 'not-guarded': {
       // ADR 0015: at most three subagents at a time. A fourth is warned about, not blocked.
@@ -143,7 +162,7 @@ function evaluateMonitoring(action: ToolAction, request: GateCheckRequest, conte
     case 'file-write-unknown':
       return decision('WARN', 'monitor.unknown-target', `${action.detail}; JERRY could not check it against the approved plan.`);
     case 'file-write':
-      return worstOf(action.paths.map((target) => monitorWrite(target, request.cwd, context)));
+      return worstOf(action.paths.map((target) => monitorWrite(target, request.cwd, context, request.agentId ?? null)));
     case 'shell':
       return monitorShell(request.cwd, context, assessShellCommand(action.command, action.dialect));
     case 'shell-opaque':
@@ -151,7 +170,7 @@ function evaluateMonitoring(action: ToolAction, request: GateCheckRequest, conte
   }
 }
 
-function monitorWrite(target: string, cwd: string, context: GateContext): GateDecision {
+function monitorWrite(target: string, cwd: string, context: GateContext, agentId: string | null = null): GateDecision {
   const { platform } = context;
   const requested = absolutePath(target, cwd, platform);
   const real = absolutePath(context.realPath(requested), cwd, platform);
@@ -181,6 +200,8 @@ function monitorWrite(target: string, cwd: string, context: GateContext): GateDe
       repoRoot,
     );
   }
+  const implementer = context.implementerCheck?.(covering.taskId, agentId, relative) ?? null;
+  if (implementer !== null) return decision('WARN', implementer.ruleId, implementer.reason, covering.taskId, repoRoot);
   return decision('PASS', 'monitor.in-approved-scope', `${relative} is within the approved scope of ${covering.taskId} v${covering.planVersion}`, covering.taskId, repoRoot);
 }
 

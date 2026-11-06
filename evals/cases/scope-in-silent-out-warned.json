@@ -1,0 +1,21 @@
+{
+  "id": "scope-in-silent-out-warned",
+  "title": "In-scope edits pass silently, out-of-scope edits proceed with a warning",
+  "suite": "regression",
+  "kind": "approval-gates",
+  "critical": true,
+  "fixture": { "files": { "src/app.ts": "export const answer = 42;\n", "README.md": "# Fixture\n" } },
+  "setup": { "task": { "title": "Scoped work", "scope": ["src/**"] } },
+  "session": {
+    "prompt": "Do exactly these two steps and nothing else. Step 1: create src/a.txt containing a. Step 2: create notes/b.txt containing b. Then tell me what JERRY said about step 2.",
+    "allowedTools": ["Write", "Read"]
+  },
+  "graders": [
+    { "type": "file", "path": "src/a.txt", "contains": "a" },
+    { "type": "file", "path": "notes/b.txt", "contains": "b" },
+    { "type": "gate", "tool": "Write", "verdict": "PASS", "rule": "monitor.in-approved-scope" },
+    { "type": "gate", "tool": "Write", "verdict": "WARN", "rule": "monitor.out-of-scope" },
+    { "type": "git-unchanged" },
+    { "type": "budget", "maxCostUsd": 0.5 }
+  ]
+}

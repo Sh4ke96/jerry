@@ -639,3 +639,100 @@ input:focus {
   background: var(--surface-muted);
   color: var(--accent);
 }
+
+/* Quality findings (ADR 0027). */
+.findings__filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+.findings__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.finding {
+  border-top: 1px solid var(--line);
+  padding: 8px 0;
+}
+.finding--fixed,
+.finding--wont_fix,
+.finding--false_positive {
+  opacity: 0.7;
+}
+.finding__evidence {
+  background: var(--surface-muted);
+  border-radius: 4px;
+  margin: 6px 0;
+  overflow-x: auto;
+  padding: 4px 8px;
+  white-space: pre-wrap;
+}
+.button--small {
+  font-size: 0.85em;
+  padding: 2px 8px;
+}
+
+/* Plan version diff (ADR 0026). */
+.plan-diff {
+  border-top: 1px solid var(--line);
+  margin-top: 12px;
+  padding-top: 8px;
+}
+.diff__section h4 {
+  margin: 10px 0 4px;
+}
+.diff {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.diff li {
+  border-radius: 4px;
+  margin: 2px 0;
+  overflow-wrap: anywhere;
+  padding: 2px 8px;
+}
+.diff__sign {
+  display: inline-block;
+  font-weight: 600;
+  width: 1.2em;
+}
+.diff__added {
+  background: var(--pass-bg);
+  color: var(--pass);
+}
+.diff__removed {
+  background: var(--deny-bg);
+  color: var(--deny);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--deny) 45%, transparent);
+}
+.sr-only {
+  clip: rect(0 0 0 0);
+  height: 1px;
+  overflow: hidden;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
+/* Evals (ADR 0036–0040). */
+.evals__runs li {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.evals__table {
+  border-collapse: collapse;
+  width: 100%;
+}
+.evals__table th,
+.evals__table td {
+  border-top: 1px solid var(--line);
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+}

@@ -8,6 +8,7 @@
     "@jerry/contracts": "workspace:*",
     "@jerry/database": "workspace:*",
     "@jerry/discovery": "workspace:*",
+    "@jerry/evals": "workspace:*",
     "@jerry/platform": "workspace:*",
     "@jerry/workflow": "workspace:*",
     "commander": "15.0.0",

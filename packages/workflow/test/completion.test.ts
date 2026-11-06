@@ -58,3 +58,39 @@ describe('DONE validator (spec Phase 9)', () => {
     expect(evaluateCompletion({ ...ready, editsSinceReport: many }).conditions.find((condition) => condition.id === 'code.unchanged-since-report')?.detail).toMatch(/src\/f9\.ts and 2 more$/);
   });
 });
+
+describe('DONE validator: continuous quality (ADR 0027–0031)', () => {
+  it('records open serious findings and contradicted check claims as limitations, never as blocks', () => {
+    const base = report();
+    const withQuality: CompletionInput = {
+      ...ready,
+      report: {
+        ...base,
+        evidence: {
+          ...base.evidence,
+          quality: { openFindings: 2, serious: ['FND-3 P1 src/a.ts:4 Secret written into the code'], lastTestRun: null, claimedVsObserved: ['npm test: the report says PASS, JERRY saw FAIL at 2026-11-06T10:05:00.000Z'], unplannedFiles: [], untouchedSteps: [] },
+        },
+      },
+    };
+    const result = evaluateCompletion(withQuality);
+    expect(result.passed).toBe(true);
+    const limitations = result.conditions.filter((condition) => !condition.blocking && !condition.passed);
+    expect(limitations.map((condition) => condition.id)).toEqual(['quality.no-serious-findings', 'tests.claims-match-observed']);
+    expect(limitations[0]!.detail).toContain('FND-3 P1');
+    // Reports from before M5 have no quality evidence and get no such conditions.
+    expect(evaluateCompletion(ready).conditions.some((condition) => condition.id.startsWith('quality.'))).toBe(false);
+  });
+});
+
+describe('DONE validator: independent review (ADR 0032)', () => {
+  const review = { outcome: 'passed' as const, rounds: 2, reason: '', uncovered: [], notIndependent: [], openFindings: [] };
+
+  it('requires a passed or waived review, and records coverage and independence', () => {
+    expect(evaluateCompletion({ ...ready, review }).passed).toBe(true);
+    expect(failedIds({ ...ready, review: { ...review, outcome: null } })).toEqual(['review.done']);
+    const waived = evaluateCompletion({ ...ready, review: { ...review, outcome: 'skipped', reason: 'docs only', uncovered: ['src/a.ts'], notIndependent: ['jerry-correctness-reviewer'], openFindings: ['FND-9 P2 src/a.ts:3 x'] } });
+    expect(waived.passed).toBe(true);
+    expect(waived.conditions.find((condition) => condition.id === 'review.done')?.detail).toBe('the user waived the review: docs only');
+    expect(waived.conditions.filter((condition) => !condition.passed).map((condition) => condition.id)).toEqual(['review.coverage', 'review.independent', 'review.open-findings']);
+  });
+});

@@ -27,7 +27,30 @@ import {
   type EventEnvelope,
   type SessionRegistration,
   type StoredEvent,
+  type Finding,
+  type FindingCounts,
+  type FindingEvent,
+  type FindingStatus,
+  findingSchema,
+  findingSeveritySchema,
+  findingStatusSchema,
+  type Assignment,
+  type ArtifactDecision,
+  artifactDecisionSchema,
+  type FindingSeverity,
+  type FixPlan,
+  MAX_REVIEW_ROUNDS,
+  REVIEWER_ROLES,
+  type ReviewerRole,
+  type ReviewState,
+  type ReviewSubmission,
+  reviewRoundSchema,
+  type Plan,
+  type PlanDrift,
+  type TestRun,
+  testRunSchema,
   type PlanDocument,
+  planSchema,
   type Task,
   type WorkflowActor,
   type WorkflowEvent,
@@ -39,8 +62,10 @@ import {
 } from '@jerry/contracts';
 import { backupDatabase, openJerryDatabase, type JerryDatabase, type JerrySchema } from '@jerry/database';
 import { absolutePath, comparablePath, computePlanHash, computeReportHash, currentPlanDecision, decisionFor, matchesAnyGlob, relativeInside } from '@jerry/policy-engine';
-import { applyEvent, evaluateCompletion, isTerminal } from '@jerry/workflow';
+import { applyEvent, evaluateCompletion, globsOverlap, isTerminal, planLayers, WORK_STATES } from '@jerry/workflow';
+import { MAX_SUBAGENTS } from '@jerry/contracts/agents';
 import type { ProfileFingerprints } from '@jerry/discovery';
+import type { DetectedFinding } from '@jerry/quality';
 import { fingerprintFiles, gitReader, type GitReader, type GitSnapshot } from './git-reader.js';
 import { sql, type Kysely, type Selectable, type Transaction } from 'kysely';
 import { z } from 'zod';
@@ -57,6 +82,17 @@ export type SessionActivity = 'plan.submitted' | 'plan.revised' | 'edit' | 'chec
 
 /** A subagent run without SubagentStop after this long is timed-out; also the window for counting active ones. */
 const SUBAGENT_TIMEOUT_MS = 30 * 60 * 1000;
+
+/** Findings category of each reviewer (ADR 0032). */
+const REVIEW_CATEGORY: Readonly<Record<ReviewerRole, string>> = {
+  'jerry-correctness-reviewer': 'correctness',
+  'jerry-security-reviewer': 'security',
+  'jerry-design-reviewer': 'architecture',
+};
+const SEVERITY_RANK: Readonly<Record<FindingSeverity, number>> = { P1: 0, P2: 1, P3: 2, P4: 3 };
+
+/** Automatic fix rounds per finding before it is left to the user (spec §12.5; the product owner's proposal: 2). */
+const MAX_AUTO_FIX_ROUNDS = 2;
 
 /** Tools whose target path JERRY sees, so their edits count as observed. */
 const FILE_TOOLS: ReadonlySet<string> = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
@@ -89,7 +125,7 @@ export interface StateStoreOptions {
 }
 
 /** When a Git baseline is taken. */
-export type SnapshotKind = 'plan.approved' | 'report' | 'checkpoint';
+export type SnapshotKind = 'plan.approved' | 'report' | 'checkpoint' | 'review';
 
 interface StoredSnapshot {
   head: string | null;
@@ -118,6 +154,10 @@ export class StateStore {
   private userDirty = new Map<string, Set<string>>();
   /** (task, file) pairs Claude was already warned about; one warning per file and task. */
   private readonly userFileWarnings = new Set<string>();
+  /** Active implementer assignments per task (ADR 0031), for the synchronous gate. */
+  private assignments = new Map<string, Assignment[]>();
+  /** The last subagent that edited a file of a task: (task|file) → writer (ADR 0031). */
+  private readonly recentWriters = new Map<string, { agentId: string; at: number }>();
 
   private constructor(
     private readonly database: JerryDatabase,
@@ -135,6 +175,16 @@ export class StateStore {
       throw error;
     }
     return store;
+  }
+
+  /** The query builder, for stores that own their own tables (eval runs, ADR 0039). */
+  get kysely(): Kysely<JerrySchema> {
+    return this.database.db;
+  }
+
+  /** The read-only Git reader (ADR 0017); the quality scheduler shares it. */
+  get gitReader(): GitReader {
+    return this.git;
   }
 
   get databaseFile(): string {
@@ -158,6 +208,22 @@ export class StateStore {
   }
 
   async createTask(input: { repoRoot: string; title: string; scope: string[]; document?: PlanDocument; submittedBy?: 'user' | 'claude'; sessionId?: string | null }, now: Date): Promise<Task> {
+    return this.openTask({ ...input, goal: null }, 'plan.submitted', now);
+  }
+
+  /**
+   * Task intake before a plan (ADR 0024): the task starts in DISCOVERY with an intake plan v1 whose
+   * scope is the area to analyse. Nothing is approved; edits stay deviations until a real plan is.
+   */
+  async startTask(input: { repoRoot: string; title: string; goal: string; focus: string[]; submittedBy?: 'user' | 'claude'; sessionId?: string | null }, now: Date): Promise<Task> {
+    return this.openTask({ repoRoot: input.repoRoot, title: input.title, scope: input.focus, goal: input.goal, submittedBy: input.submittedBy, sessionId: input.sessionId }, 'task.started', now);
+  }
+
+  private async openTask(
+    input: { repoRoot: string; title: string; scope: string[]; goal: string | null; document?: PlanDocument | undefined; submittedBy?: 'user' | 'claude' | undefined; sessionId?: string | null | undefined },
+    event: 'plan.submitted' | 'task.started',
+    now: Date,
+  ): Promise<Task> {
     const at = now.toISOString();
     const taskId = await this.database.db.transaction().execute(async (trx) => {
       const repoId = await upsertRepository(trx, input.repoRoot, at);
@@ -165,17 +231,18 @@ export class StateStore {
       const number = setting === undefined ? 1 : Number(JSON.parse(setting.value_json));
       const id = `JRY-${String(number).padStart(4, '0')}`;
       const actor = input.submittedBy ?? 'user';
-      const state = validTransition(id, null, 'plan.submitted', actor);
-      await trx.insertInto('tasks').values({ task_id: id, title: input.title, repo_id: repoId, current_plan_version: 1, state, created_at: at, updated_at: at }).execute();
+      const state = validTransition(id, null, event, actor);
+      await trx.insertInto('tasks').values({ task_id: id, title: input.title, repo_id: repoId, current_plan_version: 1, state, goal: input.goal, created_at: at, updated_at: at }).execute();
       await insertPlan(trx, { taskId: id, title: input.title, repoRoot: input.repoRoot, version: 1, scope: input.scope, document: input.document, at });
-      await recordTransition(trx, { taskId: id, from: null, to: state, event: 'plan.submitted', actor, reason: 'plan version 1', at });
-      if (input.sessionId != null) await linkSession(trx, input.sessionId, id, 'plan.submitted', at);
+      await recordTransition(trx, { taskId: id, from: null, to: state, event, actor, reason: event === 'task.started' ? 'task intake: analysis first' : 'plan version 1', at });
+      if (input.sessionId != null) await linkSession(trx, input.sessionId, id, event === 'task.started' ? 'analysis' : 'plan.submitted', at);
       await trx
         .insertInto('settings')
         .values({ key: NEXT_TASK_NUMBER, value_json: JSON.stringify(number + 1), created_at: at, updated_at: at })
         .onConflict((conflict) => conflict.column('key').doUpdateSet({ value_json: JSON.stringify(number + 1), updated_at: at }))
         .execute();
-      await audit(trx, at, 'task.create', id, { repoRoot: input.repoRoot, scope: input.scope, withDocument: input.document !== undefined }, actorOf(input.submittedBy));
+      const details = event === 'task.started' ? { repoRoot: input.repoRoot, focus: input.scope, goal: input.goal } : { repoRoot: input.repoRoot, scope: input.scope, withDocument: input.document !== undefined };
+      await audit(trx, at, event === 'task.started' ? 'task.intake' : 'task.create', id, details, actorOf(input.submittedBy));
       return id;
     });
     await this.reload();
@@ -188,6 +255,8 @@ export class StateStore {
     const at = now.toISOString();
     const version = task.plan.version + 1;
     await this.database.db.transaction().execute(async (trx) => {
+      // The plan built on the analysts' reports closes the analysis (ADR 0024).
+      if (task.state === 'PARALLEL_ANALYSIS') await this.transition(trx, taskId, 'analysis.completed', 'core', `plan version ${version} submitted`, at);
       await this.transition(trx, taskId, 'plan.revised', submittedBy, `plan version ${version}`, at);
       if (sessionId !== null) await linkSession(trx, sessionId, taskId, 'plan.revised', at);
       await insertPlan(trx, { taskId, title: task.title, repoRoot: task.repoRoot, version, scope, document, at });
@@ -209,11 +278,18 @@ export class StateStore {
     // work at that moment); an acceptance compares the repository with the report's snapshot.
     const approvingPlan = request.stage === 'PLAN' && request.decision === 'APPROVED';
     const accepting = request.stage === 'IMPLEMENTATION' && request.decision === 'APPROVED';
-    const gitNow = approvingPlan ? await this.prepareSnapshot(task, 'plan.approved') : accepting ? await this.prepareSnapshot(task, 'report') : null;
+    const gitNow = approvingPlan ? await this.prepareSnapshot(task, 'plan.approved') : null;
+    // The first review round covers every file changed since the plan was approved (ADR 0032).
+    const toReview = accepting ? await this.changesSincePlanApproval(task) : [];
     const record = await this.database.db.transaction().execute(async (trx) => {
-      const label = request.stage === 'PLAN' ? 'plan' : 'implementation report';
-      const subject = request.stage === 'PLAN' ? { version: task.plan.version, contentHash: task.plan.contentHash } : await latestReportSubject(trx, taskId);
-      if (subject === null) throw new StateError(409, `${taskId} has no implementation report to decide on`);
+      const label = request.stage === 'PLAN' ? 'plan' : request.stage === 'IMPLEMENTATION' ? 'implementation report' : 'review fix plan';
+      const subject =
+        request.stage === 'PLAN'
+          ? { version: task.plan.version, contentHash: task.plan.contentHash }
+          : request.stage === 'IMPLEMENTATION'
+            ? await latestReportSubject(trx, taskId)
+            : await latestFixPlanSubject(trx, taskId);
+      if (subject === null) throw new StateError(409, request.stage === 'REVIEW_FIX' ? `${taskId} has no fix plan to decide on` : `${taskId} has no implementation report to decide on`);
       if (request.version !== subject.version) {
         throw new StateError(409, `${taskId} ${label} is at version ${subject.version}; refusing a decision for version ${request.version}`);
       }
@@ -228,8 +304,9 @@ export class StateStore {
         approvedAt: at,
         comment: request.comment,
       };
+      const approved = record.decision === 'APPROVED';
       const event: WorkflowEvent =
-        request.stage === 'PLAN' ? (record.decision === 'APPROVED' ? 'plan.approved' : 'plan.rejected') : record.decision === 'APPROVED' ? 'implementation.accepted' : 'changes.requested';
+        request.stage === 'PLAN' ? (approved ? 'plan.approved' : 'plan.rejected') : request.stage === 'IMPLEMENTATION' ? (approved ? 'implementation.accepted' : 'changes.requested') : approved ? 'fixes.approved' : 'fixes.rejected';
       await this.transition(trx, taskId, event, 'user', record.comment === '' ? `${label} version ${record.version}` : record.comment, at);
       await trx
         .insertInto('approvals')
@@ -248,8 +325,12 @@ export class StateStore {
         .execute();
       await audit(trx, at, `approval.${record.decision.toLowerCase()}`, taskId, { stage: record.stage, version: record.version, contentHash: record.contentHash, channel });
       if (event === 'plan.approved' && gitNow !== null) await insertSnapshot(trx, task, 'plan.approved', gitNow, at);
-      // Accepting the implementation hands the task to Core's final checks, in the same transaction.
-      if (event === 'implementation.accepted') await this.runFinalChecks(trx, task, at, gitNow);
+      // Accepting the implementation starts the independent review (ADR 0032); its end runs the final checks.
+      if (event === 'implementation.accepted') {
+        const previous = await trx.selectFrom('review_rounds').select((eb) => eb.fn.max('round').as('round')).where('task_id', '=', taskId).executeTakeFirst();
+        await trx.insertInto('review_rounds').values({ task_id: taskId, round: Number(previous?.round ?? 0) + 1, started_at: at, changed_files_json: JSON.stringify(toReview) }).execute();
+      }
+      if (event === 'fixes.approved') await trx.updateTable('review_rounds').set({ fixes_approved_at: at }).where('task_id', '=', taskId).where('round', '=', record.version).execute();
       return record;
     });
     await this.reload();
@@ -298,6 +379,20 @@ export class StateStore {
   }
 
   /** What changed in the repository since the task's last checkpoint, if one was taken. */
+  /**
+   * In-scope files changed since the plan was approved (ADR 0030), from read-only Git; the user's
+   * files that were already changed then and have not changed since are left out.
+   */
+  async changesSincePlanApproval(task: Task): Promise<string[]> {
+    const now = await this.prepareSnapshot(task, 'report');
+    const baseline = await latestSnapshot(this.database.db, task.taskId, 'plan.approved');
+    const userAtBaseline = baseline?.fingerprints ?? {};
+    return now.changed
+      .filter((file) => !(file in userAtBaseline) || userAtBaseline[file] !== now.fingerprints[file])
+      .filter((file) => matchesAnyGlob(file, task.plan.scope, process.platform === 'win32'))
+      .sort();
+  }
+
   async changesSinceCheckpoint(task: Task, budgetMs = 700): Promise<{ headBefore: string | null; headNow: string | null; changedFiles: number } | null> {
     const checkpoint = await latestSnapshot(this.database.db, task.taskId, 'checkpoint');
     if (checkpoint === null) return null;
@@ -315,10 +410,34 @@ export class StateStore {
   private async runFinalChecks(trx: Transaction<JerrySchema>, task: Task, at: string, gitNow: PreparedSnapshot | null): Promise<CompletionCheck> {
     const reportRow = await trx.selectFrom('implementation_reports').selectAll().where('task_id', '=', task.taskId).orderBy('version', 'desc').limit(1).executeTakeFirst();
     const report = reportRow === undefined ? null : reportFromRow(reportRow);
-    // Edits after the report: seen by the hooks (file tools), and by Git (also shell commands).
-    const hookEdits = report === null ? [] : await editsInScopeBetween(trx, task, report.createdAt, at);
-    const reportSnapshot = await latestSnapshot(trx, task.taskId, 'report');
-    const gitEdits = report === null || reportSnapshot === null || gitNow === null || gitNow.snapshot === null ? [] : changedInScope(task, reportSnapshot.fingerprints, gitNow.fingerprints);
+    // The review (ADR 0032–0035): approved fixes after the report are legitimate, so edits count
+    // from the end of the last review round (or the user's waiver) when that is later.
+    const rounds = await trx.selectFrom('review_rounds').selectAll().where('task_id', '=', task.taskId).orderBy('round').execute();
+    const lastRound = rounds.at(-1);
+    // Edits after the report: seen by the hooks (file tools), and by Git (also shell commands). Edits
+    // made between the user's approval of a fix plan and the fixes report are the approved fixes;
+    // the re-review covered them (ADR 0035). Everything else after the report still counts.
+    const fixWindows = rounds.filter((round) => round.fixes_approved_at !== null).map((round) => ({ from: round.fixes_approved_at!, until: round.fixes_reported_at ?? at }));
+    const hookEdits = report === null ? [] : await editsInScopeBetween(trx, task, report.createdAt, at, fixWindows);
+    const lastFixes = rounds.map((round) => round.fixes_reported_at).filter((value): value is string => value !== null).sort().at(-1) ?? null;
+    const reviewSnapshot = lastFixes === null ? null : await latestSnapshot(trx, task.taskId, 'review');
+    const baselineSnapshot = reviewSnapshot !== null && reviewSnapshot.createdAt >= lastFixes! ? reviewSnapshot : await latestSnapshot(trx, task.taskId, 'report');
+    const gitEdits = report === null || baselineSnapshot === null || gitNow === null || gitNow.snapshot === null ? [] : changedInScope(task, baselineSnapshot.fingerprints, gitNow.fingerprints);
+    let review: Parameters<typeof evaluateCompletion>[0]['review'];
+    if (lastRound !== undefined) {
+      const submissions = await trx.selectFrom('review_submissions').selectAll().where('task_id', '=', task.taskId).execute();
+      const own = submissions.filter((submission) => submission.round === lastRound.round);
+      const reviewed = new Set(own.flatMap((submission) => (JSON.parse(submission.files_reviewed_json) as string[]).map(fileKey)));
+      const openReview = await trx.selectFrom('findings').selectAll().where('task_id', '=', task.taskId).where('source', '=', 'review').where('status', 'in', ['OPEN', 'ACCEPTED']).execute();
+      review = {
+        outcome: lastRound.passed_at !== null ? 'passed' : lastRound.skipped_at !== null ? 'skipped' : null,
+        rounds: rounds.length,
+        reason: lastRound.skip_reason ?? '',
+        uncovered: lastRound.skipped_at !== null && own.length === 0 ? [] : (JSON.parse(lastRound.changed_files_json) as string[]).filter((file) => !reviewed.has(fileKey(file))),
+        notIndependent: [...new Set(submissions.filter((submission) => submission.independent === 0).map((submission) => submission.role))],
+        openFindings: openReview.map((finding) => `FND-${finding.id} ${finding.severity} ${finding.file}:${finding.line_start} ${finding.title}`),
+      };
+    }
     const decisions = await trx.selectFrom('approvals').selectAll().where('task_id', '=', task.taskId).orderBy('approved_at').orderBy(sql`rowid`).execute();
     const approvals = decisions.map((row) => approvalRecordSchema.parse({ approvalId: row.approval_id, taskId: row.task_id, stage: row.stage, version: row.version, contentHash: row.content_hash, decision: row.decision, approvedBy: row.approved_by, approvedAt: row.approved_at, comment: row.comment }));
     const result = evaluateCompletion({
@@ -328,6 +447,7 @@ export class StateStore {
       reportAccepted: report !== null && decisionFor(approvals, { taskId: task.taskId, stage: 'IMPLEMENTATION', version: report.version, contentHash: report.contentHash })?.decision === 'APPROVED',
       editsSinceReport: [...new Set([...hookEdits, ...gitEdits])].sort(),
       definitionOfDone: task.plan.document?.definitionOfDone ?? [],
+      ...(review === undefined ? {} : { review }),
     });
     const check: CompletionCheck = { taskId: task.taskId, reportVersion: report?.version ?? null, at, passed: result.passed, conditions: result.conditions, definitionOfDone: task.plan.document?.definitionOfDone ?? [] };
     await trx
@@ -365,12 +485,13 @@ export class StateStore {
     const task = this.requireTask(taskId);
     const at = now.toISOString();
     const gitNow = await this.prepareSnapshot(task, 'report');
+    const quality = await this.qualityEvidence(task, document);
     const record = await this.database.db.transaction().execute(async (trx) => {
       const previous = await latestReportSubject(trx, taskId);
       const version = (previous?.version ?? 0) + 1;
       await this.transition(trx, taskId, 'report.submitted', submittedBy, `implementation report version ${version}`, at);
       const baseline = await latestSnapshot(trx, taskId, 'plan.approved');
-      const evidence = await collectEvidence(trx, task, document, at, gitEvidence(baseline, gitNow));
+      const evidence = { ...(await collectEvidence(trx, task, document, at, gitEvidence(baseline, gitNow))), quality };
       await insertSnapshot(trx, task, 'report', gitNow, at);
       const record: ImplementationReportRecord = {
         taskId,
@@ -520,9 +641,733 @@ export class StateStore {
         .returning('id')
         .executeTakeFirstOrThrow();
       if (sessionId !== null) await linkSession(trx, sessionId, taskId, 'analysis', at);
+      // The first analyst's report moves a task in discovery into analysis (ADR 0024).
+      if (task.state === 'DISCOVERY') await this.transition(trx, taskId, 'analysis.started', 'core', `first analysis report (${report.role})`, at);
       return inserted.id;
     });
+    if (task.state === 'DISCOVERY') await this.reload();
     return { id, taskId, report, citations, sessionId, agentId, createdAt: at };
+  }
+
+  /**
+   * Applies one quality check of some files (ADR 0027). For each checked file: findings seen again are
+   * refreshed (and reopened if they had been FIXED), new ones are OPEN, and OPEN or ACCEPTED findings
+   * the check no longer reports are FIXED with the reason. The user's dismissals stay as they are.
+   */
+  async applyQualityBatch(batch: {
+    taskId: string | null;
+    repoRoot: string;
+    sessionId: string | null;
+    agentId: string | null;
+    files: ReadonlyArray<{ file: string; findings: readonly DetectedFinding[]; planRelated: boolean }>;
+    startedAt: Date;
+    durationMs: number;
+    error?: string | null;
+  }): Promise<{ created: number; fixed: number; reopened: number }> {
+    const at = new Date(batch.startedAt.getTime() + batch.durationMs).toISOString();
+    const result = { created: 0, fixed: 0, reopened: 0 };
+    await this.database.db.transaction().execute(async (trx) => {
+      for (const checked of batch.files) {
+        let query = trx.selectFrom('findings').selectAll().where('repo_root', '=', batch.repoRoot).where('file', '=', checked.file);
+        query = batch.taskId === null ? query.where('task_id', 'is', null) : query.where('task_id', '=', batch.taskId);
+        const existing = await query.execute();
+        const byKey = new Map(existing.map((row) => [`${row.rule_id}\n${row.fingerprint}`, row]));
+        const seen = new Set<string>();
+        for (const finding of checked.findings) {
+          const key = `${finding.ruleId}\n${finding.fingerprint}`;
+          seen.add(key);
+          const row = byKey.get(key);
+          const fields = {
+            rule_version: finding.ruleVersion,
+            line_start: finding.lineStart,
+            line_end: finding.lineEnd,
+            title: finding.title,
+            evidence: finding.evidence,
+            severity: finding.severity,
+            confidence: finding.confidence,
+            plan_related: checked.planRelated ? 1 : 0,
+            last_seen_at: at,
+            updated_at: at,
+          };
+          if (row === undefined) {
+            const inserted = await trx
+              .insertInto('findings')
+              .values({
+                ...fields,
+                task_id: batch.taskId,
+                repo_root: batch.repoRoot,
+                file: checked.file,
+                rule_id: finding.ruleId,
+                fingerprint: finding.fingerprint,
+                source: finding.source,
+                category: finding.category,
+                why: finding.whyItMatters,
+                fix: finding.suggestedFix,
+                status: 'OPEN',
+                status_reason: '',
+                session_id: batch.sessionId,
+                agent_id: batch.agentId,
+                fed_back_at: null,
+                first_seen_at: at,
+                created_at: at,
+              })
+              .returning('id')
+              .executeTakeFirstOrThrow();
+            await insertFindingEvent(trx, inserted.id, null, 'OPEN', 'core', `found by ${finding.ruleId} ${finding.ruleVersion}`, at);
+            result.created += 1;
+          } else if (row.status === 'FIXED') {
+            await trx.updateTable('findings').set({ ...fields, status: 'OPEN', status_reason: '', fed_back_at: null, session_id: batch.sessionId, agent_id: batch.agentId }).where('id', '=', row.id).execute();
+            await insertFindingEvent(trx, row.id, 'FIXED', 'OPEN', 'core', `found again in ${checked.file}:${finding.lineStart}`, at);
+            result.reopened += 1;
+          } else {
+            await trx.updateTable('findings').set(fields).where('id', '=', row.id).execute();
+          }
+        }
+        for (const row of existing) {
+          if (seen.has(`${row.rule_id}\n${row.fingerprint}`) || (row.status !== 'OPEN' && row.status !== 'ACCEPTED')) continue;
+          const reason = `no longer found in ${checked.file} after the change at ${at}`;
+          await trx.updateTable('findings').set({ status: 'FIXED', status_reason: reason, updated_at: at }).where('id', '=', row.id).execute();
+          await insertFindingEvent(trx, row.id, findingStatusSchema.parse(row.status), 'FIXED', 'core', reason, at);
+          result.fixed += 1;
+        }
+      }
+      await trx
+        .insertInto('quality_batches')
+        .values({
+          task_id: batch.taskId,
+          repo_root: batch.repoRoot,
+          session_id: batch.sessionId,
+          files_json: JSON.stringify(batch.files.map((checked) => checked.file)),
+          started_at: batch.startedAt.toISOString(),
+          duration_ms: Math.round(batch.durationMs),
+          new_count: result.created + result.reopened,
+          fixed_count: result.fixed,
+          error: batch.error ?? null,
+        })
+        .execute();
+    });
+    return result;
+  }
+
+  /** The user's decision on a finding, always with a reason (ADR 0027). FIXED is Core's alone. */
+  async setFindingStatus(findingId: string, status: Exclude<FindingStatus, 'FIXED'>, reason: string, now: Date, channel: Channel): Promise<Finding> {
+    const id = findingNumber(findingId);
+    const at = now.toISOString();
+    await this.database.db.transaction().execute(async (trx) => {
+      const row = await trx.selectFrom('findings').select(['status']).where('id', '=', id).executeTakeFirst();
+      if (row === undefined) throw new StateError(404, `Unknown finding ${findingId}`);
+      if (row.status === status) throw new StateError(409, `${findingId} is already ${status}`);
+      if (status === 'OPEN' && row.status === 'OPEN') throw new StateError(409, `${findingId} is already open`);
+      await trx.updateTable('findings').set({ status, status_reason: reason, updated_at: at }).where('id', '=', id).execute();
+      await insertFindingEvent(trx, id, findingStatusSchema.parse(row.status), status, 'user', reason, at);
+      await audit(trx, at, 'finding.status', findingId, { from: row.status, to: status, reason, channel });
+    });
+    return (await this.findings({ findingId }))[0]!;
+  }
+
+  /** Findings, newest first; filters combine. */
+  async findings(filter: { findingId?: string; taskId?: string; repoRoot?: string; statuses?: readonly FindingStatus[]; file?: string; limit?: number } = {}): Promise<Finding[]> {
+    let query = this.database.db.selectFrom('findings').selectAll();
+    if (filter.findingId !== undefined) query = query.where('id', '=', findingNumber(filter.findingId));
+    if (filter.taskId !== undefined) query = query.where('task_id', '=', filter.taskId);
+    if (filter.repoRoot !== undefined) query = process.platform === 'win32' ? query.where(sql`lower(repo_root)`, '=', filter.repoRoot.toLowerCase()) : query.where('repo_root', '=', filter.repoRoot);
+    if (filter.statuses !== undefined && filter.statuses.length > 0) query = query.where('status', 'in', [...filter.statuses]);
+    if (filter.file !== undefined) query = query.where('file', '=', filter.file);
+    const rows = await query.orderBy('id', 'desc').limit(filter.limit ?? 500).execute();
+    return rows.map(findingFromRow);
+  }
+
+  async findingHistory(findingId: string): Promise<FindingEvent[]> {
+    const rows = await this.database.db.selectFrom('finding_events').selectAll().where('finding_id', '=', findingNumber(findingId)).orderBy('id').execute();
+    return rows.map((row) => ({ findingId: `FND-${row.finding_id}`, from: row.from_status === null ? null : findingStatusSchema.parse(row.from_status), to: findingStatusSchema.parse(row.to_status), actor: row.actor === 'user' ? 'user' : 'core', reason: row.reason, at: row.at }));
+  }
+
+  /** Open findings by severity, plus fixed and dismissed totals, per task. */
+  async findingCounts(): Promise<Map<string, FindingCounts>> {
+    const rows = await this.database.db
+      .selectFrom('findings')
+      .select(['task_id', 'status', 'severity', (eb) => eb.fn.countAll<number>().as('count')])
+      .where('task_id', 'is not', null)
+      .groupBy(['task_id', 'status', 'severity'])
+      .execute();
+    const counts = new Map<string, FindingCounts>();
+    for (const row of rows) {
+      const entry = counts.get(row.task_id!) ?? { open: 0, bySeverity: { P1: 0, P2: 0, P3: 0, P4: 0 }, fixed: 0, dismissed: 0 };
+      const count = Number(row.count);
+      if (row.status === 'OPEN' || row.status === 'ACCEPTED') {
+        entry.open += count;
+        const severity = findingSeveritySchema.safeParse(row.severity);
+        if (severity.success) entry.bySeverity[severity.data] += count;
+      } else if (row.status === 'FIXED') entry.fixed += count;
+      else entry.dismissed += count;
+      counts.set(row.task_id!, entry);
+    }
+    return counts;
+  }
+
+  /** How often the user marked each rule's findings as false positives: the calibration signal. */
+  async falsePositivesByRule(): Promise<Map<string, number>> {
+    const rows = await this.database.db.selectFrom('findings').select(['rule_id', (eb) => eb.fn.countAll<number>().as('count')]).where('status', '=', 'FALSE_POSITIVE').groupBy('rule_id').execute();
+    return new Map(rows.map((row) => [row.rule_id, Number(row.count)]));
+  }
+
+  /**
+   * Open findings Claude has not been told about yet, for a session's task (ADR 0029); marks them
+   * as told, so each goes out once. P4 findings are left to the dashboard.
+   */
+  async takeFeedback(taskId: string, now: Date, limit = 5): Promise<Finding[]> {
+    const { db } = this.database;
+    const rows = await db
+      .selectFrom('findings')
+      .selectAll()
+      .where('task_id', '=', taskId)
+      .where('status', '=', 'OPEN')
+      .where('fed_back_at', 'is', null)
+      .where('severity', 'in', ['P1', 'P2', 'P3'])
+      // After MAX_AUTO_FIX_ROUNDS fixes that came back, the finding waits for the user (spec §12.5).
+      .where(
+        'id',
+        'not in',
+        db
+          .selectFrom('finding_events')
+          .select('finding_id')
+          .where('from_status', '=', 'FIXED')
+          .where('to_status', '=', 'OPEN')
+          .groupBy('finding_id')
+          .having((eb) => eb.fn.countAll(), '>=', MAX_AUTO_FIX_ROUNDS),
+      )
+      .orderBy('severity')
+      .orderBy('id')
+      .limit(limit)
+      .execute();
+    if (rows.length > 0) {
+      await this.database.db
+        .updateTable('findings')
+        .set({ fed_back_at: now.toISOString() })
+        .where(
+          'id',
+          'in',
+          rows.map((row) => row.id),
+        )
+        .execute();
+    }
+    return rows.map(findingFromRow);
+  }
+
+  /**
+   * Records who works on what (ADR 0031): up to three implementers, each with plan steps and the
+   * files only it edits. A new set replaces the previous one. Overlapping files are refused.
+   */
+  async assignWork(taskId: string, requested: ReadonlyArray<{ label: string; steps: number[]; files: string[] }>, sessionId: string | null, now: Date): Promise<Assignment[]> {
+    const task = this.requireTask(taskId);
+    if (!WORK_STATES.has(task.state) || this.planDecision(taskId)?.decision !== 'APPROVED') throw new StateError(409, `${taskId} is not being implemented under an approved plan; assign work after the user approves it`);
+    if (requested.length > MAX_SUBAGENTS) throw new StateError(400, `At most ${MAX_SUBAGENTS} implementers work at a time (ADR 0015); got ${requested.length}`);
+    const labels = requested.map((assignment) => assignment.label.toLowerCase());
+    if (new Set(labels).size !== labels.length) throw new StateError(400, 'Each implementer needs its own label');
+    const steps = task.plan.document?.steps ?? [];
+    const insensitive = process.platform === 'win32';
+    const resolved = requested.map((assignment) => {
+      const unknown = assignment.steps.filter((number) => number < 1 || number > steps.length);
+      if (unknown.length > 0) throw new StateError(400, `${assignment.label}: the plan has no step ${unknown.join(', ')} (it has ${steps.length})`);
+      const files = [...new Set(assignment.files.length > 0 ? assignment.files : assignment.steps.flatMap((number) => steps[number - 1]!.files))].map((file) => file.trim().replaceAll('\\', '/').replace(/^\.\//, ''));
+      if (files.length === 0) throw new StateError(400, `${assignment.label}: no files; name them, or assign steps that list files`);
+      const outside = files.filter((file) => !matchesAnyGlob(file.replace(/\*\*?.*$/, 'x'), task.plan.scope, insensitive));
+      if (outside.length > 0) throw new StateError(400, `${assignment.label}: outside the approved scope: ${outside.join(', ')}`);
+      return { label: assignment.label, steps: [...new Set(assignment.steps)].sort((a, b) => a - b), files };
+    });
+    for (let left = 0; left < resolved.length; left += 1) {
+      for (let right = left + 1; right < resolved.length; right += 1) {
+        const a = resolved[left]!;
+        const b = resolved[right]!;
+        const shared = a.files.flatMap((file) => b.files.filter((other) => globsOverlap(file, other, insensitive)).map((other) => `${file} / ${other}`));
+        if (shared.length > 0) throw new StateError(400, `${a.label} and ${b.label} would share files (${shared.slice(0, 5).join('; ')}); give each implementer disjoint files, or serialize those steps`);
+      }
+    }
+    const at = now.toISOString();
+    await this.database.db.transaction().execute(async (trx) => {
+      await trx.updateTable('implementer_assignments').set({ released_at: at }).where('task_id', '=', taskId).where('released_at', 'is', null).execute();
+      for (const assignment of resolved) {
+        await trx
+          .insertInto('implementer_assignments')
+          .values({ task_id: taskId, label: assignment.label, steps_json: JSON.stringify(assignment.steps), files_json: JSON.stringify(assignment.files), agent_id: null, session_id: sessionId, created_at: at, released_at: null })
+          .execute();
+      }
+      await audit(trx, at, 'work.assign', taskId, { assignments: resolved }, 'claude-code');
+    });
+    await this.loadAssignments();
+    return this.assignmentsOf(taskId);
+  }
+
+  assignmentsOf(taskId: string): Assignment[] {
+    return structuredClone(this.assignments.get(taskId) ?? []);
+  }
+
+  /**
+   * The implementer checks of an edit (ADR 0031), synchronous for the gate:
+   *   - another active subagent edited this file recently: the writes must be serialized;
+   *   - an implementer edits outside its assignment, or a file assigned to another implementer.
+   * Warnings only. `agentId` is null for the main session.
+   */
+  implementerCheck(taskId: string, agentId: string | null, file: string): { ruleId: string; reason: string } | null {
+    const key = `${taskId}|${fileKey(file)}`;
+    const writer = this.recentWriters.get(key);
+    if (writer !== undefined && writer.agentId !== agentId && this.isAgentActive(writer.agentId)) {
+      return { ruleId: 'monitor.concurrent-write', reason: `${file} is being edited by another running subagent (${writer.agentId}); writes to one file must be serialized. Wait for it to finish, or hand the file over explicitly (ADR 0031).` };
+    }
+    if (agentId === null || !(this.agentTypeOf(agentId) ?? '').includes('jerry-implementer')) return null;
+    const assignments = this.assignments.get(taskId) ?? [];
+    if (assignments.length === 0) return null;
+    const insensitive = process.platform === 'win32';
+    const inFiles = (assignment: Assignment): boolean => matchesAnyGlob(file, assignment.files, insensitive) || assignment.files.some((entry) => fileKey(entry) === fileKey(file));
+    const own = assignments.find((assignment) => assignment.agentId === agentId);
+    if (own !== undefined) {
+      return inFiles(own) ? null : { ruleId: 'monitor.implementer-scope', reason: `${file} is outside ${own.label}'s assignment (${own.files.join(', ')}). The edit proceeds and is recorded; stay within your files or ask the orchestrator to reassign (ADR 0031).` };
+    }
+    const matching = assignments.filter(inFiles);
+    if (matching.some((assignment) => assignment.agentId === null)) return null;
+    if (matching.length > 0) return { ruleId: 'monitor.implementer-scope', reason: `${file} belongs to ${matching.map((assignment) => assignment.label).join(', ')}, assigned to another implementer (ADR 0031).` };
+    return { ruleId: 'monitor.implementer-scope', reason: `${file} is in no implementer's assignment (${assignments.map((assignment) => assignment.label).join(', ')}) (ADR 0031).` };
+  }
+
+  /** After a real edit: remember the writer, and bind an implementer to its assignment by its first edit. */
+  async noteWrite(taskId: string, file: string, agentId: string | null, now: Date): Promise<void> {
+    if (agentId === null) return;
+    this.recentWriters.set(`${taskId}|${fileKey(file)}`, { agentId, at: now.getTime() });
+    if (!(this.agentTypeOf(agentId) ?? '').includes('jerry-implementer')) return;
+    const assignments = this.assignments.get(taskId) ?? [];
+    if (assignments.some((assignment) => assignment.agentId === agentId)) return;
+    const insensitive = process.platform === 'win32';
+    const candidates = assignments.filter((assignment) => assignment.agentId === null && (matchesAnyGlob(file, assignment.files, insensitive) || assignment.files.some((entry) => fileKey(entry) === fileKey(file))));
+    if (candidates.length !== 1) return;
+    const chosen = candidates[0]!;
+    chosen.agentId = agentId;
+    await this.database.db.updateTable('implementer_assignments').set({ agent_id: agentId }).where('task_id', '=', taskId).where('label', '=', chosen.label).where('released_at', 'is', null).execute();
+  }
+
+  /** Where the work strays from the plan (ADR 0031): files no step names, steps not started. */
+  async planDrift(task: Task): Promise<PlanDrift> {
+    const document = task.plan.document;
+    const changed = await this.changesSincePlanApproval(task);
+    const key = (value: string): string => fileKey(value.trim().replace(/^\.\//, ''));
+    const named = (file: string, entries: readonly string[]): boolean =>
+      entries.some((entry) => key(entry) === key(file) || (entry.endsWith('/') && key(file).startsWith(key(entry))) || matchesAnyGlob(file, [entry], process.platform === 'win32'));
+    const steps = document?.steps ?? [];
+    const allNamed = [...steps.flatMap((step) => step.files), ...(document?.changes.map((change) => change.target) ?? [])];
+    const { layers, blocked } = planLayers(steps);
+    return {
+      taskId: task.taskId,
+      unplannedFiles: document === undefined ? [] : changed.filter((file) => !named(file, allNamed)),
+      untouchedSteps: steps.map((step, index) => ({ number: index + 1, step: step.step, files: step.files })).filter((step) => step.files.length > 0 && !changed.some((file) => named(file, step.files))).map(({ number, step }) => ({ number, step })),
+      layers,
+      blockedSteps: blocked,
+      assignments: this.assignmentsOf(task.taskId),
+    };
+  }
+
+  /** The plugin agent type of a subagent run, from SubagentStart (ADR 0023). */
+  agentTypeOf(agentId: string): string | null {
+    const row = this.database.raw.prepare('SELECT agent_type FROM agent_runs WHERE agent_id = ?').get(agentId) as { agent_type: string | null } | undefined;
+    return row?.agent_type ?? null;
+  }
+
+  private isAgentActive(agentId: string, now: Date = new Date()): boolean {
+    const row = this.database.raw.prepare('SELECT started_at, stopped_at FROM agent_runs WHERE agent_id = ?').get(agentId) as { started_at: string; stopped_at: string | null } | undefined;
+    return row !== undefined && row.stopped_at === null && now.getTime() - Date.parse(row.started_at) <= SUBAGENT_TIMEOUT_MS;
+  }
+
+  private async loadAssignments(): Promise<void> {
+    const rows = await this.database.db.selectFrom('implementer_assignments').selectAll().where('released_at', 'is', null).orderBy('id').execute();
+    const assignments = new Map<string, Assignment[]>();
+    for (const row of rows) {
+      const list = assignments.get(row.task_id) ?? [];
+      list.push({ taskId: row.task_id, label: row.label, steps: JSON.parse(row.steps_json) as number[], files: JSON.parse(row.files_json) as string[], agentId: row.agent_id, createdAt: row.created_at });
+      assignments.set(row.task_id, list);
+    }
+    this.assignments = assignments;
+  }
+
+  // --- The optional Artifact (ADR 0042) -----------------------------------------------------------
+
+  /** The user's choice about an Artifact, recorded by the skill through MCP; the latest counts. */
+  async recordArtifactDecision(taskId: string, decision: { decision: 'created'; kind: string; title: string; url: string } | { decision: 'declined'; reason: string }, sessionId: string | null, now: Date): Promise<ArtifactDecision> {
+    this.requireTask(taskId);
+    const at = now.toISOString();
+    await this.database.db.transaction().execute(async (trx) => {
+      await trx
+        .insertInto('artifact_decisions')
+        .values({
+          task_id: taskId,
+          decision: decision.decision,
+          kind: decision.decision === 'created' ? decision.kind : null,
+          title: decision.decision === 'created' ? decision.title : null,
+          url: decision.decision === 'created' ? decision.url : null,
+          reason: decision.decision === 'declined' ? decision.reason : '',
+          session_id: sessionId,
+          created_at: at,
+        })
+        .execute();
+      await audit(trx, at, `artifact.${decision.decision}`, taskId, decision.decision === 'created' ? { kind: decision.kind, url: decision.url } : { reason: decision.reason }, 'claude-code');
+    });
+    return (await this.artifactDecision(taskId))!;
+  }
+
+  async artifactDecision(taskId: string): Promise<ArtifactDecision | null> {
+    const row = await this.database.db.selectFrom('artifact_decisions').selectAll().where('task_id', '=', taskId).orderBy('id', 'desc').limit(1).executeTakeFirst();
+    return row === undefined ? null : artifactDecisionFromRow(row);
+  }
+
+  /** The latest decision of every task that has one, newest first (the dashboard's Artifacts list). */
+  async artifactDecisions(): Promise<ArtifactDecision[]> {
+    const { db } = this.database;
+    const rows = await db
+      .selectFrom('artifact_decisions')
+      .selectAll()
+      .where('id', 'in', db.selectFrom('artifact_decisions').select((eb) => eb.fn.max('id').as('id')).groupBy('task_id'))
+      .orderBy('id', 'desc')
+      .execute();
+    return rows.map(artifactDecisionFromRow);
+  }
+
+  // --- Independent review (ADR 0032–0035) -------------------------------------------------------
+
+  /** A reviewer's submission for the current round; the round completes when all three reported. */
+  async submitReview(taskId: string, review: ReviewSubmission, sessionId: string | null, agentId: string | null, now: Date): Promise<ReviewState> {
+    const task = this.requireTask(taskId);
+    if (task.state !== 'CODE_REVIEW' && task.state !== 'REVERIFICATION') throw new StateError(409, `${taskId} is ${task.state}; reviews are submitted while it is in code review or re-verification`);
+    const round = await this.currentRound(taskId);
+    if (round === null) throw new StateError(409, `${taskId} has no open review round`);
+    const at = now.toISOString();
+    const submitted = new Set((await this.database.db.selectFrom('review_submissions').select('role').where('task_id', '=', taskId).where('round', '=', round.round).execute()).map((row) => row.role));
+    submitted.add(review.role);
+    const completes = REVIEWER_ROLES.every((role) => submitted.has(role));
+    const gitNow = completes ? await this.prepareSnapshot(task, 'report') : null;
+    const independence = this.independenceOf(task, agentId);
+    await this.database.db.transaction().execute(async (trx) => {
+      // A resubmission of a role in the same round replaces the earlier one.
+      await trx.deleteFrom('review_finding_sources').where('task_id', '=', taskId).where('round', '=', round.round).where('role', '=', review.role).execute();
+      await trx.deleteFrom('review_submissions').where('task_id', '=', taskId).where('round', '=', round.round).where('role', '=', review.role).execute();
+      for (const finding of review.findings) {
+        const file = repoRelative(task, finding.file);
+        const fingerprint = createHash('sha256').update(`${fileKey(file)}\n${finding.title.trim().toLowerCase().replace(/\s+/g, ' ')}`, 'utf8').digest('hex').slice(0, 16);
+        const existing = await trx.selectFrom('findings').selectAll().where('task_id', '=', taskId).where('rule_id', '=', 'review').where('file', '=', file).where('fingerprint', '=', fingerprint).executeTakeFirst();
+        let findingId: number;
+        if (existing === undefined) {
+          const inserted = await trx
+            .insertInto('findings')
+            .values({
+              task_id: taskId,
+              repo_root: task.repoRoot,
+              file,
+              rule_id: 'review',
+              rule_version: '1',
+              fingerprint,
+              source: 'review',
+              category: REVIEW_CATEGORY[review.role],
+              severity: finding.severity,
+              confidence: finding.confidence,
+              line_start: finding.line,
+              line_end: finding.lineEnd ?? finding.line,
+              title: finding.title,
+              evidence: finding.evidence,
+              why: finding.whyItMatters,
+              fix: finding.suggestedFix,
+              plan_related: 0,
+              status: 'OPEN',
+              status_reason: '',
+              session_id: sessionId,
+              agent_id: agentId,
+              fed_back_at: null,
+              first_seen_at: at,
+              last_seen_at: at,
+              created_at: at,
+              updated_at: at,
+            })
+            .returning('id')
+            .executeTakeFirstOrThrow();
+          findingId = inserted.id;
+          await insertFindingEvent(trx, findingId, null, 'OPEN', 'core', `reported by ${review.role} in review round ${round.round}`, at);
+        } else {
+          findingId = existing.id;
+          // The more severe report wins when two reviewers report the same problem.
+          const severity = SEVERITY_RANK[finding.severity] < SEVERITY_RANK[existing.severity as FindingSeverity] ? finding.severity : existing.severity;
+          await trx.updateTable('findings').set({ severity, last_seen_at: at, updated_at: at, line_start: finding.line, line_end: finding.lineEnd ?? finding.line }).where('id', '=', findingId).execute();
+          if (existing.status === 'FIXED') {
+            await trx.updateTable('findings').set({ status: 'OPEN', status_reason: '' }).where('id', '=', findingId).execute();
+            await insertFindingEvent(trx, findingId, 'FIXED', 'OPEN', 'core', `reported again by ${review.role} in review round ${round.round}`, at);
+          }
+        }
+        await trx.insertInto('review_finding_sources').values({ finding_id: findingId, task_id: taskId, round: round.round, role: review.role }).onConflict((conflict) => conflict.doNothing()).execute();
+      }
+      await trx
+        .insertInto('review_submissions')
+        .values({
+          task_id: taskId,
+          round: round.round,
+          role: review.role,
+          agent_id: agentId,
+          session_id: sessionId,
+          files_reviewed_json: JSON.stringify(review.filesReviewed.map((file) => repoRelative(task, file))),
+          summary: review.summary,
+          gaps_json: JSON.stringify(review.gaps),
+          finding_count: review.findings.length,
+          independent: independence.independent ? 1 : 0,
+          independence_note: independence.note,
+          created_at: at,
+        })
+        .execute();
+      if (sessionId !== null) await linkSession(trx, sessionId, taskId, 'analysis', at);
+      if (completes) await this.completeRound(trx, task, round.round, 'core', 'all three reviewers reported', at, gitNow);
+    });
+    await this.reload();
+    return this.reviewState(taskId);
+  }
+
+  /** Claude closes a round although a reviewer did not report; the missing roles stay visible as gaps. */
+  async finishReview(taskId: string, now: Date): Promise<ReviewState> {
+    const task = this.requireTask(taskId);
+    const round = await this.currentRound(taskId);
+    if (round === null || (task.state !== 'CODE_REVIEW' && task.state !== 'REVERIFICATION')) throw new StateError(409, `${taskId} has no open review round`);
+    const roles = (await this.database.db.selectFrom('review_submissions').select('role').where('task_id', '=', taskId).where('round', '=', round.round).execute()).map((row) => row.role);
+    if (roles.length === 0) throw new StateError(409, `No reviewer reported in round ${round.round} yet; start the reviewers first`);
+    const missing = REVIEWER_ROLES.filter((role) => !roles.includes(role));
+    const gitNow = await this.prepareSnapshot(task, 'report');
+    const at = now.toISOString();
+    await this.database.db.transaction().execute(async (trx) => {
+      await this.completeRound(trx, task, round.round, 'claude', `closed by Claude without ${missing.join(', ') || 'no one'}`, at, gitNow);
+    });
+    await this.reload();
+    return this.reviewState(taskId);
+  }
+
+  /**
+   * Ends a round: earlier review findings no reviewer reported again (in files this round covered)
+   * are FIXED; with no open P1–P3 review finding left the review passes and the final checks run.
+   */
+  private async completeRound(trx: Transaction<JerrySchema>, task: Task, round: number, actor: 'core' | 'claude', reason: string, at: string, gitNow: PreparedSnapshot | null): Promise<void> {
+    const covered = new Set<string>();
+    const roundRow = await trx.selectFrom('review_rounds').selectAll().where('task_id', '=', task.taskId).where('round', '=', round).executeTakeFirstOrThrow();
+    for (const file of JSON.parse(roundRow.changed_files_json) as string[]) covered.add(fileKey(file));
+    for (const row of await trx.selectFrom('review_submissions').select('files_reviewed_json').where('task_id', '=', task.taskId).where('round', '=', round).execute()) {
+      for (const file of JSON.parse(row.files_reviewed_json) as string[]) covered.add(fileKey(file));
+    }
+    if (round > 1) {
+      const reported = new Set((await trx.selectFrom('review_finding_sources').select('finding_id').where('task_id', '=', task.taskId).where('round', '=', round).execute()).map((row) => row.finding_id));
+      const open = await trx.selectFrom('findings').selectAll().where('task_id', '=', task.taskId).where('source', '=', 'review').where('status', 'in', ['OPEN', 'ACCEPTED']).execute();
+      for (const finding of open) {
+        if (reported.has(finding.id) || !covered.has(fileKey(finding.file))) continue;
+        const why = `not reported again in review round ${round}`;
+        await trx.updateTable('findings').set({ status: 'FIXED', status_reason: why, updated_at: at }).where('id', '=', finding.id).execute();
+        await insertFindingEvent(trx, finding.id, findingStatusSchema.parse(finding.status), 'FIXED', 'core', why, at);
+      }
+    }
+    await trx.updateTable('review_rounds').set({ completed_at: at, completed_by: actor }).where('id', '=', roundRow.id).execute();
+    await this.transition(trx, task.taskId, 'review.reported', actor, `review round ${round}: ${reason}`, at);
+    if (gitNow !== null) await insertSnapshot(trx, task, 'review', gitNow, at);
+    const blocking = await trx.selectFrom('findings').select('id').where('task_id', '=', task.taskId).where('source', '=', 'review').where('status', 'in', ['OPEN', 'ACCEPTED']).where('severity', 'in', ['P1', 'P2', 'P3']).execute();
+    if (blocking.length === 0) {
+      await trx.updateTable('review_rounds').set({ passed_at: at }).where('id', '=', roundRow.id).execute();
+      await this.transition(trx, task.taskId, 'review.passed', 'core', `review round ${round} left no open P1–P3 finding`, at);
+      await this.runFinalChecks(trx, task, at, gitNow);
+    }
+  }
+
+  /** Claude's remediation plan for the open review findings (ADR 0034); only the user approves it. */
+  async proposeFixes(taskId: string, plan: FixPlan, sessionId: string | null, now: Date): Promise<ReviewState> {
+    const task = this.requireTask(taskId);
+    if (task.state !== 'REVIEW_REPORT' && task.state !== 'WAIT_REVIEW_FIX_APPROVAL') throw new StateError(409, `${taskId} is ${task.state}; a fix plan follows a review report`);
+    const round = await this.latestRound(taskId);
+    if (round === null) throw new StateError(409, `${taskId} has no review round`);
+    if (round.round >= MAX_REVIEW_ROUNDS) throw new StateError(409, `${taskId} had ${round.round} review rounds, the most JERRY runs automatically; the user decides now (waive the review, dismiss findings, or send the work back)`);
+    const reviewFindings = new Set((await this.findings({ taskId, statuses: ['OPEN', 'ACCEPTED'] })).filter((finding) => finding.source === 'review').map((finding) => finding.findingId));
+    const cited = [...plan.items.flatMap((item) => item.findings), ...plan.notFixed.map((entry) => entry.finding)];
+    const unknown = cited.filter((id) => !reviewFindings.has(id));
+    if (unknown.length > 0) throw new StateError(400, `The fix plan cites findings that are not open review findings of ${taskId}: ${unknown.join(', ')}`);
+    const outside = plan.items.flatMap((item) => item.files).filter((file) => !matchesAnyGlob(file.replaceAll('\\', '/'), task.plan.scope, process.platform === 'win32'));
+    if (outside.length > 0) throw new StateError(400, `The fix plan touches files outside the approved scope: ${outside.join(', ')}; revise the plan with the user first`);
+    const at = now.toISOString();
+    const hash = `sha256:${createHash('sha256').update(JSON.stringify({ taskId, round: round.round, plan }), 'utf8').digest('hex')}`;
+    await this.database.db.transaction().execute(async (trx) => {
+      await trx.updateTable('review_rounds').set({ fix_plan_json: JSON.stringify(plan), fix_plan_hash: hash }).where('task_id', '=', taskId).where('round', '=', round.round).execute();
+      await this.transition(trx, taskId, 'fixes.proposed', 'claude', `fix plan for review round ${round.round}`, at);
+      if (sessionId !== null) await linkSession(trx, sessionId, taskId, 'plan.revised', at);
+      await audit(trx, at, 'review.fix-plan', taskId, { round: round.round, hash, items: plan.items.length }, 'claude-code');
+    });
+    await this.reload();
+    return this.reviewState(taskId);
+  }
+
+  /** The approved fixes are done: a new round starts for the same reviewers (ADR 0035). */
+  async reportFixes(taskId: string, summary: string, sessionId: string | null, now: Date): Promise<ReviewState> {
+    const task = this.requireTask(taskId);
+    if (task.state !== 'FIX_IMPLEMENTATION') throw new StateError(409, `${taskId} is ${task.state}; fixes are reported after the user approved the fix plan`);
+    const round = await this.latestRound(taskId);
+    if (round === null) throw new StateError(409, `${taskId} has no review round`);
+    const at = now.toISOString();
+    const roundRow = await this.database.db.selectFrom('review_rounds').select(['fixes_approved_at']).where('task_id', '=', taskId).where('round', '=', round.round).executeTakeFirstOrThrow();
+    await this.database.db.transaction().execute(async (trx) => {
+      const edited = await editsInScopeBetween(trx, task, roundRow.fixes_approved_at ?? round.startedAt, at);
+      const findingFiles = (await trx.selectFrom('findings').select('file').where('task_id', '=', taskId).where('source', '=', 'review').where('status', 'in', ['OPEN', 'ACCEPTED']).execute()).map((row) => row.file);
+      await trx.updateTable('review_rounds').set({ fixes_reported_at: at, fixes_summary: summary }).where('task_id', '=', taskId).where('round', '=', round.round).execute();
+      await this.transition(trx, taskId, 'fixes.reported', 'claude', `fixes for review round ${round.round}`, at);
+      await trx.insertInto('review_rounds').values({ task_id: taskId, round: round.round + 1, started_at: at, changed_files_json: JSON.stringify([...new Set([...edited, ...findingFiles])].sort()) }).execute();
+      if (sessionId !== null) await linkSession(trx, sessionId, taskId, 'report', at);
+    });
+    await this.reload();
+    return this.reviewState(taskId);
+  }
+
+  /** The user waives the (rest of the) review with a reason; the final checks run (ADR 0034). */
+  async skipReview(taskId: string, reason: string, now: Date, channel: Channel): Promise<ReviewState> {
+    const task = this.requireTask(taskId);
+    const gitNow = await this.prepareSnapshot(task, 'report');
+    const at = now.toISOString();
+    await this.database.db.transaction().execute(async (trx) => {
+      await this.transition(trx, taskId, 'review.skipped', 'user', reason, at);
+      const round = await trx.selectFrom('review_rounds').select('id').where('task_id', '=', taskId).orderBy('round', 'desc').limit(1).executeTakeFirst();
+      if (round !== undefined) await trx.updateTable('review_rounds').set({ skipped_at: at, skip_reason: reason }).where('id', '=', round.id).execute();
+      else await trx.insertInto('review_rounds').values({ task_id: taskId, round: 1, started_at: at, changed_files_json: '[]', skipped_at: at, skip_reason: reason }).execute();
+      await insertSnapshot(trx, task, 'review', gitNow, at);
+      await audit(trx, at, 'review.skip', taskId, { reason, channel });
+      await this.runFinalChecks(trx, task, at, gitNow);
+    });
+    await this.reload();
+    return this.reviewState(taskId);
+  }
+
+  async reviewState(taskId: string): Promise<ReviewState> {
+    const task = this.requireTask(taskId);
+    const { db } = this.database;
+    const rounds = await db.selectFrom('review_rounds').selectAll().where('task_id', '=', taskId).orderBy('round').execute();
+    const submissions = await db.selectFrom('review_submissions').selectAll().where('task_id', '=', taskId).orderBy('id').execute();
+    const open = (await this.findings({ taskId, statuses: ['OPEN', 'ACCEPTED'] })).filter((finding) => finding.source === 'review').sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]);
+    const last = rounds.at(-1);
+    return {
+      taskId,
+      state: task.state,
+      outcome: last?.passed_at != null ? 'passed' : last?.skipped_at != null ? 'skipped' : null,
+      maxRounds: MAX_REVIEW_ROUNDS,
+      openFindings: open,
+      rounds: rounds.map((row) => {
+        const own = submissions.filter((submission) => submission.round === row.round);
+        const changed = JSON.parse(row.changed_files_json) as string[];
+        const reviewed = new Set(own.flatMap((submission) => (JSON.parse(submission.files_reviewed_json) as string[]).map(fileKey)));
+        return reviewRoundSchema.parse({
+          round: row.round,
+          startedAt: row.started_at,
+          completedAt: row.completed_at,
+          changedFiles: changed,
+          submissions: own.map((submission) => ({
+            role: submission.role,
+            agentId: submission.agent_id,
+            filesReviewed: JSON.parse(submission.files_reviewed_json),
+            summary: submission.summary,
+            findings: submission.finding_count,
+            gaps: JSON.parse(submission.gaps_json),
+            independent: submission.independent === 1,
+            independenceNote: submission.independence_note,
+            at: submission.created_at,
+          })),
+          uncovered: changed.filter((file) => !reviewed.has(fileKey(file))),
+          fixPlan: row.fix_plan_json === null ? null : JSON.parse(row.fix_plan_json),
+          fixPlanHash: row.fix_plan_hash,
+          fixesSummary: row.fixes_summary,
+          passedAt: row.passed_at,
+          skippedAt: row.skipped_at,
+          skipReason: row.skip_reason,
+        });
+      }),
+    };
+  }
+
+  private async currentRound(taskId: string): Promise<{ round: number; startedAt: string } | null> {
+    const row = await this.database.db.selectFrom('review_rounds').select(['round', 'started_at']).where('task_id', '=', taskId).where('completed_at', 'is', null).orderBy('round', 'desc').limit(1).executeTakeFirst();
+    return row === undefined ? null : { round: row.round, startedAt: row.started_at };
+  }
+
+  private async latestRound(taskId: string): Promise<{ round: number; startedAt: string } | null> {
+    const row = await this.database.db.selectFrom('review_rounds').select(['round', 'started_at']).where('task_id', '=', taskId).orderBy('round', 'desc').limit(1).executeTakeFirst();
+    return row === undefined ? null : { round: row.round, startedAt: row.started_at };
+  }
+
+  /**
+   * Whether a reviewer is independent of the implementation (spec JR-010): a separate subagent that
+   * edited nothing of the task. A review from the main session (which implemented) is not.
+   */
+  private independenceOf(task: Task, agentId: string | null): { independent: boolean; note: string } {
+    if (agentId === null) return { independent: false, note: 'submitted from the main session, which implemented the task; not a separate reviewer subagent' };
+    const row = this.database.raw
+      .prepare("SELECT COUNT(*) AS edits FROM hook_events WHERE agent_id = ? AND event_type = 'PreToolUse' AND tool_name IN ('Write', 'Edit', 'MultiEdit', 'NotebookEdit') AND (verdict IS NULL OR verdict != 'DENY') AND occurred_at >= ?")
+      .get(agentId, task.createdAt) as { edits: number } | undefined;
+    const edits = Number(row?.edits ?? 0);
+    return edits === 0 ? { independent: true, note: `subagent ${agentId} edited nothing of the task` } : { independent: false, note: `subagent ${agentId} also made ${edits} edit(s) during the task` };
+  }
+
+  /**
+   * What JERRY saw of the quality of the work, for the report (ADR 0027–0031): open findings, the
+   * test runs against the checks the report claims passed, and plan drift.
+   */
+  private async qualityEvidence(task: Task, document: ImplementationReport): Promise<NonNullable<ReportEvidence['quality']>> {
+    const open = await this.findings({ taskId: task.taskId, statuses: ['OPEN', 'ACCEPTED'] });
+    const runs = await this.testRunsOf(task.taskId, 100);
+    const normalize = (command: string): string => command.trim().replace(/^corepack\s+/, '').replace(/\s+/g, ' ').toLowerCase();
+    const claimedVsObserved: string[] = [];
+    for (const check of document.checks.filter((candidate) => candidate.result === 'PASS')) {
+      const claimed = normalize(check.command);
+      const latest = runs.find((run) => {
+        const observed = normalize(run.command);
+        return observed === claimed || observed.startsWith(claimed) || claimed.startsWith(observed);
+      });
+      if (latest !== undefined && latest.result !== 'PASS') claimedVsObserved.push(`${check.command}: the report says PASS, JERRY saw ${latest.result} at ${latest.at}`);
+    }
+    let drift: PlanDrift | null = null;
+    try {
+      drift = await this.planDrift(task);
+    } catch {
+      // Without Git there is no drift to show; the rest of the evidence stands.
+    }
+    const last = runs[0];
+    return {
+      openFindings: open.length,
+      serious: open.filter((finding) => finding.severity === 'P1' || finding.severity === 'P2').map((finding) => `${finding.findingId} ${finding.severity} ${finding.file}:${finding.lineStart} ${finding.title}`),
+      lastTestRun: last === undefined ? null : { command: last.command, result: last.result, summary: last.summary, at: last.at },
+      claimedVsObserved,
+      unplannedFiles: drift?.unplannedFiles ?? [],
+      untouchedSteps: drift?.untouchedSteps.map((step) => `${step.number}. ${step.step}`) ?? [],
+    };
+  }
+
+  /** A test command Claude ran (ADR 0030); the same hook event twice is one run. */
+  async recordTestRun(run: TestRun & { repoRoot: string; eventId: string }): Promise<void> {
+    await this.database.db
+      .insertInto('test_runs')
+      .values({ task_id: run.taskId, repo_root: run.repoRoot, session_id: run.sessionId, agent_id: run.agentId, event_id: run.eventId, command: run.command, result: run.result, exit_code: run.exitCode, summary: run.summary, at: run.at })
+      .onConflict((conflict) => conflict.column('event_id').doNothing())
+      .execute();
+  }
+
+  async testRunsOf(taskId: string, limit = 20): Promise<TestRun[]> {
+    const rows = await this.database.db.selectFrom('test_runs').selectAll().where('task_id', '=', taskId).orderBy('at', 'desc').orderBy('id', 'desc').limit(limit).execute();
+    return rows.map(testRunFromRow);
+  }
+
+  /** The latest test run of every task. */
+  async latestTestRuns(): Promise<Map<string, TestRun>> {
+    const { db } = this.database;
+    const rows = await db
+      .selectFrom('test_runs')
+      .selectAll()
+      .where('id', 'in', db.selectFrom('test_runs').select((eb) => eb.fn.max('id').as('id')).where('task_id', 'is not', null).groupBy('task_id'))
+      .execute();
+    return new Map(rows.map((row) => [row.task_id!, testRunFromRow(row)]));
+  }
+
+  /** Every version of a task's plan, oldest first (ADR 0026: the user compares revisions). */
+  async planVersions(taskId: string): Promise<Plan[]> {
+    this.requireTask(taskId);
+    const rows = await this.database.db.selectFrom('plans').selectAll().where('task_id', '=', taskId).orderBy('version').execute();
+    return rows.map((row) =>
+      planSchema.parse({ version: row.version, contentHash: row.content_hash, scope: JSON.parse(row.scope_json), createdAt: row.created_at, ...(row.document_json === null ? {} : { document: JSON.parse(row.document_json) }) }),
+    );
   }
 
   async analysesOf(taskId: string): Promise<AnalysisReportRecord[]> {
@@ -538,10 +1383,13 @@ export class StateStore {
    */
   async agentRunsOf(taskId: string, now: Date = new Date()): Promise<AgentRun[]> {
     const { db } = this.database;
+    const task = this.requireTask(taskId);
     const rows = await db
       .selectFrom('agent_runs')
       .selectAll()
       .where('session_id', 'in', db.selectFrom('session_tasks').select('session_id').where('task_id', '=', taskId))
+      // A session can work on several tasks: runs from before this task existed belong to others.
+      .where('started_at', '>=', task.createdAt)
       .orderBy('started_at')
       .execute();
     const reports = await db.selectFrom('analysis_reports').select(['id', 'agent_id']).where('task_id', '=', taskId).where('agent_id', 'is not', null).execute();
@@ -817,7 +1665,7 @@ export class StateStore {
       .selectFrom('tasks')
       .innerJoin('repositories', 'repositories.repo_id', 'tasks.repo_id')
       .innerJoin('plans', (join) => join.onRef('plans.task_id', '=', 'tasks.task_id').onRef('plans.version', '=', 'tasks.current_plan_version'))
-      .select(['tasks.task_id', 'tasks.title', 'tasks.state', 'tasks.created_at', 'repositories.root_path', 'plans.version', 'plans.content_hash', 'plans.scope_json', 'plans.document_json', 'plans.created_at as plan_created_at'])
+      .select(['tasks.task_id', 'tasks.title', 'tasks.state', 'tasks.goal', 'tasks.created_at', 'repositories.root_path', 'plans.version', 'plans.content_hash', 'plans.scope_json', 'plans.document_json', 'plans.created_at as plan_created_at'])
       .orderBy('tasks.task_id')
       .execute();
     const approvals = await db.selectFrom('approvals').selectAll().orderBy('approved_at').orderBy(sql`rowid`).execute();
@@ -835,6 +1683,7 @@ export class StateStore {
         repoRoot: row.root_path,
         createdAt: row.created_at,
         state: row.state,
+        ...(row.goal === null ? {} : { goal: row.goal }),
         plan: { version: row.version, contentHash: row.content_hash, scope: JSON.parse(row.scope_json), createdAt: row.plan_created_at, ...(row.document_json === null ? {} : { document: JSON.parse(row.document_json) }) },
       })),
       approvals: approvals.map((row) => ({
@@ -860,6 +1709,7 @@ export class StateStore {
       if (baseline !== null) userDirty.set(task.taskId, new Set(Object.keys(baseline.fingerprints).map(fileKey)));
     }
     this.userDirty = userDirty;
+    await this.loadAssignments();
   }
 
   /** The stored profile of a repository with its freshness fingerprints (ADR 0020). */
@@ -908,7 +1758,7 @@ export class StateStore {
         const repoId = await upsertRepository(trx, task.repoRoot, task.createdAt);
         const decision = currentPlanDecision({ ...task, state: 'WAIT_PLAN_APPROVAL' }, legacy.approvals)?.decision;
         const state: WorkflowState = decision === 'APPROVED' ? 'IMPLEMENTATION' : decision === 'REJECTED' ? 'PLAN_DRAFT' : 'WAIT_PLAN_APPROVAL';
-        await trx.insertInto('tasks').values({ task_id: task.taskId, title: task.title, repo_id: repoId, current_plan_version: task.plan.version, state, created_at: task.createdAt, updated_at: at }).execute();
+        await trx.insertInto('tasks').values({ task_id: task.taskId, title: task.title, repo_id: repoId, current_plan_version: task.plan.version, state, goal: null, created_at: task.createdAt, updated_at: at }).execute();
         await trx.insertInto('plans').values({ task_id: task.taskId, version: task.plan.version, content_hash: task.plan.contentHash, scope_json: JSON.stringify(task.plan.scope), created_at: task.plan.createdAt }).execute();
       }
       for (const approval of legacy.approvals) {
@@ -1000,6 +1850,12 @@ async function linkSession(trx: Transaction<JerrySchema> | Kysely<JerrySchema>, 
       }),
     )
     .execute();
+}
+
+/** The current fix plan: its review round is the version the user decides on (ADR 0034). */
+async function latestFixPlanSubject(trx: Transaction<JerrySchema>, taskId: string): Promise<{ version: number; contentHash: string } | null> {
+  const row = await trx.selectFrom('review_rounds').select(['round', 'fix_plan_hash']).where('task_id', '=', taskId).where('fix_plan_hash', 'is not', null).orderBy('round', 'desc').limit(1).executeTakeFirst();
+  return row === undefined ? null : { version: row.round, contentHash: row.fix_plan_hash! };
 }
 
 async function latestReportSubject(trx: Transaction<JerrySchema>, taskId: string): Promise<{ version: number; contentHash: string } | null> {
@@ -1135,11 +1991,11 @@ async function collectEvidence(trx: Transaction<JerrySchema>, task: Task, docume
 }
 
 /** Files in the plan's scope edited with the file tools in the repository during (from, until]. */
-async function editsInScopeBetween(trx: Transaction<JerrySchema>, task: Task, from: string, until: string): Promise<string[]> {
+async function editsInScopeBetween(trx: Transaction<JerrySchema>, task: Task, from: string, until: string, excluded: ReadonlyArray<{ from: string; until: string }> = []): Promise<string[]> {
   const platform = process.platform;
   let query = trx
     .selectFrom('hook_events')
-    .select(['tool_name', 'verdict', 'payload_json', 'cwd'])
+    .select(['tool_name', 'verdict', 'payload_json', 'cwd', 'occurred_at'])
     .where('event_type', '=', 'PreToolUse')
     .where('occurred_at', '>', from)
     .where('occurred_at', '<=', until)
@@ -1147,13 +2003,67 @@ async function editsInScopeBetween(trx: Transaction<JerrySchema>, task: Task, fr
   query = platform === 'win32' ? query.where(sql`lower(repo_root)`, '=', task.repoRoot.toLowerCase()) : query.where('repo_root', '=', task.repoRoot);
   const edited = new Set<string>();
   for (const event of await query.execute()) {
-    if (event.verdict === 'DENY') continue;
+    if (event.verdict === 'DENY' || excluded.some((window) => event.occurred_at > window.from && event.occurred_at <= window.until)) continue;
     const input = ((JSON.parse(event.payload_json) as Record<string, unknown>)['input'] ?? {}) as Record<string, unknown>;
     if (typeof input['path'] !== 'string') continue;
     const relative = relativeInside(absolutePath(input['path'], event.cwd ?? task.repoRoot, platform), task.repoRoot, platform);
     if (relative !== null && relative !== '' && matchesAnyGlob(relative, task.plan.scope, platform === 'win32')) edited.add(relative);
   }
   return [...edited].sort();
+}
+
+function artifactDecisionFromRow(row: Selectable<JerrySchema['artifact_decisions']>): ArtifactDecision {
+  return artifactDecisionSchema.parse({ taskId: row.task_id, decision: row.decision, kind: row.kind, title: row.title, url: row.url, reason: row.reason, at: row.created_at });
+}
+
+function testRunFromRow(row: Selectable<JerrySchema['test_runs']>): TestRun {
+  return testRunSchema.parse({ taskId: row.task_id, sessionId: row.session_id, agentId: row.agent_id, command: row.command, result: row.result, exitCode: row.exit_code, summary: row.summary, at: row.at });
+}
+
+/** A path a reviewer gave, repo-relative with forward slashes (reviewers sometimes give absolute paths). */
+function repoRelative(task: Task, file: string): string {
+  const relative = relativeInside(absolutePath(file.trim(), task.repoRoot, process.platform), task.repoRoot, process.platform);
+  return (relative ?? file.trim()).replaceAll('\\', '/').replace(/^\.\//, '');
+}
+
+/** `FND-12` → 12; anything else is an unknown finding. */
+function findingNumber(findingId: string): number {
+  const match = /^FND-(\d+)$/i.exec(findingId.trim());
+  if (match === null) throw new StateError(400, `${findingId} is not a finding ID (FND-…)`);
+  return Number(match[1]);
+}
+
+async function insertFindingEvent(trx: Transaction<JerrySchema>, findingId: number, from: FindingStatus | null, to: FindingStatus, actor: 'user' | 'core', reason: string, at: string): Promise<void> {
+  await trx.insertInto('finding_events').values({ finding_id: findingId, from_status: from, to_status: to, actor, reason, at }).execute();
+}
+
+function findingFromRow(row: Selectable<JerrySchema['findings']>): Finding {
+  return findingSchema.parse({
+    findingId: `FND-${row.id}`,
+    taskId: row.task_id,
+    repoRoot: row.repo_root,
+    ruleId: row.rule_id,
+    ruleVersion: row.rule_version,
+    source: row.source,
+    category: row.category,
+    severity: row.severity,
+    confidence: row.confidence,
+    file: row.file,
+    lineStart: row.line_start,
+    lineEnd: row.line_end,
+    title: row.title,
+    evidence: row.evidence,
+    whyItMatters: row.why,
+    suggestedFix: row.fix,
+    planRelated: row.plan_related === 1,
+    status: row.status,
+    statusReason: row.status_reason,
+    sessionId: row.session_id,
+    agentId: row.agent_id,
+    firstSeenAt: row.first_seen_at,
+    lastSeenAt: row.last_seen_at,
+    updatedAt: row.updated_at,
+  });
 }
 
 function checkpointFromRow(row: { task_id: string; session_id: string | null; summary: string; next_steps_json: string; created_at: string }): Checkpoint {

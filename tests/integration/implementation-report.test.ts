@@ -39,6 +39,8 @@ describe('implementation report and acceptance (bundled bridge + MCP + Core)', (
   const tool = (toolName: string, toolInput: Record<string, unknown>, toolUseId: string) =>
     runBridge('pre-tool-use', { session_id: 'session-r', cwd: repo, hook_event_name: 'PreToolUse', tool_name: toolName, tool_input: toolInput, tool_use_id: toolUseId }, env);
   const decide = (version: number, decision: 'APPROVED' | 'REJECTED', comment = '') => api(core, 'POST', `/api/v1/tasks/${taskId}/approvals`, { stage: 'IMPLEMENTATION', version, decision, comment });
+  /** These tests are about the final checks; the review is waived as a user would (ADR 0034). */
+  const skipReview = (id = taskId) => api(core, 'POST', `/api/v1/tasks/${id}/review/skip`, { reason: 'review covered elsewhere' });
   const detail = async (): Promise<TaskDetail> => (await api(core, 'GET', `/api/v1/tasks/${taskId}`)).body as TaskDetail;
 
   it('refuses a report before the plan is approved', async () => {
@@ -112,6 +114,8 @@ describe('implementation report and acceptance (bundled bridge + MCP + Core)', (
     expect(JSON.parse(tool('Write', { file_path: path.join(repo, 'src', 'greeting', 'greet.ts') }, 'toolu_w5').stdout).systemMessage).toContain('monitor.no-approved-plan');
     expect((await decide(1, 'APPROVED')).status).toBe(409);
     expect((await decide(2, 'APPROVED')).status).toBe(201);
+    expect((await detail()).state).toBe('CODE_REVIEW');
+    expect((await skipReview()).status).toBe(200);
 
     const task = await detail();
     expect(task.state).toBe('FINAL_REPORT');
@@ -131,6 +135,7 @@ describe('implementation report and acceptance (bundled bridge + MCP + Core)', (
     const third = await client.call('jerry_submit_report', { taskId, report: { ...sampleReport(), summary: 'Added greet(name), its unit test and empty-name handling; reported the last edit.' } });
     expect(third.structured).toMatchObject({ reportVersion: 3 });
     expect((await decide(3, 'APPROVED')).status).toBe(201);
+    expect((await skipReview()).status).toBe(200);
 
     const task = await detail();
     expect(task.state).toBe('DONE');
@@ -139,6 +144,7 @@ describe('implementation report and acceptance (bundled bridge + MCP + Core)', (
     expect(task.finalCheck).toMatchObject({ reportVersion: 3, passed: true, definitionOfDone: samplePlan(repo).definitionOfDone });
     // Limitations are recorded, not hidden: an earlier unreported edit and the recorded deviations.
     expect(task.finalCheck?.conditions.filter((condition) => !condition.passed).map((condition) => condition.id)).toEqual(['report.complete', 'implementation.deviations']);
+    expect(task.finalCheck?.conditions.find((condition) => condition.id === 'review.done')).toMatchObject({ passed: true, detail: 'the user waived the review: review covered elsewhere' });
 
     const history = (await api(core, 'GET', `/api/v1/tasks/${taskId}/transitions`)).body as WorkflowTransition[];
     expect(history.map((step) => `${step.event}:${step.actor}`)).toEqual([
@@ -148,9 +154,11 @@ describe('implementation report and acceptance (bundled bridge + MCP + Core)', (
       'changes.requested:user',
       'report.submitted:claude',
       'implementation.accepted:user',
+      'review.skipped:user',
       'changes.requested:user',
       'report.submitted:claude',
       'implementation.accepted:user',
+      'review.skipped:user',
       'task.completed:core',
     ]);
     // Done is done: no more reports, checkpoints or decisions.
@@ -167,6 +175,7 @@ describe('implementation report and acceptance (bundled bridge + MCP + Core)', (
     await api(core, 'POST', `/api/v1/tasks/${second}/approvals`, { stage: 'PLAN', version: 1, decision: 'APPROVED' });
     expect((await client.call('jerry_submit_report', { taskId: second, report: failing })).isError).toBe(false);
     await api(core, 'POST', `/api/v1/tasks/${second}/approvals`, { stage: 'IMPLEMENTATION', version: 1, decision: 'APPROVED' });
+    await skipReview(second);
     const task = (await api(core, 'GET', `/api/v1/tasks/${second}`)).body as TaskDetail;
     expect(task.state).toBe('FINAL_REPORT');
     expect(task.finalCheck?.conditions.filter((condition) => condition.blocking && !condition.passed).map((condition) => condition.id)).toEqual(['report.no-failed-checks', 'report.no-critical-risks']);

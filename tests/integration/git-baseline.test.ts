@@ -76,6 +76,8 @@ describe('Git baseline, user changes and Git-based evidence (bundled bridge + Co
   it('refuses DONE when a shell command changed a file after the report', async () => {
     fs.writeFileSync(path.join(repo, 'src', 'generated.ts'), 'export const generated = false;\n');
     expect((await api(core, 'POST', `/api/v1/tasks/${taskId}/approvals`, { stage: 'IMPLEMENTATION', version: 1, decision: 'APPROVED' })).status).toBe(201);
+    // Not about the review (ADR 0034): the user waives it, and the final checks run.
+    expect((await api(core, 'POST', `/api/v1/tasks/${taskId}/review/skip`, { reason: 'not part of this test' })).status).toBe(200);
     const task = await detail();
     expect(task.state).toBe('FINAL_REPORT');
     expect(task.finalCheck?.conditions.find((condition) => condition.id === 'code.unchanged-since-report')).toMatchObject({ passed: false, detail: expect.stringContaining('src/generated.ts') });

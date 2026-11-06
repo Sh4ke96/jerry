@@ -6,10 +6,20 @@ A local agent harness and development guardian for Claude Code and VS Code.
 This repository contains the source of JERRY itself. The zero-footprint requirement applies to the user's
 repositories, not to this one.
 
-**Status:** M3 Repository Discovery complete ([report](docs/milestones/M3-repository-discovery.md)); M2 Workflow
-Control ([report](docs/milestones/M2-workflow-control.md)); M1 Core Foundation
-([report](docs/milestones/M1-core-foundation.md)). What remains: [docs/roadmap.md](docs/roadmap.md). M0 spike:
-[docs/spikes/M0-feasibility.md](docs/spikes/M0-feasibility.md).
+**Status:**
+- Version 0.1.0. Start with the [user guide](docs/user-guide.md); the
+  [security audit](docs/security/audit.md) lists what JERRY does and does not protect against.
+- Complete:
+  - M8 Reports, Artifacts and Release ([report](docs/milestones/M8-reports-and-release.md));
+  - M7 Evals and Regression Harness ([report](docs/milestones/M7-evals.md));
+  - M6 Independent Code Review ([report](docs/milestones/M6-independent-review.md));
+  - M5 Implementation and Continuous Quality ([report](docs/milestones/M5-implementation-and-quality.md));
+  - M4 Analysis and Planning ([report](docs/milestones/M4-analysis-and-planning.md));
+  - M3 Repository Discovery ([report](docs/milestones/M3-repository-discovery.md));
+  - M2 Workflow Control ([report](docs/milestones/M2-workflow-control.md));
+  - M1 Core Foundation ([report](docs/milestones/M1-core-foundation.md)).
+- What remains: [docs/roadmap.md](docs/roadmap.md).
+- M0 spike: [docs/spikes/M0-feasibility.md](docs/spikes/M0-feasibility.md).
 
 ## What works
 
@@ -36,6 +46,61 @@ Control ([report](docs/milestones/M2-workflow-control.md)); M1 Core Foundation
 - `/jerry:plan`: Claude studies the repository, drafts the full plan (spec §7.2) and submits it with
   `jerry_submit_plan`; you approve the exact document in the dashboard or CLI
   ([ADR 0011](docs/decisions/0011-plans-submitted-by-claude.md)).
+- `/jerry:analyze`: analysis before the plan. Claude takes the task in (goal and focus, nothing approved), runs
+  at most three of JERRY's read-only analysts in parallel, reads their evidence-backed reports with
+  `jerry_get_analysis`, and submits a plan that cites them and carries their gaps. JERRY moves the task
+  through Discovery and Analysis on its own; the approval stays yours
+  ([ADR 0024](docs/decisions/0024-analysis-first-workflow.md)).
+- Plan completeness: a deterministic rubric checks every plan, for example scope against changes and steps,
+  step order, tests that fit the change, risks, unknowns and the analysis it should cite. It only informs you
+  in the dashboard, `jerry task show` and Claude's MCP answers, and never blocks an approval
+  ([ADR 0025](docs/decisions/0025-plan-completeness-grader.md)).
+- Plan revisions: the dashboard ("Changes since v…") and `jerry plan diff <taskId>` show what changed between
+  plan versions, section by section and scope first, so you review a revision without re-reading the whole
+  plan ([ADR 0026](docs/decisions/0026-plan-version-diff.md)).
+- Continuous quality while Claude implements. JERRY checks only the lines Claude changed, a moment after each
+  edit. It never writes to the repository and never runs project commands.
+  - Rule packs: naming and prose, error handling, test quality and security
+    ([ADR 0028](docs/decisions/0028-rule-engine-and-packs.md)).
+  - Findings carry severity P1–P4, evidence, why it matters and a fix. Claude hears about new ones with its next
+    tool call, once each, at most two rounds ([ADR 0029](docs/decisions/0029-quality-scheduler-and-feedback.md)).
+  - JERRY marks a finding fixed when a later check no longer sees it. Only you accept or dismiss one, with a
+    reason, in the dashboard or with `jerry findings set`
+    ([ADR 0027](docs/decisions/0027-findings-model.md)).
+  - JERRY suggests the tests for the changed files, Claude runs them, and JERRY records how they ended. The
+    report shows a check it claims passed that JERRY saw fail
+    ([ADR 0030](docs/decisions/0030-targeted-tests-and-test-results.md)).
+- `/jerry:implement`: alone or with up to three implementer subagents on disjoint files (`jerry_assign_work`).
+  JERRY warns when an implementer edits outside its files or two agents write one file, and shows plan drift
+  ([ADR 0031](docs/decisions/0031-implementers-conflicts-and-drift.md)).
+- Independent code review (`/jerry:review`) after you accept an implementation. Three read-only reviewers
+  check every changed file: correctness and tests, security and contracts, architecture, quality and UX.
+  - JERRY shows coverage, reviewer independence and the merged findings, and warns if a reviewer writes
+    ([ADR 0032](docs/decisions/0032-independent-review.md),
+    [ADR 0033](docs/decisions/0033-reviewer-independence-and-read-only.md)).
+  - A fix plan needs your approval (`jerry approve <id> --stage review-fix`); then the same reviewers check
+    again, at most three rounds in total
+    ([ADR 0034](docs/decisions/0034-review-report-and-fix-gate.md),
+    [ADR 0035](docs/decisions/0035-fixes-and-re-review.md)).
+  - DONE needs a passed review, or your waiver with a reason (`jerry review skip`).
+- Evals (`jerry eval run`): golden cases run as real Claude Code sessions. Each attempt gets a temporary
+  fixture repository, JERRY home and Core, so your repositories and JERRY data are never touched.
+  - Graders are deterministic, execution, or LLM rubrics; a rubric counts only after calibration against your
+    labels ([ADR 0036](docs/decisions/0036-golden-cases-and-fixtures.md),
+    [ADR 0037](docs/decisions/0037-graders.md), [ADR 0038](docs/decisions/0038-eval-runner.md)).
+  - Results are compared per case with your baseline; flaky runs are never called regressions, and a critical
+    safety regression blocks the release ([ADR 0039](docs/decisions/0039-baselines-regressions-calibration.md)).
+  - The dashboard's Evals view shows runs, regressions, calibration and what changed since the baseline;
+    `jerry eval plugin` runs the Claude Code plugin evals of the JERRY plugin, never published
+    ([ADR 0040](docs/decisions/0040-eval-dashboard-triggers-plugin-evals.md)).
+- Final report for every task, assembled from what JERRY recorded: in the dashboard, with `jerry report <id>`,
+  or through `jerry_get_final_report` ([ADR 0041](docs/decisions/0041-final-report.md)).
+- An optional Artifact: `/jerry:artifact` asks whether you want Claude to create one (a stakeholder
+  presentation, the architecture before and after, UI flows, or an endpoint and contract map). It is created
+  only on yes, and JERRY records your choice and the link
+  ([ADR 0042](docs/decisions/0042-artifact-is-the-users-choice.md)).
+- Releases: `pnpm release` builds a versioned package with checksums; install, update and rollback are tested
+  ([ADR 0043](docs/decisions/0043-release-package.md)).
 - Task workflow states (spec §7.1), changed only through Core's transition validator, with full history. An
   approved plan covers edits only while its task is in implementation. Pause, resume and cancel are your
   decisions (dashboard or `jerry task pause|resume|cancel`)

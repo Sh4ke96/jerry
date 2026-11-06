@@ -34,8 +34,8 @@ describe('JERRY MCP server (bundled)', () => {
     const mcp = await connect();
     const listed = (await mcp.request('tools/list'))['result'] as { tools: Array<{ name: string; annotations: { readOnlyHint: boolean } }> };
     const names = listed.tools.map((tool) => tool.name).sort();
-    expect(names).toEqual(['jerry_check_paths', 'jerry_get_project_profile', 'jerry_get_state', 'jerry_list_deviations', 'jerry_save_checkpoint', 'jerry_submit_analysis_report', 'jerry_submit_plan', 'jerry_submit_report']);
-    expect(listed.tools.filter((tool) => !tool.annotations.readOnlyHint).map((tool) => tool.name)).toEqual(['jerry_submit_plan', 'jerry_submit_analysis_report', 'jerry_submit_report', 'jerry_save_checkpoint']);
+    expect(names).toEqual(['jerry_assign_work', 'jerry_check_paths', 'jerry_finish_review', 'jerry_get_analysis', 'jerry_get_final_report', 'jerry_get_project_profile', 'jerry_get_review', 'jerry_get_state', 'jerry_list_deviations', 'jerry_list_findings', 'jerry_record_artifact', 'jerry_report_fixes', 'jerry_save_checkpoint', 'jerry_start_task', 'jerry_submit_analysis_report', 'jerry_submit_fix_plan', 'jerry_submit_plan', 'jerry_submit_report', 'jerry_submit_review']);
+    expect(listed.tools.filter((tool) => !tool.annotations.readOnlyHint).map((tool) => tool.name)).toEqual(['jerry_submit_plan', 'jerry_start_task', 'jerry_record_artifact', 'jerry_submit_review', 'jerry_finish_review', 'jerry_submit_fix_plan', 'jerry_report_fixes', 'jerry_assign_work', 'jerry_submit_analysis_report', 'jerry_submit_report', 'jerry_save_checkpoint']);
     expect(names.some((name) => /approve|accept|reject|exclude|pause|resume|cancel|done|complete/.test(name))).toBe(false);
   });
 

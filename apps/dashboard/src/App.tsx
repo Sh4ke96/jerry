@@ -1,18 +1,20 @@
 import { computed, defineComponent, ref } from 'vue';
 import { waitsForUser } from './format';
 import { signOut, state } from './state';
+import { Evals } from './views/Evals';
 import { Overview } from './views/Overview';
 import { Repositories } from './views/Repositories';
 import { Tasks } from './views/Tasks';
 import { Timeline } from './views/Timeline';
 
-type Tab = 'overview' | 'tasks' | 'timeline' | 'repositories';
+type Tab = 'overview' | 'tasks' | 'timeline' | 'repositories' | 'evals';
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: 'overview', label: 'Overview' },
   { id: 'tasks', label: 'Tasks' },
   { id: 'timeline', label: 'Timeline' },
   { id: 'repositories', label: 'Repositories' },
+  { id: 'evals', label: 'Evals' },
 ];
 
 export const App = defineComponent({
@@ -31,6 +33,8 @@ export const App = defineComponent({
           return <Timeline />;
         case 'repositories':
           return <Repositories />;
+        case 'evals':
+          return <Evals />;
       }
     };
 

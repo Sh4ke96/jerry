@@ -62,6 +62,27 @@ export const ImplementationReportView = defineComponent({
                 ))}
               </ul>
             )}
+            {evidence.quality !== undefined && (
+              <div class="evidence__quality">
+                <p>
+                  Quality: {evidence.quality.openFindings} open finding(s)
+                  {evidence.quality.lastTestRun !== null && (
+                    <span>
+                      {' '}
+                      · last tests JERRY saw: <Badge tone={evidence.quality.lastTestRun.result === 'PASS' ? 'pass' : 'deny'}>{evidence.quality.lastTestRun.result}</Badge> <code>{evidence.quality.lastTestRun.command}</code>
+                    </span>
+                  )}
+                </p>
+                {evidence.quality.serious.length > 0 && <p class="attention">Open P1/P2 findings: {evidence.quality.serious.join('; ')}</p>}
+                {evidence.quality.claimedVsObserved.map((line) => (
+                  <p key={line} class="attention">
+                    {line}
+                  </p>
+                ))}
+                {evidence.quality.unplannedFiles.length > 0 && <p class="attention">Changed but named by no plan step: {evidence.quality.unplannedFiles.join(', ')}</p>}
+                {evidence.quality.untouchedSteps.length > 0 && <p class="muted">Plan steps without changes: {evidence.quality.untouchedSteps.join('; ')}</p>}
+              </div>
+            )}
           </section>
 
           {section(

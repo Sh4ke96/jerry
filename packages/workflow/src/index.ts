@@ -43,6 +43,11 @@ interface Rule {
 }
 
 const RULES: Readonly<Record<WorkflowEvent, Rule>> = {
+  // Analysis first (ADR 0024): a task starts in discovery, analysts' reports move it on, and the
+  // plan submitted after them completes the analysis.
+  'task.started': { from: [null], to: 'DISCOVERY', actors: ['user', 'claude'] },
+  'analysis.started': { from: ['DISCOVERY'], to: 'PARALLEL_ANALYSIS', actors: ['core', 'claude', 'user'] },
+  'analysis.completed': { from: ['PARALLEL_ANALYSIS'], to: 'PLAN_DRAFT', actors: ['core', 'claude', 'user'] },
   'plan.submitted': { from: [null], to: 'WAIT_PLAN_APPROVAL', actors: ['user', 'claude'] },
   'plan.revised': {
     from: ['DISCOVERY', 'PARALLEL_ANALYSIS', 'PLAN_DRAFT', 'WAIT_PLAN_APPROVAL', 'IMPLEMENTATION', 'WAIT_IMPLEMENTATION_ACCEPTANCE', 'BLOCKED'],
@@ -55,9 +60,22 @@ const RULES: Readonly<Record<WorkflowEvent, Rule>> = {
   'plan.rejected': { from: ['WAIT_PLAN_APPROVAL', 'IMPLEMENTATION'], to: 'PLAN_DRAFT', actors: ['user'] },
   'report.submitted': { from: ['IMPLEMENTATION'], to: 'WAIT_IMPLEMENTATION_ACCEPTANCE', actors: ['claude', 'user'] },
   // Also from the final checks: when Core refuses DONE, the user sends the work back (ADR 0016).
-  'changes.requested': { from: ['WAIT_IMPLEMENTATION_ACCEPTANCE', 'FINAL_REPORT'], to: 'IMPLEMENTATION', actors: ['user'] },
-  // Until independent review exists (M6), an accepted implementation goes straight to the final checks.
-  'implementation.accepted': { from: ['WAIT_IMPLEMENTATION_ACCEPTANCE'], to: 'FINAL_REPORT', actors: ['user'] },
+  // After a review the user may send it back too, instead of a fix plan.
+  'changes.requested': { from: ['WAIT_IMPLEMENTATION_ACCEPTANCE', 'FINAL_REPORT', 'REVIEW_REPORT'], to: 'IMPLEMENTATION', actors: ['user'] },
+  // An accepted implementation goes to independent review (M6, ADR 0032).
+  'implementation.accepted': { from: ['WAIT_IMPLEMENTATION_ACCEPTANCE'], to: 'CODE_REVIEW', actors: ['user'] },
+  // A review round is complete: all three reviewers submitted (Core), or Claude closed it with gaps.
+  'review.reported': { from: ['CODE_REVIEW', 'REVERIFICATION'], to: 'REVIEW_REPORT', actors: ['core', 'claude'] },
+  // No open P1–P3 review finding: Core moves on to the final checks.
+  'review.passed': { from: ['REVIEW_REPORT'], to: 'FINAL_REPORT', actors: ['core'] },
+  // The user waives the (rest of the) review, with a reason.
+  'review.skipped': { from: ['CODE_REVIEW', 'REVIEW_REPORT', 'WAIT_REVIEW_FIX_APPROVAL', 'REVERIFICATION'], to: 'FINAL_REPORT', actors: ['user'] },
+  // Claude's remediation plan for the review findings, and its revisions; only the user approves it.
+  'fixes.proposed': { from: ['REVIEW_REPORT', 'WAIT_REVIEW_FIX_APPROVAL'], to: 'WAIT_REVIEW_FIX_APPROVAL', actors: ['claude', 'user'] },
+  'fixes.approved': { from: ['WAIT_REVIEW_FIX_APPROVAL'], to: 'FIX_IMPLEMENTATION', actors: ['user'] },
+  'fixes.rejected': { from: ['WAIT_REVIEW_FIX_APPROVAL'], to: 'REVIEW_REPORT', actors: ['user'] },
+  // The fixes are done: the same reviewers check again.
+  'fixes.reported': { from: ['FIX_IMPLEMENTATION'], to: 'REVERIFICATION', actors: ['claude', 'user'] },
   'task.completed': { from: ['FINAL_REPORT'], to: 'DONE', actors: ['core'] },
   'task.paused': { from: PAUSABLE, to: 'PAUSED', actors: ['user'] },
   'task.resumed': { from: ['PAUSED'], to: 'resume', actors: ['user'] },
@@ -114,6 +132,11 @@ export interface CompletionInput {
   editsSinceReport: readonly string[];
   /** From the approved plan; the user's acceptance confirms it. */
   definitionOfDone: readonly string[];
+  /**
+   * The independent review (ADR 0032–0035). Absent for tasks accepted before reviews existed.
+   * outcome: passed (no open P1–P3 review finding), skipped (the user waived it), or null.
+   */
+  review?: { outcome: 'passed' | 'skipped' | null; rounds: number; reason: string; uncovered: readonly string[]; notIndependent: readonly string[]; openFindings: readonly string[] };
 }
 
 const list = (items: readonly string[], max = 10): string => (items.length <= max ? items.join(', ') : `${items.slice(0, max).join(', ')} and ${items.length - max} more`);
@@ -159,6 +182,28 @@ export function evaluateCompletion(input: CompletionInput): { passed: boolean; c
   add('report.complete', false, unreportedEdits.length === 0, unreportedEdits.length === 0 ? 'every observed edit is in the report' : `edited but not in the report: ${list(unreportedEdits)}`);
   add('implementation.deviations', false, deviationCount === 0, deviationCount === 0 ? 'no deviation was recorded' : `${deviationCount} deviation(s) recorded during the implementation`);
 
+  // Independent review (ADR 0032–0035): it must have passed or been waived by the user.
+  const review = input.review;
+  if (review !== undefined) {
+    const outcome =
+      review.outcome === 'passed'
+        ? `review passed after ${review.rounds} round(s)`
+        : review.outcome === 'skipped'
+          ? `the user waived the review${review.reason === '' ? '' : `: ${review.reason}`}`
+          : 'the independent review has not passed';
+    add('review.done', true, review.outcome !== null, outcome);
+    add('review.coverage', false, review.uncovered.length === 0, review.uncovered.length === 0 ? 'every changed file was reviewed' : `changed files no reviewer covered: ${list(review.uncovered)}`);
+    add('review.independent', false, review.notIndependent.length === 0, review.notIndependent.length === 0 ? 'no reviewer had edited the task' : `reviewers who also edited the task: ${list(review.notIndependent)}`);
+    if (review.outcome === 'skipped') add('review.open-findings', false, review.openFindings.length === 0, review.openFindings.length === 0 ? 'no review finding left open' : `left open: ${list(review.openFindings, 5)}`);
+  }
+
+  // Continuous quality (ADR 0027–0031): recorded limitations, never a block (the product owner's decision).
+  const quality = report.evidence.quality;
+  if (quality !== undefined) {
+    add('quality.no-serious-findings', false, quality.serious.length === 0, quality.serious.length === 0 ? 'no open P1 or P2 finding at the report' : `open at the report: ${list(quality.serious, 5)}`);
+    add('tests.claims-match-observed', false, quality.claimedVsObserved.length === 0, quality.claimedVsObserved.length === 0 ? 'no check the report claims passed was seen failing' : list(quality.claimedVsObserved, 5));
+  }
+
   return { passed: conditions.every((condition) => !condition.blocking || condition.passed), conditions };
 }
 
@@ -183,3 +228,6 @@ export const STATE_LABELS: Readonly<Record<WorkflowState, string>> = {
   PAUSED: 'Paused',
   CANCELLED: 'Cancelled',
 };
+
+export { diffPlans, isEmptyDiff, type PlanDiff, type PlanSectionDiff } from './plan-diff.js';
+export { globsOverlap, planLayers, type PlanLayers, type PlanStepNode } from './plan-dag.js';

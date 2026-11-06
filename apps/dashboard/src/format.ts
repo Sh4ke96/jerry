@@ -18,6 +18,11 @@ export function isOpen(task: TaskWithDecision): boolean {
   return !isTerminal(task.state);
 }
 
+/** Taken in for analysis and still without a real plan: its scope is only the analysis focus (ADR 0024). */
+export function isIntake(task: TaskWithDecision): boolean {
+  return task.goal !== undefined && task.plan.version === 1 && task.plan.document === undefined;
+}
+
 export function stateTone(state: WorkflowState): Tone {
   if (WORK_STATES.has(state)) return 'pass';
   if (WAITING_FOR_USER.has(state)) return 'warn';

@@ -50,7 +50,8 @@ export function isGateDecision(value: unknown): value is GateDecision {
     isNonEmptyString(value['ruleId']) &&
     isNonEmptyString(value['reason']) &&
     isNullableString(value['taskId']) &&
-    isNullableString(value['repoRoot'])
+    isNullableString(value['repoRoot']) &&
+    (value['feedback'] === undefined || typeof value['feedback'] === 'string')
   );
 }
 

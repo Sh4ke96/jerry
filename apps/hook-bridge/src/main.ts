@@ -209,13 +209,15 @@ function emit(decision: GateDecision): never {
           systemMessage: `JERRY: ${decision.reason} [${decision.ruleId}]`,
           hookSpecificOutput: {
             hookEventName: 'PreToolUse',
-            additionalContext: `JERRY warning: ${decision.reason} [${decision.ruleId}]`,
+            additionalContext: `JERRY warning: ${decision.reason} [${decision.ruleId}]${decision.feedback === undefined ? '' : `\n${decision.feedback}`}`,
           },
         }),
       );
       proceed();
       break;
     case 'PASS':
+      // Quality findings go to Claude only; the user sees them in the dashboard (ADR 0029).
+      if (decision.feedback !== undefined) writeOut(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: decision.feedback } }));
       proceed();
   }
 }
