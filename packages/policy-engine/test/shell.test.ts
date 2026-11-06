@@ -15,6 +15,8 @@ describe('assessGitUsage', () => {
     ['npm test', 'bash'],
     ['gh pr view 12', 'bash'],
     ['gh --version', 'bash'],
+    ['git --no-optional-locks status --short', 'bash'],
+    ['git -P log --oneline', 'powershell'],
   ] as const)('%s does not change Git state', (command, dialect) => {
     expect(assessGitUsage(command, dialect)).toMatchObject({ mutating: false });
   });
@@ -75,6 +77,11 @@ const readOnlyBash = [
   'node --version',
   'cd sub && git log',
   'echo "a > b"',
+  'git --no-optional-locks status --short',
+  'node dist/cli/jerry.mjs status',
+  'node D:\\Projekciki\\jerry\\dist\\cli\\jerry.mjs task list',
+  'jerry repo list',
+  'jerry core status',
 ];
 
 const writeCapableBash = [
@@ -103,6 +110,9 @@ const writeCapableBash = [
   ['echo "unterminated', 'unbalanced quotes'],
   ['cat <(rm x)', 'process substitution'],
   ['sed -i s/a/b/ file', 'not on the read-only allowlist'],
+  ['node dist/cli/jerry.mjs task create --repo . --title x --scope a', 'changes JERRY state'],
+  ['jerry plan revise JRY-0001 --scope a', 'changes JERRY state'],
+  ['node scripts/other.mjs status', 'arbitrary code'],
 ] as const;
 
 describe('assessShellCommand (bash)', () => {

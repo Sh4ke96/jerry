@@ -28,7 +28,8 @@ Every guarded tool call (Write, Edit, MultiEdit, NotebookEdit, Bash, PowerShell,
 
 1. Any command that changes Git state: `git` subcommands outside a read-only allowlist (status, diff, log,
    show, blame, …), Git extensions (`git-*`), mutating `gh` commands, `npm|pnpm|yarn version`, and Git invoked
-   indirectly (`xargs git …`, `bash -c "git …"`, `Start-Process git`, sub-expressions).
+   indirectly (`xargs git …`, `bash -c "git …"`, `Start-Process git`, sub-expressions). Since M1 this also covers
+   MCP tools of Git servers (GitHub, GitLab, Bitbucket, mcp-server-git) that push, commit, branch or merge.
 2. Any write inside a `.git` directory.
 3. Any write to, or command touching, JERRY data (`JERRY_HOME`) or the Claude Code settings and plugins
    that keep JERRY enabled.
@@ -71,5 +72,9 @@ it weakens oversight, it requires an interactive terminal and a typed confirmati
 ## Known gaps
 
 - Git run inside scripts the classifier cannot see (`npm run release`, a project script calling `git push`) is not detected.
-- MCP tools of other servers (for example a GitHub MCP server that can push or merge) are not guarded yet.
+- ~~MCP tools of other servers (for example a GitHub MCP server that can push or merge) are not guarded yet.~~
+  Resolved in M1: hooks match `^mcp__`; tools of Git servers (name contains `git` or `bitbucket`) that push, commit,
+  create branches, files, repositories or pull/merge requests are blocked as `hard.git-mutation`. Reads, issues,
+  comments and reviews pass; servers unrelated to Git are not inspected. Verified live with a stub Git MCP server.
+- MCP tools that write local files (for example a filesystem server) are not monitored against the plan.
 - `git status` run by Claude may refresh `.git/index` stat data (an optional lock); content and history do not change.

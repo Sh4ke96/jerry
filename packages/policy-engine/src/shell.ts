@@ -20,7 +20,7 @@ export interface ShellAssessment {
 const BASH_READ_ONLY = new Set([
   'ls', 'cat', 'head', 'tail', 'wc', 'pwd', 'echo', 'grep', 'egrep', 'fgrep', 'rg', 'find', 'which',
   'file', 'stat', 'du', 'df', 'diff', 'cmp', 'basename', 'dirname', 'realpath', 'readlink', 'date',
-  'whoami', 'sort', 'test', '[', 'true', 'false', 'cd', 'pushd', 'popd', 'git', 'node',
+  'whoami', 'sort', 'test', '[', 'true', 'false', 'cd', 'pushd', 'popd', 'git', 'node', 'jerry',
 ]);
 
 const POWERSHELL_READ_ONLY = new Set([
@@ -29,13 +29,18 @@ const POWERSHELL_READ_ONLY = new Set([
   'measure-object', 'measure', 'select-object', 'select', 'where-object', 'sort-object', 'sort',
   'format-list', 'fl', 'format-table', 'ft', 'out-string', 'get-command', 'gcm', 'write-output', 'echo',
   'get-date', 'get-filehash', 'join-path', 'split-path', 'convertfrom-json', 'convertto-json',
-  'set-location', 'cd', 'sl', 'push-location', 'pop-location', 'git', 'node',
+  'set-location', 'cd', 'sl', 'push-location', 'pop-location', 'git', 'node', 'jerry',
 ]);
 
 const GIT_READ_ONLY_SUBCOMMANDS = new Set([
   'status', 'log', 'diff', 'show', 'rev-parse', 'ls-files', 'ls-tree', 'blame', 'describe', 'shortlog',
   'cat-file', 'grep', 'branch', 'remote', 'config', 'rev-list', 'merge-base', 'name-rev', 'reflog',
 ]);
+
+/** Global git flags that never make a command write; --no-optional-locks even prevents index refreshes. */
+const GIT_SAFE_GLOBAL_FLAGS = new Set(['--no-pager', '-P', '--no-optional-locks']);
+
+const JERRY_READ_ONLY_COMMANDS = new Set(['status', 'doctor', 'help', '--help', '-h']);
 
 const GIT_BRANCH_READ_ONLY_ARGS = new Set(['--show-current', '-a', '--all', '-r', '--remotes', '-v', '-vv', '--list', '--no-color', '--color']);
 /** `git remote <first-arg> ...` forms that only read. */
@@ -86,9 +91,11 @@ function assessSegment(words: string[], dialect: ShellDialect): ShellAssessment 
     case 'git':
       return assessGit(args);
     case 'node':
-      return args.length === 1 && (args[0] === '--version' || args[0] === '-v')
-        ? { readOnly: true, reason: 'node version query' }
-        : writeCapable('node can run arbitrary code');
+      if (args.length === 1 && (args[0] === '--version' || args[0] === '-v')) return { readOnly: true, reason: 'node version query' };
+      if (args[0] !== undefined && /(^|[\\/])jerry\.mjs$/i.test(args[0])) return assessJerry(args.slice(1));
+      return writeCapable('node can run arbitrary code');
+    case 'jerry':
+      return assessJerry(args);
     case 'find': {
       const dangerous = args.find((arg) => /^-(delete|exec|execdir|ok|okdir|fprint|fprint0|fprintf|fls)$/.test(arg));
       return dangerous === undefined ? { readOnly: true, reason: 'find without actions' } : writeCapable(`find action ${dangerous}`);
@@ -106,11 +113,21 @@ function assessSegment(words: string[], dialect: ShellDialect): ShellAssessment 
   }
 }
 
+/** JERRY CLI commands that only read JERRY state. */
+function assessJerry(args: string[]): ShellAssessment {
+  const [command, subcommand] = args;
+  const readOnly =
+    (args.length === 1 && command !== undefined && JERRY_READ_ONLY_COMMANDS.has(command)) ||
+    (args.length === 2 && (command === 'task' || command === 'repo') && subcommand === 'list') ||
+    (args.length === 2 && command === 'core' && subcommand === 'status');
+  return readOnly ? { readOnly: true, reason: `jerry ${args.join(' ')} only reads JERRY state` } : writeCapable(`jerry ${args.join(' ')} changes JERRY state`);
+}
+
 function assessGit(args: string[]): ShellAssessment {
   let index = 0;
   while (index < args.length) {
     const arg = args[index]!;
-    if (arg === '--no-pager') {
+    if (GIT_SAFE_GLOBAL_FLAGS.has(arg)) {
       index += 1;
     } else if (arg === '-C') {
       index += 2;

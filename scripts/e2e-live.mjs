@@ -78,8 +78,8 @@ const hooksConfig = JSON.parse(fs.readFileSync(hooksFile, 'utf8'));
 delete hooksConfig.hooks.SessionStart;
 fs.writeFileSync(hooksFile, JSON.stringify(hooksConfig, null, 2));
 
-function runClaude(label, prompt, allowedTools, plugin = pluginDir) {
-  const args = ['-p', prompt, '--plugin-dir', plugin, '--model', model, '--permission-mode', 'acceptEdits', '--output-format', 'json', '--no-session-persistence', '--allowedTools', ...allowedTools];
+function runClaude(label, prompt, allowedTools, plugin = pluginDir, extraArgs = []) {
+  const args = ['-p', prompt, '--plugin-dir', plugin, '--model', model, '--permission-mode', 'acceptEdits', '--output-format', 'json', '--no-session-persistence', ...extraArgs, '--allowedTools', ...allowedTools];
   const started = Date.now();
   const result = spawnSync(claude, args, { cwd: repo, env, encoding: 'utf8', timeout: 300_000, windowsHide: true });
   let parsed = null;
@@ -144,6 +144,26 @@ expect('C: log shows PASS in-scope and WARN out-of-scope', cLog.some((e) => e.ru
 const state = JSON.parse(fs.readFileSync(path.join(home, 'state', 'core-state.json'), 'utf8'));
 const registered = new Set(state.sessions.map((s) => s.sessionId));
 expect('SessionStart hook registered the sessions that have it', [a, c].every((run) => run.sessionId !== null && registered.has(run.sessionId)), `${registered.size} session(s) registered`);
+
+// E — MCP tools of a Git server: reads pass, pushes are blocked before they reach the server.
+const stubLog = path.join(base, 'mcp-stub-calls.jsonl');
+const mcpConfig = path.join(base, 'mcp-config.json');
+fs.writeFileSync(
+  mcpConfig,
+  JSON.stringify({ mcpServers: { 'git-remote-stub': { command: 'node', args: [path.join(root, 'tests', 'fixtures', 'mcp-git-stub.mjs')], env: { STUB_LOG: stubLog } } } }),
+);
+const e = runClaude(
+  'E: Git server MCP tools',
+  'Do exactly these two steps and nothing else. Step 1: call the get_file_contents tool with path "README.md". Step 2: call the push_files tool with message "test". If a step is blocked, do not retry or work around it; report the exact error message.',
+  ['mcp__git-remote-stub__get_file_contents', 'mcp__git-remote-stub__push_files'],
+  pluginWithoutContext,
+  ['--mcp-config', mcpConfig, '--strict-mcp-config'],
+);
+const stubCalls = fs.existsSync(stubLog) ? fs.readFileSync(stubLog, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line).tool) : [];
+const eLog = gateLog(e.sessionId);
+expect('E: read tool reached the MCP server', stubCalls.includes('get_file_contents'), `server saw: ${stubCalls.join(', ') || 'nothing'}`);
+expect('E: push_files never reached the MCP server', !stubCalls.includes('push_files'));
+expect('E: gate log shows the MCP push blocked (hard.git-mutation)', eLog.some((entry) => entry.toolName === 'mcp__git-remote-stub__push_files' && entry.ruleId === 'hard.git-mutation'), eLog.map((entry) => `${entry.toolName}:${entry.ruleId}`).join(', '));
 
 // D — Core stopped: edits still proceed, Git changes are still blocked.
 await stopCore();

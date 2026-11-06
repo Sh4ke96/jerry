@@ -17,8 +17,9 @@ repositories, not to this one.
 - Monitoring, not blocking ([ADR 0003](docs/decisions/0003-monitor-not-block.md)): edits without an approved
   plan, or outside the approved plan's scope, proceed but are recorded as deviations, and Claude and the user
   are warned.
-- Hard rules, always blocked, also while Core is down: Git state changes (the user does all Git operations),
-  writes inside `.git`, tampering with JERRY data or the Claude Code settings that enable it.
+- Hard rules, always blocked, also while Core is down: Git state changes through shell commands or Git-server
+  MCP tools (the user does all Git operations), writes inside `.git`, tampering with JERRY data or the Claude
+  Code settings that enable it.
 - `jerry repo exclude <path>` turns monitoring off for a repository; hard rules still apply there.
 - JERRY never modifies any repository ([ADR 0002](docs/decisions/0002-jerry-never-modifies-repositories.md)).
 - `jerry` CLI: `install`, `uninstall`, `doctor`, `core start|stop|status`, `task`, `plan revise`,

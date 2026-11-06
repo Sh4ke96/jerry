@@ -1,6 +1,7 @@
 import type { GateCheckRequest, GateDecision } from '@jerry/contracts';
 import type { ApprovedPlan } from './approvals.js';
 import { absolutePath, comparablePath, isComparableInside, matchesAnyGlob, relativeInside } from './paths.js';
+import { assessMcpGitUsage } from './mcp.js';
 import { assessGitUsage, assessShellCommand } from './shell.js';
 import { classifyToolCall, type ToolAction } from './tool-call.js';
 
@@ -8,7 +9,7 @@ import { classifyToolCall, type ToolAction } from './tool-call.js';
  * Gate policy (ADR 0003): JERRY monitors Claude Code and blocks only hard rules.
  *
  * Hard rules (DENY, evaluated first, need no Core and no state):
- *   - any command that changes Git state; only the user runs Git operations
+ *   - any command or Git-server MCP tool that changes Git state; only the user runs Git operations
  *   - any write into a .git directory
  *   - any write to, or command touching, JERRY data or Claude Code guard configuration
  *   - an agent running JERRY's user-only commands (approve, reject, repo exclude, ...) or its API
@@ -29,7 +30,8 @@ export interface GateContext {
   isExcluded(repoRoot: string): boolean;
 }
 
-const USER_ONLY_JERRY_COMMAND = /\bjerry(?:\.mjs|\.cmd|\.ps1)?\s+(?:approve|reject|repo|install|uninstall|core)\b/i;
+/** Commands only the user may run. Read-only ones (status, doctor, task/repo list, core status) stay available. */
+const USER_ONLY_JERRY_COMMAND = /\bjerry(?:\.mjs|\.cmd|\.ps1)?\s+(?:approve|reject|install|uninstall|repo\s+(?:exclude|include)|core\s+(?:start|stop))\b/i;
 const CORE_API_PATTERN = /\/api\/v1\//i;
 /** Catches %LOCALAPPDATA%\JERRY and $env:LOCALAPPDATA\JERRY, which never contain the literal path. */
 const JERRY_HOME_VARIABLE_PATTERN = /localappdata[%)]?[\\/]+jerry\b|jerry_home/i;
@@ -51,6 +53,12 @@ export function evaluateHardRules(action: ToolAction, cwd: string, context: Pick
     case 'shell':
     case 'shell-opaque':
       return hardRulesForShell(action.command, action.kind === 'shell' ? action.dialect : 'bash', cwd, context);
+    case 'mcp': {
+      const git = assessMcpGitUsage(action);
+      return git.mutating
+        ? decision('DENY', 'hard.git-mutation', `Only the user changes Git state (${git.reason}). Read-only tools of this server are fine.`)
+        : null;
+    }
     case 'file-write-unknown':
     case 'not-guarded':
       return null;
@@ -104,6 +112,8 @@ function evaluateMonitoring(action: ToolAction, request: GateCheckRequest, conte
   switch (action.kind) {
     case 'not-guarded':
       return decision('PASS', 'tool.not-guarded', `${request.toolName} is not a write or shell tool`);
+    case 'mcp':
+      return decision('PASS', 'monitor.mcp-tool', `${action.server}/${action.tool} does not change Git state`);
     case 'file-write-unknown':
       return decision('WARN', 'monitor.unknown-target', `${action.detail}; JERRY could not check it against the approved plan.`);
     case 'file-write':

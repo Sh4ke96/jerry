@@ -82,6 +82,8 @@ describe('JERRY guard (bundled bridge + Core)', () => {
     expectBlocked(bridge('Write', { file_path: path.join(home, 'state', 'core-state.json') }), 'hard.protected-path');
     expectBlocked(bridge('Bash', { command: 'jerry approve JRY-0001 --stage plan --version 1' }), 'hard.user-only-command');
     expectBlocked(bridge('PowerShell', { command: 'Get-Content $env:LOCALAPPDATA\\JERRY\\run\\core.json' }), 'hard.protected-path');
+    expectBlocked(bridge('mcp__github__push_files', { owner: 'o', repo: 'r', branch: 'main', files: [] }), 'hard.git-mutation');
+    expectPassed(bridge('mcp__github__get_file_contents', { owner: 'o', repo: 'r', path: 'README.md' }));
   });
 
   let taskId: string;
@@ -157,6 +159,7 @@ describe('JERRY guard (bundled bridge + Core)', () => {
     expectPassed(bridge('Bash', { command: 'npm test' }));
     expectBlocked(bridge('Bash', { command: 'git push' }), 'hard.git-mutation');
     expectBlocked(write('.git/config'), 'hard.git-metadata');
+    expectBlocked(bridge('mcp__gitlab__create_merge_request', {}), 'hard.git-mutation');
     const context = sessionContext();
     expect(context).toContain('Core unavailable');
     expect(context).toContain('the user does all Git operations manually');

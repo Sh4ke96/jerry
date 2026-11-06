@@ -12,7 +12,7 @@ extension), Node 22.22.2, PowerShell 5.1 (no PowerShell 7), Git for Windows 2.55
 | 3 | Marketplace installed through the official CLI, user scope | ✅ isolated profile | `tests/e2e/install-lifecycle.test.ts` |
 | 4 | Plugin installed in user scope | ✅ isolated profile | same: `claude plugin list --json` → `enabled: true, scope: user` |
 | 5 | Plugin verified in the CLI | ✅ | `scripts/e2e-live.mjs`: hooks fire in real `claude -p` sessions |
-| 6 | Plugin verified in VS Code | ⏳ | needs an install into the real profile and a VS Code reload (user's decision) |
+| 6 | Plugin verified in VS Code | ✅ | `jerry install` into the real user profile; after a window reload the VS Code chat received the SessionStart context and showed the `PreToolUse` warning (`systemMessage`) to the user; Core registered the sessions |
 | 7 | `SessionStart` | ✅ | live sessions are registered in Core; context carries the actual plan state |
 | 8 | `PreToolUse` for write tools | ✅ | Write/Edit/MultiEdit/NotebookEdit; live A, C |
 | 9 | `PreToolUse` for shell tools on Windows | ✅ | Bash **and** PowerShell (both tools are active when Git Bash is installed); live B |
@@ -24,8 +24,15 @@ extension), Node 22.22.2, PowerShell 5.1 (no PowerShell 7), Git for Windows 2.55
 | 15 | Safe uninstall | ✅ isolated profile | unrelated `settings.json` keys preserved, real `~/.claude` unchanged |
 
 **M0 exit criteria** ("clean Windows 11 and a profile with an existing `settings.json`"): the profile with existing
-settings is tested on an isolated `CLAUDE_CONFIG_DIR`. Still missing: (a) VS Code, (b) a clean Windows profile,
-(c) the variant without Git Bash (PowerShell tool only; the docs describe different hook behaviour there).
+settings is tested on an isolated `CLAUDE_CONFIG_DIR`, and the real install ran on a profile whose `settings.json`
+already existed. VS Code is verified. Still open, both needing another machine, VM or Windows user:
+
+- **A clean Windows user profile.** Covered at the Claude Code level by installs into an empty isolated `CLAUDE_CONFIG_DIR`.
+- **Windows without Git Bash** (PowerShell tool only; the docs describe different hook behaviour there). It cannot be
+  simulated on a machine that has Git for Windows: Claude Code still registered the Bash tool with Git removed from
+  `PATH` and `CLAUDE_CODE_GIT_BASH_PATH` pointing to a missing file, so it finds Git Bash in its default install
+  location. Risk is low: JERRY's hooks use exec form (no shell), the matcher includes `PowerShell`, `onFailure` is
+  explicit, and the PowerShell tool path is verified live.
 
 ## Findings
 
@@ -52,6 +59,12 @@ settings is tested on an isolated `CLAUDE_CONFIG_DIR`. Still missing: (a) VS Cod
 10. **Told rules are followed:** once the SessionStart context lists the hard rules, the model declines Git
     changes without attempting them. Enforcement is therefore tested with a plugin copy that has no
     SessionStart hook (live B, D).
+11. **Plugin names deduplicate:** with `jerry@jerry-local` installed in user scope, a session started with
+    `--plugin-dir dist/plugin` still lists a single `jerry` plugin, so the live checks do not run the hooks twice.
+12. **False positives seen in real use:** the first hours with the installed plugin flagged `git --no-optional-locks status`
+    as a Git change and `node dist/cli/jerry.mjs status` as a write. Both are fixed: `--no-optional-locks` and `-P`
+    are accepted Git global flags, and read-only JERRY commands (`status`, `doctor`, `task list`, `repo list`,
+    `core status`) are classified as read-only and are no longer user-only.
 
 ## Known gaps (per spec §8.4: hooks are not an OS sandbox)
 

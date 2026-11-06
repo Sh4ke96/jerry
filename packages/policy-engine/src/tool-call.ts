@@ -1,3 +1,4 @@
+import { parseMcpToolName } from './mcp.js';
 import type { ShellDialect } from './shell.js';
 
 export type ToolAction =
@@ -7,6 +8,8 @@ export type ToolAction =
   | { kind: 'shell'; command: string; dialect: ShellDialect }
   /** Background/long-running command tools: never treated as read-only. */
   | { kind: 'shell-opaque'; command: string }
+  /** A tool of an MCP server; only Git-capable ones are subject to the hard rules. */
+  | { kind: 'mcp'; server: string; tool: string }
   | { kind: 'not-guarded' };
 
 const FILE_PATH_FIELD: Readonly<Record<string, string>> = {
@@ -42,5 +45,7 @@ export function classifyToolCall(toolName: string, toolInput: Readonly<Record<st
   if (OPAQUE_COMMAND_TOOLS.has(toolName)) {
     return { kind: 'shell-opaque', command: typeof command === 'string' ? command : '' };
   }
+  const mcpTool = parseMcpToolName(toolName);
+  if (mcpTool !== null) return { kind: 'mcp', ...mcpTool };
   return { kind: 'not-guarded' };
 }

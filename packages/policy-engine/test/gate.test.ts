@@ -182,12 +182,27 @@ describe('hard rules: always blocked, with or without a plan, in excluded reposi
   it('blocks user-only JERRY commands and direct Core API calls', () => {
     expect(evaluateGate(shell('jerry approve JRY-0001 --stage plan --version 1'), context(approved)).ruleId).toBe('hard.user-only-command');
     expect(evaluateGate(shell('node dist/cli/jerry.mjs repo exclude .'), context()).ruleId).toBe('hard.user-only-command');
+    expect(evaluateGate(shell('node dist/cli/jerry.mjs core stop'), context()).ruleId).toBe('hard.user-only-command');
+    expect(evaluateGate(shell('jerry uninstall --purge-data'), context()).ruleId).toBe('hard.user-only-command');
     expect(evaluateGate(shell('curl -X POST http://127.0.0.1:5555/api/v1/tasks/JRY-0001/approvals'), context(approved)).ruleId).toBe('hard.core-api');
   });
 
   it('blocks commands that reference JERRY data, even read-only ones', () => {
     expect(evaluateGate(shell(`cat ${JERRY_HOME}/run/core.json`), context()).ruleId).toBe('hard.protected-path');
     expect(evaluateGate(shell('Get-Content $env:LOCALAPPDATA\\JERRY\\run\\core.json', 'PowerShell'), context()).ruleId).toBe('hard.protected-path');
+  });
+
+  it('lets agents run read-only JERRY commands without a warning', () => {
+    for (const command of ['node dist/cli/jerry.mjs status', 'jerry core status', 'jerry repo list', 'jerry task list', 'jerry doctor']) {
+      expect(evaluateGate(shell(command), context())).toMatchObject({ verdict: 'PASS', ruleId: 'monitor.read-only-command' });
+    }
+  });
+
+  it('blocks Git-changing MCP tools and lets other MCP tools through', () => {
+    const mcp = (toolName: string): GateCheckRequest => ({ sessionId: 's', cwd: REPO, toolName, toolInput: {}, toolUseId: null, agentId: null });
+    expect(evaluateGate(mcp('mcp__github__push_files'), context(approved))).toMatchObject({ verdict: 'DENY', ruleId: 'hard.git-mutation' });
+    expect(evaluateGate(mcp('mcp__github__get_file_contents'), context())).toMatchObject({ verdict: 'PASS', ruleId: 'monitor.mcp-tool' });
+    expect(evaluateGate(mcp('mcp__stripe__create_checkout_session'), context()).verdict).toBe('PASS');
   });
 
   it('allows read-only Git', () => {
