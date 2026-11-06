@@ -12,23 +12,7 @@ to three implementers with disjoint scopes.
 - M0 Feasibility Spike: [docs/spikes/M0-feasibility.md](spikes/M0-feasibility.md)
 - M1 Core Foundation: [docs/milestones/M1-core-foundation.md](milestones/M1-core-foundation.md)
 - M2 Workflow Control: [docs/milestones/M2-workflow-control.md](milestones/M2-workflow-control.md)
-
-## M3 — Repository Discovery
-
-- [x] Git root resolver.
-- [x] Git baseline snapshot ([ADR 0017](decisions/0017-git-baseline.md)).
-- [x] Uncommitted changes inventory ([ADR 0017](decisions/0017-git-baseline.md)).
-- [x] Language/framework detectors ([ADR 0018](decisions/0018-repository-scanner.md)).
-- [x] Manifest/lockfile detection ([ADR 0018](decisions/0018-repository-scanner.md)).
-- [x] Documentation indexer ([ADR 0019](decisions/0019-docs-instructions-injection.md)).
-- [x] Project instructions inventory ([ADR 0019](decisions/0019-docs-instructions-injection.md)).
-- [x] Existing tests/build/lint detection ([ADR 0018](decisions/0018-repository-scanner.md)).
-- [x] API schema detection ([ADR 0018](decisions/0018-repository-scanner.md)).
-- [x] Database migration detection ([ADR 0018](decisions/0018-repository-scanner.md)).
-- [ ] Multi-repo workspace graph.
-- [x] Project profile storage outside project ([ADR 0020](decisions/0020-project-profile.md)).
-- [x] Profile freshness invalidation ([ADR 0020](decisions/0020-project-profile.md)).
-- [x] Prompt injection handling rules ([ADR 0019](decisions/0019-docs-instructions-injection.md)).
+- M3 Repository Discovery: [docs/milestones/M3-repository-discovery.md](milestones/M3-repository-discovery.md)
 
 ## M4 — Analysis and Planning (three analysts)
 

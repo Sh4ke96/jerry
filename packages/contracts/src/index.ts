@@ -607,7 +607,11 @@ export type RepositoryState = z.infer<typeof repositoryStateSchema>;
  * What JERRY knows about a repository (spec §6.4, ADR 0020): a cache of the read-only scan, never
  * the source of truth. Paths, titles and hashes only; no file contents.
  */
+/** Bumped when the profile gains fields; older stored profiles are rescanned. */
+export const PROJECT_PROFILE_FORMAT = 2;
+
 export const projectProfileSchema = z.object({
+  formatVersion: z.number().int().default(1),
   repoRoot: z.string(),
   scannedAt: z.iso.datetime(),
   checkedAt: z.iso.datetime(),
@@ -634,8 +638,21 @@ export const projectProfileSchema = z.object({
     complete: z.boolean(),
   }),
   skippedDirectories: z.array(z.string()),
+  /** Package identity per manifest, for links between repositories (ADR 0021). */
+  packages: z
+    .array(z.object({ manifest: z.string(), ecosystem: z.string(), name: z.string().nullable(), dependencies: z.array(z.string()), localPaths: z.array(z.string()) }))
+    .default([]),
+  /** Schema files that code-generation configs take from outside the repository. */
+  contractReferences: z.array(z.object({ source: z.string(), target: z.string() })).default([]),
 });
 export type ProjectProfile = z.infer<typeof projectProfileSchema>;
+
+/** Links between known repositories (spec §14.1, ADR 0021). */
+export const workspaceGraphSchema = z.object({
+  nodes: z.array(z.object({ repoRoot: z.string(), names: z.array(z.string()), apiSchemas: z.array(z.string()) })),
+  edges: z.array(z.object({ from: z.string(), to: z.string(), kind: z.enum(['local-path', 'package', 'api-contract']), evidence: z.string() })),
+});
+export type WorkspaceGraph = z.infer<typeof workspaceGraphSchema>;
 
 export const repositoryScanRequestSchema = z.object({ repoPath: z.string().min(1) });
 

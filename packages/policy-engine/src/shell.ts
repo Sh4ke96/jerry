@@ -122,6 +122,7 @@ function assessJerry(args: string[]): ShellAssessment {
     (args.length === 2 && (command === 'task' || command === 'repo') && subcommand === 'list') ||
     (args.length === 3 && command === 'task' && subcommand === 'list' && args[2] === '--all') ||
     (command === 'repo' && subcommand === 'scan' && args.length <= 4 && args.slice(2).every((arg) => arg === '--json' || /^[\w.:\\/-]+$/.test(arg))) ||
+    (command === 'repo' && subcommand === 'graph' && args.length <= 3 && args.slice(2).every((arg) => arg === '--json')) ||
     (command === 'repo' && subcommand === 'profile' && args.length <= 5 && args.slice(2).every((arg) => arg === '--json' || arg === '--refresh' || /^[\w.:\\/-]+$/.test(arg))) ||
     (args.length === 3 && command === 'task' && subcommand === 'show' && /^JRY-\d{4,}$/i.test(args[2] ?? '')) ||
     (args.length === 2 && command === 'db' && subcommand === 'backups') ||

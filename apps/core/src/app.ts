@@ -372,6 +372,9 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     return summaries;
   });
 
+  /** Links between known repositories from their cached profiles (ADR 0021). */
+  app.get('/api/v1/workspace/graph', { config: TOKEN_OR_SESSION }, async () => profiles.graph(await store.knownRepositories()));
+
   app.post('/api/v1/repositories/exclusions', { config: TOKEN_OR_SESSION }, async (request) => {
     const body = parse(repositoryExclusionRequestSchema, request.body);
     const fromDashboard = request.client?.kind === 'session';

@@ -102,6 +102,19 @@ export const Repositories = defineComponent({
 
     return () => (
       <div class="stack">
+        {state.graph.edges.length > 0 && (
+          <section class="panel">
+            <h2>Links between repositories</h2>
+            <p class="muted small">From manifests and code-generation configs; each link shows its evidence.</p>
+            <ul class="list">
+              {state.graph.edges.map((edge) => (
+                <li key={`${edge.from}|${edge.to}|${edge.kind}`}>
+                  <code>{edge.from}</code> → <code>{edge.to}</code> <Badge tone="accent">{edge.kind}</Badge> <span class="muted small">{edge.evidence}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
         {state.repositories.map(profileCard)}
         <section class="panel">
           <h2>Monitored repositories</h2>

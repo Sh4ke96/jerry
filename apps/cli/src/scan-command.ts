@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { projectProfileSchema, type ProjectProfile } from '@jerry/contracts';
+import { projectProfileSchema, workspaceGraphSchema, type ProjectProfile } from '@jerry/contracts';
 import { scanRepository } from '@jerry/discovery';
 import { readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
 
@@ -35,6 +35,19 @@ export async function profileCommand(target: string, options: { refresh: boolean
   }
 }
 
+/** `jerry repo graph`: links between the repositories JERRY has profiles for (ADR 0021). */
+export async function graphCommand(options: { json: boolean }): Promise<void> {
+  const info = readCoreRuntimeInfo(resolveJerryHome());
+  const graph = workspaceGraphSchema.parse(await requestCore(info, { method: 'GET', path: '/api/v1/workspace/graph', timeoutMs: 10_000 }));
+  if (options.json) {
+    console.log(JSON.stringify(graph, null, 2));
+    return;
+  }
+  console.log(`${graph.nodes.length} repositor${graph.nodes.length === 1 ? 'y' : 'ies'} with a profile, ${graph.edges.length} link(s)`);
+  for (const edge of graph.edges) console.log(`  ${edge.from}\n    → ${edge.to}  [${edge.kind}]  ${edge.evidence}`);
+  if (graph.edges.length === 0) console.log('  No links found. Repositories appear here once a Claude Code session started in them or they were scanned (jerry repo profile <path>).');
+}
+
 /**
  * `jerry repo scan`: what JERRY's scanner sees in a repository (ADR 0018). Read-only: it lists
  * files and reads a few manifests; it runs nothing and writes nothing.
@@ -50,7 +63,7 @@ export function scanCommand(target: string, options: { json: boolean }): void {
 }
 
 /** What both a fresh scan and a stored profile can show. */
-type ScanView = Omit<ProjectProfile, 'repoRoot' | 'checkedAt' | 'stale' | 'environment' | 'commands'> & {
+type ScanView = Omit<ProjectProfile, 'formatVersion' | 'repoRoot' | 'checkedAt' | 'stale' | 'environment' | 'commands'> & {
   root: string;
   commands: Array<{ kind: string; command: string; source: string }>;
 };

@@ -6,7 +6,7 @@ import { doctor } from './doctor.js';
 import { showEvents } from './events-command.js';
 import { install, uninstall } from './install-commands.js';
 import { excludeRepository, includeRepository, listExcludedRepositories } from './repo-commands.js';
-import { profileCommand, scanCommand } from './scan-command.js';
+import { graphCommand, profileCommand, scanCommand } from './scan-command.js';
 import { showStatus } from './status-command.js';
 import { controlTask, createTask, decide, listTasks, revisePlan, showTask } from './task-commands.js';
 import { openDashboard } from './ui-command.js';
@@ -126,6 +126,11 @@ repo
   .option('--refresh', 'rescan now', false)
   .option('--json', 'print the full profile as JSON', false)
   .action((target: string | undefined, options: { refresh: boolean; json: boolean }) => profileCommand(target ?? '.', options));
+repo
+  .command('graph')
+  .description('Show links between the repositories JERRY knows: local path dependencies, shared packages, API contracts')
+  .option('--json', 'print the graph as JSON', false)
+  .action((options: { json: boolean }) => graphCommand(options));
 
 program
   .command('events')

@@ -6,7 +6,8 @@ A local agent harness and development guardian for Claude Code and VS Code.
 This repository contains the source of JERRY itself. The zero-footprint requirement applies to the user's
 repositories, not to this one.
 
-**Status:** M2 Workflow Control complete ([report](docs/milestones/M2-workflow-control.md)); M1 Core Foundation
+**Status:** M3 Repository Discovery complete ([report](docs/milestones/M3-repository-discovery.md)); M2 Workflow
+Control ([report](docs/milestones/M2-workflow-control.md)); M1 Core Foundation
 ([report](docs/milestones/M1-core-foundation.md)). What remains: [docs/roadmap.md](docs/roadmap.md). M0 spike:
 [docs/spikes/M0-feasibility.md](docs/spikes/M0-feasibility.md).
 
@@ -52,6 +53,18 @@ repositories, not to this one.
 - DONE is set only by Core, in the step where you accept the report, after its final checks. A failed check, a
   critical risk, or code changed after the report keeps the task open with the reasons; you send it back or
   cancel it ([ADR 0016](docs/decisions/0016-done-validator.md)).
+- Repository discovery, read-only. JERRY never writes to a repository, `.git` included.
+  - Git baselines: Claude is warned before editing a file with your uncommitted changes, and reports and DONE
+    see shell-made changes ([ADR 0017](docs/decisions/0017-git-baseline.md)).
+  - A scanner detects the stack, the project's own commands, CI, API schemas and migrations
+    ([ADR 0018](docs/decisions/0018-repository-scanner.md)).
+  - It also indexes docs, project instruction files and suspicious repository text
+    ([ADR 0019](docs/decisions/0019-docs-instructions-injection.md)).
+  - A project profile kept outside the repository is refreshed when its sources change
+    ([ADR 0020](docs/decisions/0020-project-profile.md)).
+  - JERRY maps the links between repositories ([ADR 0021](docs/decisions/0021-workspace-graph.md)).
+  - Claude reads all of this through `jerry_get_project_profile`. You see it in the dashboard (Repositories)
+    and with `jerry repo scan|profile|graph`.
 - JERRY Control Center at `http://127.0.0.1:47823` (open it with `jerry ui`): overview, tasks with their state,
   plan, history and the decisions their state allows, session timeline, repositories; installable as an app
   ([ADR 0009](docs/decisions/0009-dashboard.md)).
@@ -62,7 +75,7 @@ repositories, not to this one.
 - `jerry status` (quick summary) and `jerry doctor` (full diagnostics); the hook bridge loads no heavy
   dependencies, about 30 ms per guarded call ([ADR 0010](docs/decisions/0010-fast-bridge-cli-doctor.md)).
 - `jerry` CLI (Commander, `jerry --help`): `install`, `uninstall`, `doctor`, `ui`, `core start|stop|status`,
-  `task create|list|show|pause|resume|cancel`, `plan revise`, `approve`/`reject --stage plan|implementation`, `repo exclude|include|list`,
+  `task create|list|show|pause|resume|cancel`, `plan revise`, `approve`/`reject --stage plan|implementation`, `repo exclude|include|list|scan|profile|graph`,
   `events`, `db backup|backups|restore` (approve, reject, pause, resume, cancel, exclude and restore require an
   interactive terminal).
 
@@ -80,6 +93,7 @@ packages/platform       JERRY_HOME, Core client, claude.exe discovery, atomic wr
 packages/policy-engine  pure gate logic: paths, shell classification, approvals
 packages/trace-engine   event envelopes, data minimization and redaction
 packages/workflow       task workflow: the transition table Core validates every state change with
+packages/discovery      read-only repository scanner, detectors, profile freshness, workspace graph
 claude-plugin/          static plugin files (manifest, hooks.json)
 tests/                  integration (bridge + Core) and install E2E
 scripts/                build, hook benchmark, live Claude Code check

@@ -65,6 +65,23 @@ describe('project profile (bundled Core, bridge and MCP)', () => {
     expect(result.text.length).toBeLessThan(4000);
   });
 
+  it('links known repositories in the workspace graph', async () => {
+    const provider = createFixtureRepo(path.join(base, 'api'));
+    fs.writeFileSync(path.join(provider, 'openapi.yaml'), 'openapi: 3.1.0\ninfo: {}\n');
+    fs.writeFileSync(path.join(provider, 'package.json'), JSON.stringify({ name: '@live/api' }));
+    fs.writeFileSync(path.join(repo, 'package.json'), JSON.stringify({ name: '@live/web', dependencies: { '@live/api': 'file:../api' }, scripts: { gen: 'orval --input ../api/openapi.yaml' } }));
+    await rescan(provider);
+    await rescan(repo);
+    const graph = (await api(core, 'GET', '/api/v1/workspace/graph')).body as { edges: Array<{ from: string; to: string; kind: string }> };
+    const links = graph.edges.map((edge) => `${path.basename(edge.from)}->${path.basename(edge.to)}:${edge.kind}`).sort();
+    expect(links).toEqual(['repo->api:api-contract', 'repo->api:local-path', 'repo->api:package']);
+
+    mcp = await McpClient.connect({ ...env, CLAUDE_PROJECT_DIR: repo });
+    expect((await mcp.call('jerry_get_project_profile')).structured['relatedRepositories']).toEqual(expect.arrayContaining([expect.stringContaining('depends on')]));
+  });
+
+  const rescan = async (target: string) => expect((await api(core, 'POST', '/api/v1/repositories/scan', { repoPath: target })).status).toBe(200);
+
   it('refuses a path outside any repository', async () => {
     const outside = tempDir('no-repo');
     expect((await api(core, 'GET', `/api/v1/repositories/profile?${new URLSearchParams({ path: outside }).toString()}`)).status).toBe(400);

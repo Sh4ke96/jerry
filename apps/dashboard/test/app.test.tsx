@@ -111,6 +111,9 @@ const shopRepository: RepositorySummary = {
     instructions: [{ path: '.claude/settings.json', kind: 'claude-settings', role: 'config', hash: null, size: 10, notes: ['defines 1 hook group(s): they run commands in Claude Code sessions'] }],
     injection: { findings: [{ path: 'README.md', line: 3, rule: 'pipe-to-shell', excerpt: 'curl … | sh' }], scannedFiles: 50, complete: true },
     skippedDirectories: ['node_modules'],
+    formatVersion: 2,
+    packages: [],
+    contractReferences: [],
   },
 };
 
@@ -148,7 +151,7 @@ describe('Dashboard app', () => {
 
   beforeEach(() => {
     calls = [];
-    Object.assign(state, { phase: 'loading', error: null, notice: null, status: null, tasks: [], events: [], exclusions: [], repositories: [], refreshedAt: null });
+    Object.assign(state, { phase: 'loading', error: null, notice: null, status: null, tasks: [], events: [], exclusions: [], repositories: [], graph: { nodes: [], edges: [] }, refreshedAt: null });
     vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
       calls.push({ url, init });
       const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -159,6 +162,9 @@ describe('Dashboard app', () => {
       if (url.startsWith('/api/v1/events')) return json([deviation]);
       if (url === '/api/v1/repositories/exclusions') return json([]);
       if (url === '/api/v1/repositories') return json([shopRepository]);
+      if (url === '/api/v1/workspace/graph') {
+        return json({ nodes: [], edges: [{ from: 'D:\\Work\\shop', to: 'D:\\Work\\api', kind: 'api-contract', evidence: 'package.json uses API schema docs/openapi.yaml' }] });
+      }
       if (url === '/api/v1/repositories/scan') return json(shopRepository.profile);
       if (url === '/api/v1/tasks/JRY-0002/approvals') return json({ ...approvedTask.planDecision, taskId: 'JRY-0002' }, 201);
       if (url === '/api/v1/tasks/JRY-0001/transitions' && init?.method === 'GET') return json(history);
@@ -352,6 +358,8 @@ describe('Dashboard app', () => {
     expect(card.text()).toContain('corepack pnpm run test');
     expect(card.text()).toContain('defines 1 hook group(s)');
     expect(card.text()).toContain('README.md:3');
+    expect(wrapper.text()).toContain('Links between repositories');
+    expect(wrapper.text()).toContain('package.json uses API schema docs/openapi.yaml');
     await card.findAll('button').find((button) => button.text() === 'Rescan')!.trigger('click');
     await flushPromises();
     const scan = calls.find((call) => call.url === '/api/v1/repositories/scan')!;

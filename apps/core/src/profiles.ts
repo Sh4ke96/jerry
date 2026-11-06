@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { ProjectProfile } from '@jerry/contracts';
-import { fingerprintScan, scanRepository, staleParts, type RepositoryScanResult } from '@jerry/discovery';
+import { PROJECT_PROFILE_FORMAT, type ProjectProfile, type WorkspaceGraph } from '@jerry/contracts';
+import { buildWorkspaceGraph, fingerprintScan, scanRepository, staleParts, type RepositoryScanResult } from '@jerry/discovery';
 import type { StateStore } from './state-store.js';
 
 /**
@@ -60,7 +60,9 @@ export class ProfileService {
     if (mode !== 'force') {
       const stored = await this.store.storedProfile(repoRoot);
       if (stored !== null) {
-        const stale = staleParts(repoRoot, stored.fingerprints, stored.scannedAt, now);
+        const stale: string[] = staleParts(repoRoot, stored.fingerprints, stored.scannedAt, now);
+        // A profile written by an older JERRY lacks newer fields: treat it as stale.
+        if (stored.profile.formatVersion < PROJECT_PROFILE_FORMAT) stale.push('format');
         if (mode === 'cached' || stale.length === 0) return { ...stored.profile, checkedAt: now.toISOString(), stale };
       } else if (mode === 'cached') {
         return null;
@@ -69,13 +71,30 @@ export class ProfileService {
     return this.refresh(repoRoot, now);
   }
 
+  /** Links between the repositories JERRY has profiles for (ADR 0021); cached profiles only, no scan. */
+  async graph(repoRoots: readonly string[]): Promise<WorkspaceGraph> {
+    const inputs = [];
+    for (const repoRoot of repoRoots) {
+      const profile = await this.get(repoRoot, 'cached');
+      if (profile === null) continue;
+      inputs.push({
+        repoRoot,
+        names: profile.packages.map((pkg) => pkg.name).filter((name): name is string => name !== null),
+        apiSchemas: profile.apiSchemas.map((schema) => schema.path),
+        packages: profile.packages,
+        contractReferences: profile.contractReferences,
+      });
+    }
+    return buildWorkspaceGraph(inputs);
+  }
+
   private refresh(repoRoot: string, now: Date): Promise<ProjectProfile> {
     const running = this.inFlight.get(repoRoot);
     if (running !== undefined) return running;
     const work = (async () => {
       const scan = scanRepository(repoRoot, now);
       const { root: _root, ...rest } = scan;
-      const profile: ProjectProfile = { ...rest, ...resolveCommands(scan, this.isOnPath), repoRoot, checkedAt: now.toISOString(), stale: [] };
+      const profile: ProjectProfile = { ...rest, ...resolveCommands(scan, this.isOnPath), formatVersion: PROJECT_PROFILE_FORMAT, repoRoot, checkedAt: now.toISOString(), stale: [] };
       await this.store.saveProfile(repoRoot, profile, fingerprintScan(repoRoot, scan), now);
       return profile;
     })().finally(() => this.inFlight.delete(repoRoot));
