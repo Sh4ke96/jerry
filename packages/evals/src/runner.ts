@@ -8,7 +8,7 @@ import { grade, type GraderResult, type RubricVerdict, type SessionEvent } from 
 import { attemptOutcome, classify, type AttemptOutcome, type CaseOutcome } from './results.js';
 
 /**
- * The eval runner (ADR 0038). Every attempt gets its own fixture repository, its own JERRY home and
+ * The eval runner. Every attempt gets its own fixture repository, its own JERRY home and
  * its own Core, under the system temp directory: an eval never touches the user's repositories or
  * JERRY data. Claude Code runs headless with JERRY's plugin from `pluginDir`.
  */
@@ -21,13 +21,13 @@ export interface RunnerOptions {
   claudeBin: string;
   /** Parent of the per-attempt directories (default: the system temp directory). */
   parentDir?: string;
-  /** At most three sessions at once (ADR 0015). */
+  /** At most three sessions at once. */
   parallel?: number;
   /** Overrides each case's repeats (1–10). */
   repeats?: number;
   /** Keeps the fixtures of failed attempts for inspection. */
   keepFailed?: boolean;
-  /** Whether a rubric grader is calibrated (ADR 0039). */
+  /** Whether a rubric grader is calibrated. */
   calibrated?(rubricId: string): boolean;
   onAttempt?(attempt: AttemptResult): void;
 }

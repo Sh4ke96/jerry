@@ -17,7 +17,7 @@ const dist = path.join(root, 'dist');
 
 fs.rmSync(dist, { recursive: true, force: true });
 fs.cpSync(path.join(root, 'claude-plugin'), path.join(dist, 'plugin'), { recursive: true });
-// The golden eval cases ship with the CLI (ADR 0036): `jerry eval run` works from an install too.
+// The golden eval cases ship with the CLI: `jerry eval run` works from an install too.
 if (fs.existsSync(path.join(root, 'evals', 'cases'))) fs.cpSync(path.join(root, 'evals', 'cases'), path.join(dist, 'evals', 'cases'), { recursive: true });
 
 const common = {
@@ -43,7 +43,7 @@ const [bridgeBuild] = await Promise.all([
   build({ ...common, entryPoints: [path.join(root, 'apps/cli/src/main.ts')], outfile: path.join(dist, 'cli/jerry.mjs'), banner: { js: '#!/usr/bin/env node' } }),
 ]);
 
-// The bridge starts on every guarded tool call; it must stay free of heavy dependencies (ADR 0010).
+// The bridge starts on every guarded tool call; it must stay free of heavy dependencies.
 const BRIDGE_FORBIDDEN = [/[\\/]zod@/, /[\\/]kysely@/, /[\\/]fastify@/];
 const forbidden = Object.keys(bridgeBuild.metafile.inputs).filter((input) => BRIDGE_FORBIDDEN.some((pattern) => pattern.test(input)));
 if (forbidden.length > 0) {

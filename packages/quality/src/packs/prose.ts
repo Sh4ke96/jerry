@@ -2,7 +2,7 @@ import type { Rule, RuleHit } from '../types.js';
 import { C_LIKE, eachLine, isCode, JS_TS, words } from './helpers.js';
 
 /**
- * Naming and prose (Harry-inspired, spec §2.1): what an agent writes for people to read. Each rule
+ * Naming and prose (Harry-inspired): what an agent writes for people to read. Each rule
  * checks only changed lines and stays quiet where a project's convention could reasonably differ.
  */
 
@@ -49,7 +49,7 @@ export const commentedOutCode: Rule = {
 
 /**
  * `result` and `info` stay off the list: right after the call that returns them they are idiomatic
- * (calibrated on JERRY's own code, ADR 0028).
+ * (calibrated on JERRY's own code).
  */
 const VAGUE = ['data', 'temp', 'tmp', 'obj', 'val', 'foo', 'bar', 'stuff', 'thing', 'item2', 'x1'];
 

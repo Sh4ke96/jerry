@@ -22,6 +22,7 @@ import {
   runClaudeOrThrow,
 } from './claude-cli.js';
 import { getCoreStatus, stopCore } from './core-commands.js';
+import { mark } from './emoji.js';
 
 const PLUGIN_PAYLOAD = fileURLToPath(new URL('../plugin/', import.meta.url));
 const CORE_PAYLOAD = fileURLToPath(new URL('../core/', import.meta.url));
@@ -43,7 +44,7 @@ function copyStagedThenSwap(source: string, target: string): void {
  */
 export async function install(): Promise<void> {
   const claude = requireClaudeBinary();
-  console.log(`Claude Code: ${claudeVersion(claude)} (${claude.source}: ${claude.path})`);
+  console.log(mark('agent', `Claude Code: ${claudeVersion(claude)} (${claude.source}: ${claude.path})`));
 
   if (!fs.existsSync(path.join(PLUGIN_PAYLOAD, 'hooks', 'bridge.mjs')) || !fs.existsSync(path.join(CORE_PAYLOAD, 'core.mjs'))) {
     throw new Error(`Build output not found next to the CLI (${PLUGIN_PAYLOAD}, ${CORE_PAYLOAD}). Run "pnpm build" first.`);
@@ -55,8 +56,8 @@ export async function install(): Promise<void> {
   const pluginDir = path.join(paths.marketplaceDir, 'plugins', PLUGIN_NAME);
 
   copyStagedThenSwap(PLUGIN_PAYLOAD, pluginDir);
-  // The runtime copy of Core is what the hooks start automatically (ADR 0003 keeps work going
-  // without Core, but monitoring needs it running).
+  // The runtime copy of Core is what the hooks start automatically (work goes on without Core,
+  // but monitoring needs it running).
   copyStagedThenSwap(CORE_PAYLOAD, path.dirname(paths.runtimeCoreFile));
 
   writeFileAtomic(
@@ -75,7 +76,7 @@ export async function install(): Promise<void> {
 
   if (!listMarketplaceNames(claude).includes(MARKETPLACE_NAME)) {
     runClaudeOrThrow(claude, ['plugin', 'marketplace', 'add', paths.marketplaceDir, '--scope', 'user', '--json']);
-    console.log(`Registered marketplace ${MARKETPLACE_NAME} -> ${paths.marketplaceDir}`);
+    console.log(mark('pass', `Registered marketplace ${MARKETPLACE_NAME} -> ${paths.marketplaceDir}`));
   }
   runClaudeOrThrow(claude, ['plugin', 'install', PLUGIN_ID, '--scope', 'user', '--json']);
 
@@ -101,18 +102,18 @@ export async function install(): Promise<void> {
       2,
     )}\n`,
   );
-  console.log(`Installed ${PLUGIN_ID} (user scope), loaded from ${installed.readFromFolder ?? installed.installPath ?? pluginDir}.`);
-  console.log(`Installed JERRY Core runtime at ${paths.runtimeCoreFile}; Claude Code sessions start it automatically.`);
+  console.log(mark('pass', `Installed ${PLUGIN_ID} (user scope), loaded from ${installed.readFromFolder ?? installed.installPath ?? pluginDir}.`));
+  console.log(mark('pass', `Installed JERRY Core runtime at ${paths.runtimeCoreFile}; Claude Code sessions start it automatically.`));
 
   try {
     const { status } = await getCoreStatus(home);
     if (status.version !== JERRY_VERSION) {
-      console.log(`A JERRY Core ${status.version} is still running; restart it to use ${JERRY_VERSION}: jerry core stop, then jerry core start.`);
+      console.log(mark('warning', `A JERRY Core ${status.version} is still running; restart it to use ${JERRY_VERSION}: jerry core stop, then jerry core start.`));
     }
   } catch {
     // Core not running: the next session starts the new runtime.
   }
-  console.log('Restart Claude Code sessions (or run /reload-plugins) so they pick up the plugin. Then run "jerry doctor".');
+  console.log(mark('next', 'Restart Claude Code sessions (or run /reload-plugins) so they pick up the plugin. Then run "jerry doctor".'));
 }
 
 /**
@@ -146,18 +147,18 @@ export async function uninstall(options: { purgeData: boolean }): Promise<void> 
     const leftovers = fs.existsSync(home) ? fs.readdirSync(home) : [];
     if (leftovers.length === 0) {
       fs.rmSync(home, { recursive: true, force: true });
-      console.log(`Deleted JERRY data directory ${home}.`);
+      console.log(mark('pass', `Deleted JERRY data directory ${home}.`));
     } else {
-      console.log(`Deleted JERRY data in ${home}; left ${leftovers.length} entr${leftovers.length === 1 ? 'y' : 'ies'} JERRY did not create: ${leftovers.join(', ')}`);
+      console.log(mark('warning', `Deleted JERRY data in ${home}; left ${leftovers.length} entr${leftovers.length === 1 ? 'y' : 'ies'} JERRY did not create: ${leftovers.join(', ')}`));
     }
   } else {
-    console.log(`Kept JERRY data (state, logs) in ${home}. Use --purge-data to delete it.`);
+    console.log(mark('info', `Kept JERRY data (state, logs) in ${home}. Use --purge-data to delete it.`));
   }
 }
 
 function reportIdempotent(result: { exitCode: number; stdout: string; stderr: string }, absentCode: string, done: string, absent: string): void {
   if (result.exitCode === 0) {
-    console.log(done);
+    console.log(mark('pass', done));
     return;
   }
   const firstLine = result.stdout.split(/\r?\n/)[0] ?? '';
@@ -168,7 +169,7 @@ function reportIdempotent(result: { exitCode: number; stdout: string; stderr: st
     failureCode = undefined;
   }
   if (failureCode === absentCode) {
-    console.log(absent);
+    console.log(mark('info', absent));
     return;
   }
   throw new Error(`Claude Code CLI failed (exit ${result.exitCode}): ${(result.stderr || result.stdout).trim()}`);

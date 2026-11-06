@@ -8,7 +8,7 @@ export * from './types.js';
 export { changedLinesFromDiff, checkFile, fingerprintOf, isTestFile, languageOf, type RunOptions } from './engine.js';
 export { builtInSecurityScanner } from './packs/security.js';
 
-/** Every built-in rule (ADR 0028), cheap and deterministic. */
+/** Every built-in rule, cheap and deterministic. */
 export const BUILT_IN_RULES: readonly Rule[] = [...PROSE_PACK, ...ERROR_PACK, ...TEST_PACK, ...SECURITY_PACK];
 
 export const RULE_PACKS: Readonly<Record<string, readonly Rule[]>> = {

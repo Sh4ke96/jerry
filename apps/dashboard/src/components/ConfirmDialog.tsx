@@ -2,7 +2,7 @@ import { computed, defineComponent, nextTick, onMounted, ref, type PropType } fr
 
 /**
  * A decision is a deliberate gesture: the confirm button stays disabled until the user types the
- * expected text (the task ID, or "exclude"), exactly like the CLI prompt (ADR 0007).
+ * expected text (the task ID, or "exclude"), exactly like the CLI prompt.
  */
 export const ConfirmDialog = defineComponent({
   name: 'ConfirmDialog',

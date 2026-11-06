@@ -1,20 +1,20 @@
 import type { ImplementationReportRecord, WorkflowActor, WorkflowEvent, WorkflowState } from '@jerry/contracts';
 
 /**
- * The task workflow (spec §7.1) as a pure transition table. Core applies every state change
+ * The task workflow as a pure transition table. Core applies every state change
  * through `applyEvent`; nothing else may set a task's state.
  *
  * Who may cause what:
  *   user    approvals, rejections, accepting or sending back an implementation, pause, resume, cancel
  *   claude  submitting and revising plans, submitting the implementation report
- *   core    completing a task after the final checks (DONE is never set by a model, spec §7.2 Phase 9)
+ *   core    completing a task after the final checks (DONE is never set by a model)
  */
 
 // The PURE annotations let bundlers drop what a consumer does not use: the hook bridge needs only
 // the labels and WORK_STATES, not the transition table.
 export const TERMINAL_STATES: ReadonlySet<WorkflowState> = /* @__PURE__ */ new Set(['DONE', 'CANCELLED']);
 
-/** States in which an approved plan covers edits (ADR 0012); everywhere else edits are deviations. */
+/** States in which an approved plan covers edits; everywhere else edits are deviations. */
 export const WORK_STATES: ReadonlySet<WorkflowState> = /* @__PURE__ */ new Set(['IMPLEMENTATION', 'FIX_IMPLEMENTATION']);
 
 /** States a task can be paused from (and resumed to). */
@@ -43,7 +43,7 @@ interface Rule {
 }
 
 const RULES: Readonly<Record<WorkflowEvent, Rule>> = {
-  // Analysis first (ADR 0024): a task starts in discovery, analysts' reports move it on, and the
+  // Analysis first: a task starts in discovery, analysts' reports move it on, and the
   // plan submitted after them completes the analysis.
   'task.started': { from: [null], to: 'DISCOVERY', actors: ['user', 'claude'] },
   'analysis.started': { from: ['DISCOVERY'], to: 'PARALLEL_ANALYSIS', actors: ['core', 'claude', 'user'] },
@@ -59,10 +59,10 @@ const RULES: Readonly<Record<WorkflowEvent, Rule>> = {
   // Rejecting during implementation withdraws the approval: edits are deviations again.
   'plan.rejected': { from: ['WAIT_PLAN_APPROVAL', 'IMPLEMENTATION'], to: 'PLAN_DRAFT', actors: ['user'] },
   'report.submitted': { from: ['IMPLEMENTATION'], to: 'WAIT_IMPLEMENTATION_ACCEPTANCE', actors: ['claude', 'user'] },
-  // Also from the final checks: when Core refuses DONE, the user sends the work back (ADR 0016).
+  // Also from the final checks: when Core refuses DONE, the user sends the work back.
   // After a review the user may send it back too, instead of a fix plan.
   'changes.requested': { from: ['WAIT_IMPLEMENTATION_ACCEPTANCE', 'FINAL_REPORT', 'REVIEW_REPORT'], to: 'IMPLEMENTATION', actors: ['user'] },
-  // An accepted implementation goes to independent review (M6, ADR 0032).
+  // An accepted implementation goes to independent review.
   'implementation.accepted': { from: ['WAIT_IMPLEMENTATION_ACCEPTANCE'], to: 'CODE_REVIEW', actors: ['user'] },
   // A review round is complete: all three reviewers submitted (Core), or Claude closed it with gaps.
   'review.reported': { from: ['CODE_REVIEW', 'REVERIFICATION'], to: 'REVIEW_REPORT', actors: ['core', 'claude'] },
@@ -133,7 +133,7 @@ export interface CompletionInput {
   /** From the approved plan; the user's acceptance confirms it. */
   definitionOfDone: readonly string[];
   /**
-   * The independent review (ADR 0032–0035). Absent for tasks accepted before reviews existed.
+   * The independent review. Absent for tasks accepted before reviews existed.
    * outcome: passed (no open P1–P3 review finding), skipped (the user waived it), or null.
    */
   review?: { outcome: 'passed' | 'skipped' | null; rounds: number; reason: string; uncovered: readonly string[]; notIndependent: readonly string[]; openFindings: readonly string[] };
@@ -142,7 +142,7 @@ export interface CompletionInput {
 const list = (items: readonly string[], max = 10): string => (items.length <= max ? items.join(', ') : `${items.slice(0, max).join(', ')} and ${items.length - max} more`);
 
 /**
- * The DONE validator (spec §7.2 Phase 9, ADR 0016). Pure: Core gathers the facts and applies the
+ * The DONE validator. Pure: Core gathers the facts and applies the
  * result; a model can never set DONE. Every blocking condition must pass.
  */
 export function evaluateCompletion(input: CompletionInput): { passed: boolean; conditions: CompletionCondition[] } {
@@ -182,7 +182,7 @@ export function evaluateCompletion(input: CompletionInput): { passed: boolean; c
   add('report.complete', false, unreportedEdits.length === 0, unreportedEdits.length === 0 ? 'every observed edit is in the report' : `edited but not in the report: ${list(unreportedEdits)}`);
   add('implementation.deviations', false, deviationCount === 0, deviationCount === 0 ? 'no deviation was recorded' : `${deviationCount} deviation(s) recorded during the implementation`);
 
-  // Independent review (ADR 0032–0035): it must have passed or been waived by the user.
+  // Independent review: it must have passed or been waived by the user.
   const review = input.review;
   if (review !== undefined) {
     const outcome =
@@ -197,7 +197,7 @@ export function evaluateCompletion(input: CompletionInput): { passed: boolean; c
     if (review.outcome === 'skipped') add('review.open-findings', false, review.openFindings.length === 0, review.openFindings.length === 0 ? 'no review finding left open' : `left open: ${list(review.openFindings, 5)}`);
   }
 
-  // Continuous quality (ADR 0027–0031): recorded limitations, never a block (the product owner's decision).
+  // Continuous quality: recorded limitations, never a block; the user decides what to do about them.
   const quality = report.evidence.quality;
   if (quality !== undefined) {
     add('quality.no-serious-findings', false, quality.serious.length === 0, quality.serious.length === 0 ? 'no open P1 or P2 finding at the report' : `open at the report: ${list(quality.serious, 5)}`);
@@ -221,7 +221,7 @@ export const STATE_LABELS: Readonly<Record<WorkflowState, string>> = {
   WAIT_REVIEW_FIX_APPROVAL: 'Waiting for fix approval',
   FIX_IMPLEMENTATION: 'Fixing review findings',
   REVERIFICATION: 'Re-verification',
-  // A task stays here only when Core's final checks refused DONE (ADR 0016).
+  // A task stays here only when Core's final checks refused DONE.
   FINAL_REPORT: 'Final checks failed',
   DONE: 'Done',
   BLOCKED: 'Blocked',

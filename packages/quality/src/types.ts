@@ -1,7 +1,7 @@
 import type { FindingSeverity } from '@jerry/contracts';
 
 /**
- * The static rule engine's model (ADR 0028). Pure: no file system, no processes. Core reads the
+ * The static rule engine's model. Pure: no file system, no processes. Core reads the
  * files (read-only) and hands over their content and the lines that changed.
  */
 
@@ -79,7 +79,7 @@ export interface DetectedFinding {
 }
 
 /**
- * The interface for security scanners (ADR 0028): the built-in rules implement it, and an external
+ * The interface for security scanners: the built-in rules implement it, and an external
  * tool (for example a SAST scanner the user installed) can later be plugged in behind it.
  */
 export interface SecurityScanner {

@@ -1,8 +1,10 @@
+import { EMOJI } from '@jerry/contracts/emoji';
 import { isEmptyDiff, type PlanDiff } from '@jerry/workflow';
 import { defineComponent, type PropType } from 'vue';
+import { Emoji } from './Emoji';
 
 /**
- * What changed between two plan versions (ADR 0026): the scope JERRY checks edits against first,
+ * What changed between two plan versions: the scope JERRY checks edits against first,
  * then each changed section with its added (+) and removed (−) items.
  */
 export const PlanDiffView = defineComponent({
@@ -23,11 +25,17 @@ export const PlanDiffView = defineComponent({
       return (
         <section class="plan-diff">
           <h3>
+            <Emoji symbol={EMOJI.plan} />
             Plan v{diff.from} → v{diff.to}
           </h3>
           {isEmptyDiff(diff) && <p class="muted">No differences in what you review.</p>}
           {diff.document === 'added' && <p>The full plan document was added; v{diff.from} had only a scope.</p>}
-          {diff.document === 'removed' && <p class="attention">The full plan document was removed; v{diff.to} has only a scope.</p>}
+          {diff.document === 'removed' && (
+            <p class="attention">
+              <Emoji symbol={EMOJI.warning} />
+              The full plan document was removed; v{diff.to} has only a scope.
+            </p>
+          )}
           {diff.scope.added.length + diff.scope.removed.length > 0 && (
             <div class="diff__section">
               <h4>Scope (what JERRY checks edits against)</h4>

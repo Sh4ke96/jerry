@@ -5,7 +5,7 @@ import path from 'node:path';
 import type { EvalCase } from './case.js';
 
 /**
- * Fixture repositories (ADR 0036): created from a case under the system temp directory, never inside
+ * Fixture repositories: created from a case under the system temp directory, never inside
  * a real project, and removed afterwards. Git here belongs to the eval harness's own throwaway
  * repository, not to the user's.
  */

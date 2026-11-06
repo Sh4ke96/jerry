@@ -12,7 +12,7 @@ const CLI = path.join(ROOT, 'dist', 'cli', 'jerry.mjs');
 const GIT_IDENTITY = ['-c', 'user.name=JERRY Test', '-c', 'user.email=jerry-test@example.invalid', '-c', 'commit.gpgsign=false'];
 const COMMITTED = ['export function load(read: () => string): string {', '  try {', '    return read();', '  } catch {}', "  return '';", '}', ''].join('\n');
 
-/** ADR 0027–0029: edits → debounced checks of the changed lines → findings with a lifecycle. */
+/** Edits → debounced checks of the changed lines → findings with a lifecycle. */
 describe('continuous quality findings (bundled bridge + Core)', () => {
   const base = tempDir('quality');
   const repo = createFixtureRepo(path.join(base, 'repo'));

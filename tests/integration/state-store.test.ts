@@ -154,15 +154,15 @@ describe('StateStore on SQLite', () => {
     await store.close();
   });
 
-  it('imports the M0 JSON state once and keeps the file, renamed', async () => {
+  it('imports the old JSON state once and keeps the file, renamed', async () => {
     const where = options();
     const scope = ['apps/**'];
-    const contentHash = computePlanHash({ taskId: 'JRY-0001', title: 'M1 Core Foundation', repoRoot: REPO, version: 1, scope });
-    // M0 tasks had no workflow state; the import derives it from the approvals.
+    const contentHash = computePlanHash({ taskId: 'JRY-0001', title: 'Core foundation', repoRoot: REPO, version: 1, scope });
+    // Tasks in the old JSON state had no workflow state; the import derives it from the approvals.
     const legacy: Omit<CoreState, 'tasks'> & { tasks: Array<Omit<CoreState['tasks'][number], 'state'>> } = {
       schemaVersion: 1,
       nextTaskNumber: 2,
-      tasks: [{ taskId: 'JRY-0001', title: 'M1 Core Foundation', repoRoot: REPO, createdAt: now(0).toISOString(), plan: { version: 1, contentHash, scope, createdAt: now(0).toISOString() } }],
+      tasks: [{ taskId: 'JRY-0001', title: 'Core foundation', repoRoot: REPO, createdAt: now(0).toISOString(), plan: { version: 1, contentHash, scope, createdAt: now(0).toISOString() } }],
       approvals: [
         { approvalId: 'apr_1', taskId: 'JRY-0001', stage: 'PLAN', version: 1, contentHash, decision: 'APPROVED', approvedBy: 'local-user', approvedAt: now(1).toISOString(), comment: '' },
       ],

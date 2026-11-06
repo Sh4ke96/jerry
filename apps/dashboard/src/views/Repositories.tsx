@@ -1,7 +1,9 @@
 import type { RepositorySummary } from '@jerry/contracts';
+import { EMOJI } from '@jerry/contracts/emoji';
 import { defineComponent, ref } from 'vue';
 import { api } from '../api';
 import { Badge } from '../components/Badge';
+import { Emoji } from '../components/Emoji';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { formatTime } from '../format';
 import { perform, state } from '../state';
@@ -32,6 +34,7 @@ export const Repositories = defineComponent({
           <header class="task__header">
             <div>
               <h2>
+                <Emoji symbol={EMOJI.repository} />
                 <code>{repository.repoRoot}</code>
               </h2>
               <p class="muted">
@@ -59,7 +62,12 @@ export const Repositories = defineComponent({
                         <Badge>{command.kind}</Badge> <code>{command.run}</code>
                       </div>
                     ))}
-                {profile.environment.missingRunners.length > 0 && <div class="attention">Not installed: {profile.environment.missingRunners.join(', ')}</div>}
+                {profile.environment.missingRunners.length > 0 && (
+                  <div class="attention">
+                    <Emoji symbol={EMOJI.warning} />
+                    Not installed: {profile.environment.missingRunners.join(', ')}
+                  </div>
+                )}
               </dd>
               {profile.ci.length > 0 && [<dt key="ci">CI</dt>, <dd key="ci-v">{profile.ci.map((entry) => entry.path).join(', ')}</dd>]}
               {profile.apiSchemas.length > 0 && [<dt key="api">API schemas</dt>, <dd key="api-v">{profile.apiSchemas.map((entry) => `${entry.path} (${entry.kind})`).join(', ')}</dd>]}
@@ -88,7 +96,9 @@ export const Repositories = defineComponent({
                         <code>
                           {finding.path}:{finding.line}
                         </code>{' '}
-                        <Badge tone="warn">{finding.rule}</Badge> <span class="muted">{finding.excerpt}</span>
+                        <Badge tone="warn" emoji={EMOJI.warning}>
+                          {finding.rule}
+                        </Badge> <span class="muted">{finding.excerpt}</span>
                       </li>
                     ))}
                   </ul>
@@ -104,7 +114,10 @@ export const Repositories = defineComponent({
       <div class="stack">
         {state.graph.edges.length > 0 && (
           <section class="panel">
-            <h2>Links between repositories</h2>
+            <h2>
+              <Emoji symbol={EMOJI.repository} />
+              Links between repositories
+            </h2>
             <p class="muted small">From manifests and code-generation configs; each link shows its evidence.</p>
             <ul class="list">
               {state.graph.edges.map((edge) => (
@@ -117,7 +130,10 @@ export const Repositories = defineComponent({
         )}
         {state.repositories.map(profileCard)}
         <section class="panel">
-          <h2>Monitored repositories</h2>
+          <h2>
+            <Emoji symbol={EMOJI.jerry} />
+            Monitored repositories
+          </h2>
           <p class="muted">JERRY monitors every Git repository except the ones below. Hard rules (no Git changes, no writes inside .git, no tampering with JERRY) apply everywhere.</p>
           {state.exclusions.length === 0 ? (
             <p>No repository is excluded.</p>
@@ -138,7 +154,10 @@ export const Repositories = defineComponent({
         </section>
 
         <section class="panel">
-          <h2>Exclude a repository</h2>
+          <h2>
+            <Emoji symbol={EMOJI.paused} />
+            Exclude a repository
+          </h2>
           <form
             class="inline-form"
             onSubmit={(event: Event) => {

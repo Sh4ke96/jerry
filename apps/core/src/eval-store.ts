@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { StateError } from './state-store.js';
 
 /**
- * Eval runs, baselines and calibration labels (ADR 0039), in JERRY's database, outside any project.
+ * Eval runs, baselines and calibration labels, in JERRY's database, outside any project.
  * The CLI runner records runs; only the user sets a baseline or labels a rubric result.
  */
 export class EvalStore {
@@ -58,7 +58,7 @@ export class EvalStore {
     return summaryOf(row, id);
   }
 
-  /** A human verdict on a rubric grader's result in a run (spec §13.4). */
+  /** A human verdict on a rubric grader's result in a run. */
   async label(input: { runId: string; caseId: string; attempt: number; rubricId: string; humanPassed: boolean }, now: Date): Promise<void> {
     const id = runNumber(input.runId);
     const row = await this.db.selectFrom('eval_runs').select('results_json').where('id', '=', id).executeTakeFirst();
@@ -81,7 +81,7 @@ export class EvalStore {
     return [...calibration(rows.map((row) => ({ rubricId: row.rubric_id, humanPassed: row.human_passed === 1, graderPassed: row.grader_passed === 1 })))].map(([rubricId, entry]) => ({ rubricId, ...entry }));
   }
 
-  /** Whether the evals should run again: what changed since the baseline was measured (ADR 0040). */
+  /** Whether the evals should run again: what changed since the baseline was measured. */
   async status(current: JerryFingerprint | null): Promise<EvalStatus> {
     const baselineId = await this.baselineId();
     const latest = await this.db.selectFrom('eval_runs').select('id').orderBy('id', 'desc').limit(1).executeTakeFirst();

@@ -12,7 +12,7 @@ afterAll(() => fs.rmSync(base, { recursive: true, force: true }));
 /** Every byte of the repository, .git included. */
 const bytes = (dir: string) => snapshotRepo(dir).files;
 
-describe('read-only Git reader (ADR 0017)', () => {
+describe('read-only Git reader', () => {
   it('reads branch, HEAD and the user’s uncommitted work without changing a byte of the repository', async () => {
     const repo = createFixtureRepo(path.join(base, 'dirty'));
     fs.writeFileSync(path.join(repo, 'staged.txt'), 'staged\n');
@@ -51,7 +51,7 @@ describe('read-only Git reader (ADR 0017)', () => {
 
   it('never keeps credentials from a remote URL', async () => {
     const secret = ['ghp', 'x'.repeat(20)].join('_');
-    expect(stripCredentials(`https://artur:${secret}@github.com/a/b.git\n`)).toBe('https://github.com/a/b.git');
+    expect(stripCredentials(`https://user:${secret}@github.com/a/b.git\n`)).toBe('https://github.com/a/b.git');
     expect(stripCredentials('git@github.com:a/b.git')).toBe('git@github.com:a/b.git');
     const repo = createFixtureRepo(path.join(base, 'remote'));
     execFileSync('git', ['-C', repo, 'remote', 'add', 'origin', `https://${secret}@example.invalid/a/b.git`]);

@@ -1,22 +1,27 @@
 import type { PlanDocument } from '@jerry/contracts';
+import { EMOJI } from '@jerry/contracts/emoji';
 import { defineComponent, type PropType, type VNodeChild } from 'vue';
 import { Badge, type Tone } from './Badge';
+import { Emoji } from './Emoji';
 
 const SEVERITY_TONE: Record<'low' | 'medium' | 'high', Tone> = { low: 'neutral', medium: 'warn', high: 'deny' };
 const CHANGE_LABEL: Record<'add' | 'change' | 'remove', string> = { add: 'Add', change: 'Change', remove: 'Remove' };
 
 /** One section of the plan; empty sections are left out so the plan reads as a document. */
-function section(title: string, content: VNodeChild, empty: boolean, open = false): VNodeChild {
+function section(title: string, content: VNodeChild, empty: boolean, open = false, emoji?: string): VNodeChild {
   if (empty) return null;
   return (
     <details class="plan-section" open={open}>
-      <summary>{title}</summary>
+      <summary>
+        {emoji !== undefined && <Emoji symbol={emoji} />}
+        {title}
+      </summary>
       <div class="plan-section__body">{content}</div>
     </details>
   );
 }
 
-/** The full plan Claude submitted (spec §7.2), as the user reviews it before approving. */
+/** The full plan Claude submitted, as the user reviews it before approving. */
 export const PlanDocumentView = defineComponent({
   name: 'PlanDocumentView',
   props: { plan: { type: Object as PropType<PlanDocument>, required: true } },
@@ -45,9 +50,10 @@ export const PlanDocumentView = defineComponent({
             </ul>,
             false,
             true,
+            EMOJI.implementation,
           )}
           {section('Architecture impact', <p class="prewrap">{plan.architectureImpact}</p>, false)}
-          {section('Cross-repository dependencies', <p class="prewrap">{plan.crossRepoDependencies}</p>, plan.crossRepoDependencies === '')}
+          {section('Cross-repository dependencies', <p class="prewrap">{plan.crossRepoDependencies}</p>, plan.crossRepoDependencies === '', false, EMOJI.repository)}
           {section(
             `Risks (${plan.risks.length})`,
             <ul class="list">
@@ -59,6 +65,7 @@ export const PlanDocumentView = defineComponent({
             </ul>,
             plan.risks.length === 0,
             plan.risks.some((risk) => risk.severity === 'high'),
+            EMOJI.warning,
           )}
           {section('Rollback', <p class="prewrap">{plan.rollback}</p>, plan.rollback === '')}
           {section(
@@ -92,6 +99,8 @@ export const PlanDocumentView = defineComponent({
               ))}
             </ol>,
             false,
+            false,
+            EMOJI.plan,
           )}
           {section(
             `Tests (${plan.tests.length})`,
@@ -103,6 +112,8 @@ export const PlanDocumentView = defineComponent({
               ))}
             </ul>,
             false,
+            false,
+            EMOJI.tests,
           )}
           {section('Regression', <p class="prewrap">{plan.regression}</p>, plan.regression === '')}
           {section(
@@ -121,6 +132,8 @@ export const PlanDocumentView = defineComponent({
               ))}
             </ul>,
             plan.qaScenarios.length === 0,
+            false,
+            EMOJI.tests,
           )}
           {section(
             'Proposed commits',
@@ -132,8 +145,10 @@ export const PlanDocumentView = defineComponent({
               ))}
             </ul>,
             plan.commitSubjects.length === 0,
+            false,
+            EMOJI.next,
           )}
-          {section('Artifact', <p class="prewrap">{plan.artifact}</p>, plan.artifact === '')}
+          {section('Artifact', <p class="prewrap">{plan.artifact}</p>, plan.artifact === '', false, EMOJI.artifact)}
           {section(
             'Definition of Done',
             <ul class="list">
@@ -143,6 +158,7 @@ export const PlanDocumentView = defineComponent({
             </ul>,
             false,
             true,
+            EMOJI.done,
           )}
           {section(
             `Open questions (${plan.openQuestions.length})`,
@@ -153,6 +169,7 @@ export const PlanDocumentView = defineComponent({
             </ul>,
             plan.openQuestions.length === 0,
             true,
+            EMOJI.session,
           )}
           {plan.analysis !== undefined &&
             section(
@@ -172,6 +189,7 @@ export const PlanDocumentView = defineComponent({
               </div>,
               false,
               plan.analysis.gaps.length > 0,
+              EMOJI.analysis,
             )}
         </div>
       );

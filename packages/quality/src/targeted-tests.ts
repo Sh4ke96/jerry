@@ -1,7 +1,7 @@
 import { isTestFile } from './engine.js';
 
 /**
- * Targeted tests (spec §12.3, ADR 0030): which test files belong to the files that changed, and the
+ * Targeted tests: which test files belong to the files that changed, and the
  * command that runs only them. JERRY suggests; Claude runs it. JERRY never runs project commands.
  */
 

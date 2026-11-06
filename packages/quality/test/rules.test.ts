@@ -9,7 +9,7 @@ function fileFor(rule: Rule, content: string) {
   return { path: rule.examples.testFile === true ? `src/example.test.${extension}` : `src/example.${extension}`, content, changedLines: 'all' as const };
 }
 
-describe('built-in rules: every rule against its own examples (ADR 0028)', () => {
+describe('built-in rules: every rule against its own examples', () => {
   it('has unique ids, versions and documentation', () => {
     const ids = BUILT_IN_RULES.map((rule) => rule.id);
     expect(new Set(ids).size).toBe(ids.length);

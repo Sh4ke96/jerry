@@ -4,7 +4,7 @@ import { EVENT_SCHEMA_VERSION, HOOK_EVENT_TYPES } from '@jerry/contracts/constan
 import { redactText, truncate } from './redaction.js';
 
 /**
- * Turns raw Claude Code hook input into a minimized, redacted event envelope (spec §11.2, §18.2).
+ * Turns raw Claude Code hook input into a minimized, redacted event envelope.
  * Only metadata survives: paths, redacted commands, sizes, flags and outcomes. File contents,
  * edit strings, prompt text and tool output never leave this module.
  */
@@ -67,7 +67,7 @@ export function summarizeToolResponse(response: unknown): Record<string, unknown
 
 /**
  * The one line a test runner prints with its totals (vitest, jest, pytest, go, phpunit), and
- * nothing else of the output (ADR 0030). Only digits and fixed words pass the pattern.
+ * nothing else of the output. Only digits and fixed words pass the pattern.
  */
 export function testSummaryOf(output: string): string | null {
   const patterns = [
@@ -111,7 +111,7 @@ export function buildEventEnvelope(input: Raw, overrides: EnvelopeOverrides = {}
       payload['source'] = text(input['source']);
       break;
     case 'UserPromptSubmit': {
-      // The prompt text is not stored (spec §18.2); only its size and a leading slash command.
+      // The prompt text is not stored; only its size and a leading slash command.
       const prompt = typeof input['prompt'] === 'string' ? input['prompt'] : '';
       payload['promptLength'] = prompt.length;
       payload['slashCommand'] = /^\/[\w:.-]+/.exec(prompt.trim())?.[0] ?? null;

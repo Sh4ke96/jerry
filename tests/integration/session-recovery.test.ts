@@ -7,7 +7,7 @@ import { McpClient } from '../helpers/mcp-client.js';
 import { samplePlan } from '../helpers/plan-fixture.js';
 
 /**
- * ADR 0013: JERRY knows which Claude Code session worked on which task, keeps Claude's progress
+ * JERRY knows which Claude Code session worked on which task, keeps Claude's progress
  * checkpoints, and gives a new, resumed or compacted session what it needs to continue.
  */
 describe('session ↔ task correlation and session recovery (bundled bridge + MCP + Core)', () => {
@@ -92,8 +92,8 @@ describe('session ↔ task correlation and session recovery (bundled bridge + MC
 
     const context = sessionStart('session-b', 'startup');
     expect(context).toContain(`Approved plan: ${taskId} v1`);
-    expect(context).toContain(`Open JERRY tasks: ${taskId} "Greeting helper": in implementation, last worked on`);
-    expect(context).toContain('last checkpoint: Added greet() in src/greeting/greet.ts. Next: Write the unit test; Update the README');
+    expect(context).toContain(`Open JERRY tasks: 🛠️ ${taskId} "Greeting helper": in implementation, last worked on`);
+    expect(context).toContain('last checkpoint: Added greet() in src/greeting/greet.ts. 💡 Next: Write the unit test; Update the README');
     expect(context).toContain('check them against the current code (git status, git diff)');
     expect(context).toContain('Save progress with jerry_save_checkpoint');
     // The hard-rule statement is untouched.

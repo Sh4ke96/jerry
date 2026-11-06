@@ -1,16 +1,21 @@
 import type { EvalRunDetail, EvalRunSummary, EvalStatus } from '@jerry/contracts';
+import { EMOJI } from '@jerry/contracts/emoji';
 import { defineComponent, onMounted, ref } from 'vue';
 import { api } from '../api';
 import { Badge, type Tone } from '../components/Badge';
+import { Emoji } from '../components/Emoji';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { formatTime } from '../format';
 import { handleError, perform } from '../state';
 
 const OUTCOME_TONE: Record<string, Tone> = { PASS: 'pass', FAIL: 'deny', FLAKY: 'warn', ERROR: 'warn' };
 const COMPARISON_TONE: Record<string, Tone> = { REGRESSION: 'deny', FIXED: 'pass', UNCHANGED: 'neutral', FLAKY: 'warn', NEW: 'accent', MISSING: 'warn', ERROR: 'warn' };
+const OUTCOME_EMOJI: Record<string, string> = { PASS: EMOJI.pass, FAIL: EMOJI.fail, FLAKY: EMOJI.warning, ERROR: EMOJI.fail };
+/** An unchanged case has no emoji of its own: its result column shows the outcome. */
+const COMPARISON_EMOJI: Record<string, string> = { REGRESSION: EMOJI.blocked, FIXED: EMOJI.pass, FLAKY: EMOJI.warning, NEW: EMOJI.info, MISSING: EMOJI.warning, ERROR: EMOJI.fail };
 
 /**
- * JERRY's evals (ADR 0036–0040): runs, per-case results across repeats compared with the baseline,
+ * JERRY's evals: runs, per-case results across repeats compared with the baseline,
  * regressions, flaky cases, calibration and what changed since the baseline. Runs start from the
  * CLI (`jerry eval run`); choosing a baseline is the user's decision.
  */
@@ -59,16 +64,24 @@ export const Evals = defineComponent({
     return () => (
       <section class="evals">
         <div class="panel">
-          <h2>Evals</h2>
+          <h2>
+            <Emoji symbol={EMOJI.evals} />
+            Evals
+          </h2>
           {status.value === null ? (
             <p class="muted">Loading…</p>
           ) : (
             <div>
               <p>
                 Baseline: <strong>{status.value.baselineRunId ?? 'none yet'}</strong> · latest run: {status.value.latestRunId ?? 'none'}{' '}
-                {status.value.releaseBlocked && <Badge tone="deny">release blocked: critical regression</Badge>}
+                {status.value.releaseBlocked && (
+                  <Badge tone="deny" emoji={EMOJI.blocked}>
+                    release blocked: critical regression
+                  </Badge>
+                )}
               </p>
               <p class={status.value.changedSinceBaseline.length > 0 ? 'attention' : 'muted'}>
+                <Emoji symbol={status.value.changedSinceBaseline.length > 0 ? EMOJI.warning : EMOJI.pass} />
                 {status.value.changedSinceBaseline.length > 0 ? `Changed since the baseline: ${status.value.changedSinceBaseline.join(', ')}. Run the evals again: jerry eval run` : 'Nothing JERRY ships changed since the baseline.'}
               </p>
               {calibration.value.length > 0 && (
@@ -86,8 +99,29 @@ export const Evals = defineComponent({
                 <button type="button" class={['button', 'button--quiet', selected.value?.runId === run.runId && 'tab--active']} onClick={() => void open(run.runId)}>
                   {run.runId}
                 </button>{' '}
-                <span class="muted small">{formatTime(run.finishedAt)}</span> <Badge tone="pass">{run.counts.PASS} pass</Badge> {run.counts.FAIL > 0 && <Badge tone="deny">{run.counts.FAIL} fail</Badge>} {run.counts.FLAKY > 0 && <Badge tone="warn">{run.counts.FLAKY} flaky</Badge>}{' '}
-                {run.counts.ERROR > 0 && <Badge tone="warn">{run.counts.ERROR} error</Badge>} {run.isBaseline && <Badge tone="accent">baseline</Badge>} <span class="muted small">{run.label}</span>{' '}
+                <span class="muted small">{formatTime(run.finishedAt)}</span> <Badge tone="pass" emoji={EMOJI.pass}>
+                  {run.counts.PASS} pass
+                </Badge>{' '}
+                {run.counts.FAIL > 0 && (
+                  <Badge tone="deny" emoji={EMOJI.fail}>
+                    {run.counts.FAIL} fail
+                  </Badge>
+                )}{' '}
+                {run.counts.FLAKY > 0 && (
+                  <Badge tone="warn" emoji={EMOJI.warning}>
+                    {run.counts.FLAKY} flaky
+                  </Badge>
+                )}{' '}
+                {run.counts.ERROR > 0 && (
+                  <Badge tone="warn" emoji={EMOJI.fail}>
+                    {run.counts.ERROR} error
+                  </Badge>
+                )}{' '}
+                {run.isBaseline && (
+                  <Badge tone="accent" emoji={EMOJI.evals}>
+                    baseline
+                  </Badge>
+                )} <span class="muted small">{run.label}</span>{' '}
                 {!run.isBaseline && (
                   <button type="button" class="button button--quiet button--small" onClick={() => (baselineFor.value = run)}>
                     Make baseline
@@ -100,6 +134,7 @@ export const Evals = defineComponent({
         {selected.value !== null && (
           <div class="panel">
             <h3>
+              <Emoji symbol={EMOJI.evals} />
               {selected.value.runId} compared with {selected.value.comparison.baselineRunId ?? 'no baseline'}
             </h3>
             <table class="evals__table">
@@ -119,9 +154,19 @@ export const Evals = defineComponent({
                       <td>
                         <code>{entry.caseId}</code> {entry.critical && <Badge tone="deny">critical</Badge>} <span class="muted small">{result?.suite}</span>
                       </td>
-                      <td>{entry.current === null ? '-' : <Badge tone={OUTCOME_TONE[entry.current] ?? 'neutral'}>{entry.current}</Badge>}</td>
                       <td>
-                        <Badge tone={COMPARISON_TONE[entry.comparison] ?? 'neutral'}>{entry.comparison}</Badge> <span class="muted small">{entry.baseline ?? '-'} → {entry.current ?? '-'}</span>
+                        {entry.current === null ? (
+                          '-'
+                        ) : (
+                          <Badge tone={OUTCOME_TONE[entry.current] ?? 'neutral'} emoji={OUTCOME_EMOJI[entry.current]}>
+                            {entry.current}
+                          </Badge>
+                        )}
+                      </td>
+                      <td>
+                        <Badge tone={COMPARISON_TONE[entry.comparison] ?? 'neutral'} emoji={COMPARISON_EMOJI[entry.comparison]}>
+                          {entry.comparison}
+                        </Badge> <span class="muted small">{entry.baseline ?? '-'} → {entry.current ?? '-'}</span>
                       </td>
                       <td class="small">
                         {result?.attempts.map((attempt) => (

@@ -1,5 +1,5 @@
 /**
- * JERRY's agent registry (spec §9.1, ADR 0015, ADR 0022). Plain constants: the plugin ships one
+ * JERRY's agent registry. Plain constants: the plugin ships one
  * Claude Code subagent definition per role (claude-plugin/agents/<id>.md), and tests keep the two
  * in sync. At most three subagents run at a time and per phase; the main session is not counted.
  */
@@ -14,7 +14,7 @@ export interface AgentRole {
   phase: AgentPhase;
   /** Analysts and reviewers only read; their definitions grant no write or shell tools. */
   readOnly: boolean;
-  /** The spec perspectives (§7.2 Phase 2, Phase 6) this role covers. */
+  /** The perspectives this role covers. */
   covers: readonly string[];
 }
 

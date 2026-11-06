@@ -24,7 +24,7 @@ const report = (overrides: { checks?: Report['document']['checks']; risks?: Repo
 const ready: CompletionInput = { currentPlanVersion: 1, planApproved: true, report: report(), reportAccepted: true, editsSinceReport: [], definitionOfDone: ['tests pass', 'README updated'] };
 const failedIds = (input: CompletionInput) => evaluateCompletion(input).conditions.filter((condition) => condition.blocking && !condition.passed).map((condition) => condition.id);
 
-describe('DONE validator (spec Phase 9)', () => {
+describe('DONE validator', () => {
   it('passes when the user approved the plan and accepted a clean report for it', () => {
     const result = evaluateCompletion(ready);
     expect(result.passed).toBe(true);
@@ -59,7 +59,7 @@ describe('DONE validator (spec Phase 9)', () => {
   });
 });
 
-describe('DONE validator: continuous quality (ADR 0027–0031)', () => {
+describe('DONE validator: continuous quality', () => {
   it('records open serious findings and contradicted check claims as limitations, never as blocks', () => {
     const base = report();
     const withQuality: CompletionInput = {
@@ -77,12 +77,12 @@ describe('DONE validator: continuous quality (ADR 0027–0031)', () => {
     const limitations = result.conditions.filter((condition) => !condition.blocking && !condition.passed);
     expect(limitations.map((condition) => condition.id)).toEqual(['quality.no-serious-findings', 'tests.claims-match-observed']);
     expect(limitations[0]!.detail).toContain('FND-3 P1');
-    // Reports from before M5 have no quality evidence and get no such conditions.
+    // Reports from before quality tracking existed have no quality evidence and get no such conditions.
     expect(evaluateCompletion(ready).conditions.some((condition) => condition.id.startsWith('quality.'))).toBe(false);
   });
 });
 
-describe('DONE validator: independent review (ADR 0032)', () => {
+describe('DONE validator: independent review', () => {
   const review = { outcome: 'passed' as const, rounds: 2, reason: '', uncovered: [], notIndependent: [], openFindings: [] };
 
   it('requires a passed or waived review, and records coverage and independence', () => {

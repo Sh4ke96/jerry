@@ -2,15 +2,15 @@ import type { AgentRun, AnalysisReportRecord, PlanDocument, PlanGrade, PlanGrade
 import { matchesAnyGlob } from './paths.js';
 
 /**
- * The plan completeness grader (ADR 0025): a fixed, deterministic rubric over the plan document
- * (spec §7.2 Phase 3) and, when the task was analysed, over the analysts' reports. It reads only
+ * The plan completeness grader: a fixed, deterministic rubric over the plan document
+ * and, when the task was analysed, over the analysts' reports. It reads only
  * what Core already stores and never blocks anything: the user decides.
  */
 
 export interface PlanGradeInput {
   planVersion: number;
   document: PlanDocument | undefined;
-  /** The task's analysis reports and subagent runs (ADR 0023). */
+  /** The task's analysis reports and subagent runs. */
   analyses: readonly Pick<AnalysisReportRecord, 'id' | 'report' | 'citations'>[];
   agentRuns: readonly Pick<AgentRun, 'agentType' | 'status'>[];
   caseInsensitive: boolean;
@@ -97,7 +97,7 @@ export function gradePlan(input: PlanGradeInput): PlanGrade {
   const unknowns = JSON.stringify(plan).match(/\bUNKNOWN\b/g)?.length ?? 0;
   add('unknowns.raised', 'minor', unknowns === 0 || plan.openQuestions.length > 0, unknowns === 0 ? 'no UNKNOWN left in the plan' : `${unknowns} UNKNOWN(s), with open questions for the user`, `${unknowns} UNKNOWN(s) in the plan but no open questions for the user`);
 
-  // The analysis the plan should rest on (ADR 0024).
+  // The analysis the plan should rest on.
   const analystRuns = input.agentRuns.filter((run) => (run.agentType ?? '').includes('-analyst'));
   if (input.analyses.length > 0 || analystRuns.length > 0) {
     const cited = new Set(plan.analysis?.reports ?? []);

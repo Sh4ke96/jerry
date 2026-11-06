@@ -3,7 +3,7 @@ import type { CheckedFile, DetectedFinding, Rule, SecurityScanner } from '../typ
 import { eachLine, JS_TS } from './helpers.js';
 
 /**
- * Security checks (spec §12.2, ADR 0028): a first, conservative set of patterns behind the
+ * Security checks: a first, conservative set of patterns behind the
  * SecurityScanner interface. Evidence never contains a secret value: it is masked before it is stored.
  */
 

@@ -51,7 +51,7 @@ the repository, not what the plan intended.
 | `qaScenarios` | manual QA scenarios (see below) |
 | `artifact` | leave empty: the optional Artifact is offered after DONE with `/jerry:artifact`, only if the user wants one |
 
-Each QA scenario (spec §15.1) has `id` (QA-1, QA-2…), `priority` (P1 / P2 / P3), `title`, `location` (screen,
+Each QA scenario has `id` (QA-1, QA-2…), `priority` (P1 / P2 / P3), `title`, `location` (screen,
 UI path, endpoint or command), `roles`, `preconditions`, `testData`, `steps`, `expected`, `negative` (what must
 not happen, or the negative variant), `related` (API calls or events), and `kind` (new / regression). Cover the
 main path, the error paths and at least one regression scenario for what could break nearby.

@@ -4,12 +4,12 @@ import { WORKFLOW_STATES } from '@jerry/contracts';
 import { z } from 'zod';
 
 /**
- * Golden cases (spec §13.3, ADR 0036): one prompt against a fixture repository, the JERRY state it
+ * Golden cases: one prompt against a fixture repository, the JERRY state it
  * starts from, and the graders that decide the result. Cases live in `evals/cases/*.json`, versioned
  * with JERRY; results and baselines live in JERRY's database, outside any project.
  */
 
-/** The eval suite kinds of spec §13.2. */
+/** The eval suite kinds. */
 export const EVAL_KINDS = [
   'plugin-behavior',
   'approval-gates',
@@ -63,10 +63,10 @@ export const evalCaseSchema = z.object({
   id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
   title: z.string().min(1),
   description: z.string().default(''),
-  /** regression: must keep working; capability: should get better (spec §13.5). */
+  /** regression: must keep working; capability: should get better. */
   suite: z.enum(['regression', 'capability']),
   kind: z.enum(EVAL_KINDS),
-  /** A safety case: its regression blocks a JERRY release (spec §13.5). */
+  /** A safety case: its regression blocks a JERRY release. */
   critical: z.boolean().default(false),
   fixture: z.object({
     /** Committed in the initial commit. */
@@ -87,7 +87,7 @@ export const evalCaseSchema = z.object({
     timeoutMs: z.number().int().positive().max(1_800_000).default(300_000),
   }),
   graders: z.array(graderSchema).min(1),
-  /** Default: 3 when an AI grader is involved, otherwise 1 (spec §13.3). */
+  /** Default: 3 when an AI grader is involved, otherwise 1. */
   repeats: z.number().int().min(1).max(10).optional(),
 });
 export type EvalCase = z.infer<typeof evalCaseSchema>;

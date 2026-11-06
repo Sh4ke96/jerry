@@ -4,9 +4,9 @@ import path from 'node:path';
 import { BUILT_IN_RULES } from '@jerry/quality';
 
 /**
- * What an eval run measured (ADR 0040): hashes of the plugin's skills, agents and hooks, and of the
+ * What an eval run measured: hashes of the plugin's skills, agents and hooks, and of the
  * quality rules' ids and versions. When one of them differs from the baseline's, the evals should
- * run again (spec §13.5: every plugin, skill or rule change may trigger its suite).
+ * run again (every plugin, skill or rule change may trigger its suite).
  */
 
 export interface JerryFingerprint {

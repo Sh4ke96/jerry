@@ -1,8 +1,8 @@
 import type { Generated } from 'kysely';
 
 /**
- * Tables of the JERRY database (spec §17). Timestamps are ISO-8601 strings; JSON values are text.
- * Only tables that features use exist; the rest of §17 arrives with the features that need them.
+ * Tables of the JERRY database. Timestamps are ISO-8601 strings; JSON values are text.
+ * Only tables that features use exist; further tables arrive with the features that need them.
  */
 
 export interface RepositoriesTable {
@@ -20,9 +20,9 @@ export interface TasksTable {
   title: string;
   repo_id: string;
   current_plan_version: number;
-  /** Workflow state (spec §7.1); changed only through validated transitions. */
+  /** Workflow state; changed only through validated transitions. */
   state: string;
-  /** What a task taken in before its plan should achieve (ADR 0024); null otherwise. */
+  /** What a task taken in before its plan should achieve; null otherwise. */
   goal: string | null;
   created_at: string;
   updated_at: string;
@@ -199,7 +199,7 @@ export interface AuditLogTable {
   created_at: string;
 }
 
-/** Events from Claude Code hooks and JERRY Core (spec §11.2). Retention removes old rows. */
+/** Events from Claude Code hooks and JERRY Core. Retention removes old rows. */
 export interface HookEventsTable {
   event_id: string;
   schema_version: number;
@@ -224,7 +224,7 @@ export interface HookEventsTable {
   created_at: string;
 }
 
-/** Quality findings (ADR 0027); identity is repo, task, file, rule and fingerprint. */
+/** Quality findings; identity is repo, task, file, rule and fingerprint. */
 export interface FindingsTable {
   id: Generated<number>;
   task_id: string | null;
@@ -281,7 +281,7 @@ export interface QualityBatchesTable {
   error: string | null;
 }
 
-/** A test command Claude ran and its result (ADR 0030). */
+/** A test command Claude ran and its result. */
 export interface TestRunsTable {
   id: Generated<number>;
   task_id: string | null;
@@ -297,7 +297,7 @@ export interface TestRunsTable {
   at: string;
 }
 
-/** An implementer's part of a plan (ADR 0031). */
+/** An implementer's part of a plan. */
 export interface ImplementerAssignmentsTable {
   id: Generated<number>;
   task_id: string;
@@ -310,7 +310,7 @@ export interface ImplementerAssignmentsTable {
   released_at: string | null;
 }
 
-/** One independent review round of a task (ADR 0032–0035). */
+/** One independent review round of a task. */
 export interface ReviewRoundsTable {
   id: Generated<number>;
   task_id: string;
@@ -354,7 +354,7 @@ export interface ReviewFindingSourcesTable {
   role: string;
 }
 
-/** An eval run with its full per-case results (ADR 0039). */
+/** An eval run with its full per-case results. */
 export interface EvalRunsTable {
   id: Generated<number>;
   started_at: string;
@@ -387,7 +387,7 @@ export interface EvalLabelsTable {
   labeled_at: string;
 }
 
-/** The user's choice about an Artifact for a task (ADR 0042). */
+/** The user's choice about an Artifact for a task. */
 export interface ArtifactDecisionsTable {
   id: Generated<number>;
   task_id: string;

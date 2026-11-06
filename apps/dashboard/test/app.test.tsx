@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import type { RepositorySummary, StoredEvent, TaskSummary, WorkflowTransition } from '@jerry/contracts';
+import { EMOJI, STATE_EMOJI } from '@jerry/contracts/emoji';
 import { flushPromises, mount } from '@vue/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { samplePlan } from '../../../tests/helpers/plan-fixture';
@@ -70,7 +71,7 @@ const reportedTask: TaskSummary = {
 const approvedTask: TaskSummary = {
   ...waitingTask,
   taskId: 'JRY-0001',
-  title: 'M1 Core Foundation',
+  title: 'Core foundation',
   state: 'IMPLEMENTATION',
   planDecision: { approvalId: 'apr_1', taskId: 'JRY-0001', stage: 'PLAN', version: 1, contentHash: waitingTask.plan.contentHash, decision: 'APPROVED', approvedBy: 'local-user', approvedAt: NOW, comment: '' },
   activity: { sessionCount: 2, lastSessionId: 's2', lastActivityAt: NOW, lastSessionEndedAt: NOW },
@@ -228,7 +229,7 @@ describe('Dashboard app', () => {
   });
 
   const openTasks = async (wrapper: Awaited<ReturnType<typeof mountApp>>) => {
-    await wrapper.findAll('nav button').find((button) => button.text().startsWith('Tasks'))!.trigger('click');
+    await wrapper.findAll('nav button').find((button) => button.text().includes('Tasks'))!.trigger('click');
   };
   const button = (wrapper: Awaited<ReturnType<typeof mountApp>>, label: string, taskId?: string) => {
     const scope = taskId === undefined ? wrapper : wrapper.findAll('article.task').find((card) => card.text().includes(taskId))!;
@@ -244,8 +245,23 @@ describe('Dashboard app', () => {
     expect(button(wrapper, 'Withdraw approval', 'JRY-0001')).toBeDefined();
     expect(button(wrapper, 'Pause', 'JRY-0001')).toBeDefined();
     expect(button(wrapper, 'Resume', 'JRY-0001')).toBeUndefined();
-    expect(wrapper.get('details.panel summary').text()).toBe('Finished and cancelled (1)');
+    expect(wrapper.get('details.panel summary').text()).toBe(`${EMOJI.done}Finished and cancelled (1)`);
     expect(button(wrapper, 'Cancel task', 'JRY-0003')).toBeUndefined();
+    wrapper.unmount();
+  });
+
+  it('shows emoji from the shared vocabulary next to their labels, hidden from assistive technology', async () => {
+    const wrapper = await mountApp();
+    const tabs = wrapper.findAll('nav button');
+    expect(tabs.map((tab) => tab.get('.emoji').text())).toEqual([EMOJI.jerry, EMOJI.task, EMOJI.session, EMOJI.repository, EMOJI.evals]);
+    await openTasks(wrapper);
+    const card = wrapper.findAll('article.task').find((candidate) => candidate.text().includes('JRY-0001'))!;
+    const badge = card.get('.task__header .badge');
+    expect(badge.get('.emoji').text()).toBe(STATE_EMOJI.IMPLEMENTATION);
+    expect(badge.text()).toContain('In implementation');
+    const emoji = wrapper.findAll('.emoji');
+    expect(emoji.length).toBeGreaterThan(0);
+    for (const element of emoji) expect(element.attributes('aria-hidden')).toBe('true');
     wrapper.unmount();
   });
 
@@ -589,7 +605,7 @@ describe('Dashboard app', () => {
       return base(url, init);
     });
     const wrapper = await mountApp();
-    await wrapper.findAll('nav button').find((candidate) => candidate.text().startsWith('Evals'))!.trigger('click');
+    await wrapper.findAll('nav button').find((candidate) => candidate.text().includes('Evals'))!.trigger('click');
     await flushPromises();
     const text = wrapper.get('.evals').text();
     expect(text).toContain('Baseline: EVR-1');
@@ -738,7 +754,7 @@ describe('Dashboard app', () => {
 
   it('shows each repository’s profile: commands as they run here, instructions and suspicious text', async () => {
     const wrapper = await mountApp();
-    await wrapper.findAll('nav button').find((button) => button.text().startsWith('Repositories'))!.trigger('click');
+    await wrapper.findAll('nav button').find((button) => button.text().includes('Repositories'))!.trigger('click');
     const card = wrapper.get('article.repository');
     expect(card.text()).toContain('D:\\Work\\shop');
     expect(card.text()).toContain('out of date: stack');
@@ -757,7 +773,7 @@ describe('Dashboard app', () => {
 
   it('filters the timeline and renders every section without errors', async () => {
     const wrapper = await mountApp();
-    const tab = (label: string) => wrapper.findAll('nav button').find((button) => button.text().startsWith(label))!;
+    const tab = (label: string) => wrapper.findAll('nav button').find((button) => button.text().includes(label))!;
     await tab('Timeline').trigger('click');
     expect(wrapper.get('table').text()).toContain('WARN');
     expect(wrapper.get('table').text()).toContain('README.md');

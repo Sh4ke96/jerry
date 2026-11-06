@@ -9,7 +9,7 @@ import { sampleReport } from '../helpers/report-fixture.js';
 const IDENTITY = ['-c', 'user.name=JERRY Test', '-c', 'user.email=jerry-test@example.invalid', '-c', 'commit.gpgsign=false'];
 
 /**
- * ADR 0017: Core takes read-only Git baselines, protects the user's uncommitted work, sees changes
+ * Core takes read-only Git baselines, protects the user's uncommitted work, sees changes
  * made by shell commands, and tells a resumed session what moved since its checkpoint.
  */
 describe('Git baseline, user changes and Git-based evidence (bundled bridge + Core)', () => {
@@ -76,7 +76,7 @@ describe('Git baseline, user changes and Git-based evidence (bundled bridge + Co
   it('refuses DONE when a shell command changed a file after the report', async () => {
     fs.writeFileSync(path.join(repo, 'src', 'generated.ts'), 'export const generated = false;\n');
     expect((await api(core, 'POST', `/api/v1/tasks/${taskId}/approvals`, { stage: 'IMPLEMENTATION', version: 1, decision: 'APPROVED' })).status).toBe(201);
-    // Not about the review (ADR 0034): the user waives it, and the final checks run.
+    // Not about the review: the user waives it, and the final checks run.
     expect((await api(core, 'POST', `/api/v1/tasks/${taskId}/review/skip`, { reason: 'not part of this test' })).status).toBe(200);
     const task = await detail();
     expect(task.state).toBe('FINAL_REPORT');

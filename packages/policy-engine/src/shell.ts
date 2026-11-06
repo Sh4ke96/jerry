@@ -6,7 +6,7 @@
  * deviation warning.
  *
  * assessGitUsage answers "does this command change Git state?". Git changes are the user's job
- * alone (ADR 0003), so this check blocks; it stays strict but only looks at commands that
+ * alone, so this check blocks; it stays strict but only looks at commands that
  * actually invoke Git tooling. Neither check is an OS sandbox.
  */
 

@@ -23,7 +23,7 @@ const SPOOL_DRAIN_INTERVAL_MS = 15_000;
 const RETENTION_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_RETENTION_DAYS = 90;
 
-/** Spec §18.2: events and sessions are kept 90 days unless JERRY_RETENTION_DAYS says otherwise. */
+/** Events and sessions are kept 90 days unless JERRY_RETENTION_DAYS says otherwise. */
 function resolveRetentionDays(): number {
   const raw = process.env['JERRY_RETENTION_DAYS'];
   const days = raw === undefined || raw.trim() === '' ? DEFAULT_RETENTION_DAYS : Number(raw);
@@ -62,7 +62,7 @@ async function main(): Promise<void> {
   const build = buildHash(fileURLToPath(import.meta.url));
   let boundPort = configuredPort;
   const sessions = new BrowserSessions();
-  // The quiet period before quality checks (ADR 0029); tests shorten it.
+  // The quiet period before quality checks; tests shorten it.
   const debounce = Number(process.env['JERRY_QUALITY_DEBOUNCE_MS']);
   const quality = new QualityScheduler({ store, git: store.gitReader, ...(Number.isInteger(debounce) && debounce >= 0 && debounce <= 60_000 ? { debounceMs: debounce } : {}) });
   const createApp = (): FastifyInstance =>
@@ -157,7 +157,7 @@ async function main(): Promise<void> {
   process.on('exit', cleanUp);
 }
 
-/** Loopback only, never 0.0.0.0 (spec §18.1). */
+/** Loopback only, never 0.0.0.0. */
 async function listen(app: FastifyInstance, port: number): Promise<number> {
   await app.listen({ host: '127.0.0.1', port });
   const address = app.server.address();

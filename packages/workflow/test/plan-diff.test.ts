@@ -26,7 +26,7 @@ const doc = (overrides: Partial<PlanDocument> = {}): PlanDocument => ({
 
 const version = (number: number, scope: string[], document?: PlanDocument) => ({ version: number, scope, ...(document === undefined ? {} : { document }) });
 
-describe('plan version diff (ADR 0026)', () => {
+describe('plan version diff', () => {
   it('finds no difference between identical versions', () => {
     const diff = diffPlans(version(1, ['src/**'], doc()), version(2, ['src/**'], doc()));
     expect(diff).toMatchObject({ from: 1, to: 2, document: 'unchanged', sections: [], scope: { added: [], removed: [] } });

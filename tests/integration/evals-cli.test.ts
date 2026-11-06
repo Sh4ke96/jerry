@@ -8,7 +8,7 @@ import { api, ROOT, startCore, tempDir, type RunningCore } from '../helpers/harn
 const CLI = path.join(ROOT, 'dist', 'cli', 'jerry.mjs');
 const FAKE_CLAUDE = path.join(ROOT, 'scripts', 'fake-claude.mjs');
 
-/** ADR 0039–0040: jerry eval run records runs in Core, compares with the baseline, blocks on a critical regression. */
+/** jerry eval run records runs in Core, compares with the baseline, blocks on a critical regression. */
 describe('jerry eval (CLI + Core, fake claude)', () => {
   const base = tempDir('eval-cli');
   const home = path.join(base, 'home');

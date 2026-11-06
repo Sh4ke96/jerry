@@ -1,5 +1,7 @@
+import { EMOJI } from '@jerry/contracts/emoji';
 import { computed, defineComponent, ref } from 'vue';
 import { Badge, toneOf } from '../components/Badge';
+import { resultEmoji } from '../components/Emoji';
 import { eventReason, eventTarget, formatTime, shortPath } from '../format';
 import { state } from '../state';
 
@@ -62,8 +64,16 @@ export const Timeline = defineComponent({
                       <td class="nowrap">{event.eventType}</td>
                       <td class="nowrap">{shortPath(event.toolName ?? event.agentType ?? '', 40)}</td>
                       <td class="nowrap">
-                        {event.verdict !== null && <Badge tone={toneOf(event.verdict)} title={event.ruleId ?? undefined}>{event.verdict}</Badge>}
-                        {event.spooled && <Badge title="Recorded while Core was down">spooled</Badge>}
+                        {event.verdict !== null && (
+                          <Badge tone={toneOf(event.verdict)} title={event.ruleId ?? undefined} emoji={resultEmoji(event.verdict)}>
+                            {event.verdict}
+                          </Badge>
+                        )}
+                        {event.spooled && (
+                          <Badge title="Recorded while Core was down" emoji={EMOJI.waiting}>
+                            spooled
+                          </Badge>
+                        )}
                       </td>
                       <td class="target">
                         <code>{shortPath(eventTarget(event), 90)}</code>

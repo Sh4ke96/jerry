@@ -1,4 +1,4 @@
-// Builds a versioned JERRY release package (ADR 0043):
+// Builds a versioned JERRY release package:
 //   dist/release/jerry-<version>/        cli, core (with dashboard), plugin, evals, manifest.json, SHA256SUMS, RELEASE-NOTES.md
 //   dist/release/jerry-<version>.tar.gz  the same, as one archive, with its .sha256 next to it
 // Usage: node scripts/release.mjs [--skip-build]
@@ -40,28 +40,29 @@ for (const part of ['cli', 'core', 'plugin', 'evals']) {
   fs.cpSync(source, path.join(stage, part), { recursive: true, filter: (file) => !file.endsWith('.map') && !file.includes(`${path.sep}results${path.sep}`) });
 }
 
-// Release notes: the milestones the roadmap marks as done.
-const roadmap = fs.readFileSync(path.join(root, 'docs', 'roadmap.md'), 'utf8');
-const done = (/## Done\n([\s\S]*?)\n## /.exec(roadmap)?.[1] ?? '').split('\n').filter((line) => line.startsWith('- ')).map((line) => line.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1'));
 fs.writeFileSync(
   path.join(stage, 'RELEASE-NOTES.md'),
   [
-    `# JERRY ${version}`,
+    `# 🛡️ JERRY ${version}`,
     '',
     `Built ${new Date().toISOString().slice(0, 10)}. Requires Node.js 22.13 or newer and Claude Code.`,
     '',
-    '## Included milestones',
+    '## 📦 What is inside',
     '',
-    ...done,
+    '- `cli/`: the `jerry` command line.',
+    '- `core/`: JERRY Core, the local service on 127.0.0.1, with the dashboard.',
+    '- `plugin/`: the Claude Code plugin (hooks, MCP server, skills, agents).',
+    '- `evals/`: the golden eval cases.',
+    '- `manifest.json` and `SHA256SUMS`: a checksum for every file.',
     '',
-    '## Install or update',
+    '## ⬆️ Install or update',
     '',
     '1. Unpack the archive anywhere (not inside a project repository).',
     '2. Check it: compare SHA256SUMS with the files (or the archive with its .sha256).',
     `3. Run \`node ${name}/cli/jerry.mjs install\`, then restart Claude Code sessions and Core (\`jerry core stop\`, \`jerry core start\`).`,
     '   Your JERRY data stays in JERRY_HOME; the database is backed up before every migration.',
     '',
-    '## Roll back',
+    '## ↩️ Roll back',
     '',
     'Run `install` from the previous version\'s package. Data is kept; a newer database is still readable by older Cores',
     'for the tables they know. If needed, restore a pre-migration backup with `jerry db restore` (interactive).',

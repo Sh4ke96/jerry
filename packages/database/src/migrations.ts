@@ -121,14 +121,14 @@ export const MIGRATIONS: Readonly<Record<string, Migration>> = {
 
   '0003_plan_documents': {
     async up(db: Kysely<unknown>): Promise<void> {
-      // The full plan (spec §7.2) when Claude submitted one; NULL for scope-only plans.
+      // The full plan when Claude submitted one; NULL for scope-only plans.
       await db.schema.alterTable('plans').addColumn('document_json', 'text').execute();
     },
   },
 
   '0004_workflow': {
     async up(db: Kysely<unknown>): Promise<void> {
-      // Task state (spec §7.1); Core changes it only through the workflow transition table.
+      // Task state; Core changes it only through the workflow transition table.
       await db.schema
         .alterTable('tasks')
         .addColumn('state', 'text', (column) => column.notNull().defaultTo('WAIT_PLAN_APPROVAL'))
@@ -173,7 +173,7 @@ export const MIGRATIONS: Readonly<Record<string, Migration>> = {
       await db.schema.alterTable('sessions').addColumn('ended_at', 'text').execute();
       await db.schema.alterTable('sessions').addColumn('end_reason', 'text').execute();
 
-      // Which session worked on which task (ADR 0013). No foreign key to sessions: retention removes
+      // Which session worked on which task. No foreign key to sessions: retention removes
       // old sessions, while the task keeps the record of who worked on it.
       await db.schema
         .createTable('session_tasks')
@@ -204,7 +204,7 @@ export const MIGRATIONS: Readonly<Record<string, Migration>> = {
   '0006_implementation_reports': {
     async up(db: Kysely<unknown>): Promise<void> {
       // Every report version is kept; the user's acceptance binds to (task_id, version, content_hash)
-      // through the approvals table, stage IMPLEMENTATION (ADR 0014).
+      // through the approvals table, stage IMPLEMENTATION.
       await db.schema
         .createTable('implementation_reports')
         .addColumn('task_id', 'text', (column) => column.notNull().references('tasks.task_id'))
@@ -223,7 +223,7 @@ export const MIGRATIONS: Readonly<Record<string, Migration>> = {
 
   '0007_completion_checks': {
     async up(db: Kysely<unknown>): Promise<void> {
-      // Every run of Core's final checks (ADR 0016): DONE is set only when one passed.
+      // Every run of Core's final checks: DONE is set only when one passed.
       await db.schema
         .createTable('task_completion_checks')
         .addColumn('id', 'integer', (column) => column.primaryKey().autoIncrement())
@@ -240,7 +240,7 @@ export const MIGRATIONS: Readonly<Record<string, Migration>> = {
 
   '0008_git_snapshots': {
     async up(db: Kysely<unknown>): Promise<void> {
-      // Read-only Git baselines (ADR 0017): at plan approval, report and checkpoint. Paths and
+      // Read-only Git baselines: at plan approval, report and checkpoint. Paths and
       // content hashes only, never file contents; remote URLs without credentials.
       await db.schema
         .createTable('git_snapshots')
@@ -266,7 +266,7 @@ export const MIGRATIONS: Readonly<Record<string, Migration>> = {
 
   '0009_project_profiles': {
     async up(db: Kysely<unknown>): Promise<void> {
-      // One profile per repository (ADR 0020): the latest scan plus the fingerprints that tell when
+      // One profile per repository: the latest scan plus the fingerprints that tell when
       // it is stale. Paths, titles and hashes only.
       await db.schema
         .createTable('project_profiles')
@@ -282,7 +282,7 @@ export const MIGRATIONS: Readonly<Record<string, Migration>> = {
 
   '0010_analysis': {
     async up(db: Kysely<unknown>): Promise<void> {
-      // Subagent runs seen through SubagentStart/SubagentStop, and analysts' reports (ADR 0023).
+      // Subagent runs seen through SubagentStart/SubagentStop, and analysts' reports.
       await db.schema
         .createTable('agent_runs')
         .addColumn('agent_id', 'text', (column) => column.primaryKey())
@@ -312,14 +312,14 @@ export const MIGRATIONS: Readonly<Record<string, Migration>> = {
 
   '0011_task_goal': {
     async up(db: Kysely<unknown>): Promise<void> {
-      // The goal of a task taken in before its plan (ADR 0024); null for tasks that began with a plan.
+      // The goal of a task taken in before its plan; null for tasks that began with a plan.
       await db.schema.alterTable('tasks').addColumn('goal', 'text').execute();
     },
   },
 
   '0012_findings': {
     async up(db: Kysely<unknown>): Promise<void> {
-      // Quality findings with their status history, and the check batches that produced them (ADR 0027).
+      // Quality findings with their status history, and the check batches that produced them.
       // Evidence holds the offending line only, never whole files.
       await db.schema
         .createTable('findings')
@@ -384,7 +384,7 @@ export const MIGRATIONS: Readonly<Record<string, Migration>> = {
 
   '0013_test_runs': {
     async up(db: Kysely<unknown>): Promise<void> {
-      // Test commands Claude ran and how they ended (ADR 0030): the command as recorded (redacted),
+      // Test commands Claude ran and how they ended: the command as recorded (redacted),
       // the result and the runner's one-line totals; never the output itself.
       await db.schema
         .createTable('test_runs')
@@ -406,7 +406,7 @@ export const MIGRATIONS: Readonly<Record<string, Migration>> = {
 
   '0014_implementer_assignments': {
     async up(db: Kysely<unknown>): Promise<void> {
-      // Up to three implementers per task with disjoint files (ADR 0031); a new assignment set
+      // Up to three implementers per task with disjoint files; a new assignment set
       // releases the previous one.
       await db.schema
         .createTable('implementer_assignments')
@@ -426,7 +426,7 @@ export const MIGRATIONS: Readonly<Record<string, Migration>> = {
 
   '0015_reviews': {
     async up(db: Kysely<unknown>): Promise<void> {
-      // Independent review rounds (ADR 0032–0035): what each round had to cover, the reviewers'
+      // Independent review rounds: what each round had to cover, the reviewers'
       // submissions, which findings each reviewer reported, the fix plan and the outcome.
       await db.schema
         .createTable('review_rounds')
@@ -479,8 +479,8 @@ export const MIGRATIONS: Readonly<Record<string, Migration>> = {
 
   '0016_evals': {
     async up(db: Kysely<unknown>): Promise<void> {
-      // Eval runs, the baseline history and human labels for rubric calibration (ADR 0039). Kept in
-      // JERRY's database, outside any project (spec §13.5).
+      // Eval runs, the baseline history and human labels for rubric calibration. Kept in
+      // JERRY's database, outside any project.
       await db.schema
         .createTable('eval_runs')
         .addColumn('id', 'integer', (column) => column.primaryKey().autoIncrement())
@@ -517,7 +517,7 @@ export const MIGRATIONS: Readonly<Record<string, Migration>> = {
 
   '0017_artifact_decisions': {
     async up(db: Kysely<unknown>): Promise<void> {
-      // The user's choice about an Artifact for a task (ADR 0042): created by Claude (link only;
+      // The user's choice about an Artifact for a task: created by Claude (link only;
       // the Artifact itself is Claude's) or declined. The latest decision of a task counts.
       await db.schema
         .createTable('artifact_decisions')

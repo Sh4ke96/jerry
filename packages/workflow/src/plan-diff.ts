@@ -1,7 +1,7 @@
 import type { Plan, PlanDocument } from '@jerry/contracts';
 
 /**
- * What changed between two versions of a plan (ADR 0026), section by section, so the user reviews
+ * What changed between two versions of a plan, section by section, so the user reviews
  * a revision instead of re-reading the whole plan. Pure and browser-safe: the dashboard and the CLI
  * compute it from the stored versions.
  */

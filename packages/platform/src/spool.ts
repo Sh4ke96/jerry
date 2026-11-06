@@ -10,7 +10,7 @@ export const SPOOL_LIMIT = 5000;
 export type SpoolResult = 'spooled' | 'paused' | 'full';
 
 /**
- * Keeps an event while Core is unreachable (spec §11.5). One file per event, written atomically,
+ * Keeps an event while Core is unreachable. One file per event, written atomically,
  * so concurrent hook processes never interleave. Nothing is kept while the user has paused JERRY
  * with "jerry core stop".
  */

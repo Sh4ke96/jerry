@@ -1,8 +1,10 @@
 import type { ArtifactDecision, PlanDrift, TaskSummary, WorkflowTransition } from '@jerry/contracts';
+import { EMOJI, STATE_EMOJI } from '@jerry/contracts/emoji';
 import { availableEvents, diffPlans, STATE_LABELS, WORK_STATES, type PlanDiff } from '@jerry/workflow';
 import { defineComponent, onMounted, reactive, ref } from 'vue';
 import { api } from '../api';
 import { Badge } from '../components/Badge';
+import { Emoji, resultEmoji } from '../components/Emoji';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { AnalysisReports } from '../components/AnalysisReports';
 import { FindingsPanel } from '../components/Findings';
@@ -16,7 +18,7 @@ import { ReviewPanel } from '../components/Review';
 import { formatTime, isIntake, isOpen, stateTone } from '../format';
 import { handleError, perform, state } from '../state';
 
-/** States in which the task card shows the independent review (ADR 0032). */
+/** States in which the task card shows the independent review. */
 const REVIEW_STATES: ReadonlySet<string> = new Set(['CODE_REVIEW', 'REVIEW_REPORT', 'WAIT_REVIEW_FIX_APPROVAL', 'FIX_IMPLEMENTATION', 'REVERIFICATION', 'FINAL_REPORT']);
 
 /** Decisions that need the task ID typed, like their CLI prompts. Pause and resume are one click. */
@@ -83,13 +85,13 @@ export const Tasks = defineComponent({
     const busy = ref(false);
     /** Loaded on demand; null while loading. */
     const histories = reactive<Record<string, WorkflowTransition[] | null>>({});
-    /** Open plan comparisons: the current version against the one before (ADR 0026). */
+    /** Open plan comparisons: the current version against the one before. */
     const diffs = reactive<Record<string, PlanDiff | null>>({});
-    /** Open final reports (ADR 0041) and the Artifact decisions (ADR 0042). */
+    /** Open final reports and the Artifact decisions. */
     const finalReports = reactive<Record<string, boolean>>({});
     const artifacts = ref<ArtifactDecision[]>([]);
     onMounted(() => void api.artifacts().then((list) => (artifacts.value = list), handleError));
-    /** Open drift views (ADR 0031), loaded on demand: Git is read for them. */
+    /** Open drift views, loaded on demand: Git is read for them. */
     const drifts = reactive<Record<string, PlanDrift | null>>({});
     const toggleDrift = async (taskId: string): Promise<void> => {
       if (drifts[taskId] !== undefined) {
@@ -272,6 +274,7 @@ export const Tasks = defineComponent({
         <ol class="history">
           {steps.map((step, index) => (
             <li key={index}>
+              <Emoji symbol={STATE_EMOJI[step.to]} />
               <span class="muted">{formatTime(step.at)}</span> {step.from === null ? 'created' : STATE_LABELS[step.from]} → <strong>{STATE_LABELS[step.to]}</strong>{' '}
               <span class="muted">
                 {step.event} by {step.actor}
@@ -292,13 +295,15 @@ export const Tasks = defineComponent({
             </h2>
             <p class="muted">{task.repoRoot}</p>
           </div>
-          <Badge tone={stateTone(task.state)}>{STATE_LABELS[task.state]}</Badge>
+          <Badge tone={stateTone(task.state)} emoji={STATE_EMOJI[task.state]}>
+            {STATE_LABELS[task.state]}
+          </Badge>
         </header>
         <dl class="facts">
           {task.goal !== undefined && [<dt key="goal-label">Goal</dt>, <dd key="goal-value">{task.goal}</dd>]}
           <dt>Plan</dt>
           <dd>{isIntake(task) ? `none yet: analysis first · taken in ${formatTime(task.plan.createdAt)}` : `version ${task.plan.version} · created ${formatTime(task.plan.createdAt)}`}</dd>
-          {/* An intake's scope is only the area to analyse; nothing is approved yet (ADR 0024). */}
+          {/* An intake's scope is only the area to analyse; nothing is approved yet. */}
           <dt>{isIntake(task) ? 'Analysis focus' : 'Scope'}</dt>
           <dd class="chips">
             {task.plan.scope.map((glob) => (
@@ -323,7 +328,9 @@ export const Tasks = defineComponent({
           {task.lastTestRun !== null && [
             <dt key="tests-label">Last tests</dt>,
             <dd key="tests-value">
-              <Badge tone={task.lastTestRun.result === 'PASS' ? 'pass' : task.lastTestRun.result === 'FAIL' ? 'deny' : 'warn'}>{task.lastTestRun.result}</Badge> <code>{task.lastTestRun.command}</code>{' '}
+              <Badge tone={task.lastTestRun.result === 'PASS' ? 'pass' : task.lastTestRun.result === 'FAIL' ? 'deny' : 'warn'} emoji={resultEmoji(task.lastTestRun.result)}>
+                {task.lastTestRun.result}
+              </Badge> <code>{task.lastTestRun.command}</code>{' '}
               <span class="muted small">
                 {task.lastTestRun.summary ?? (task.lastTestRun.exitCode === null ? '' : `exit ${task.lastTestRun.exitCode}`)} · {formatTime(task.lastTestRun.at)} · run by Claude, seen by JERRY
               </span>
@@ -341,6 +348,7 @@ export const Tasks = defineComponent({
         {task.lastCheckpoint !== null && (
           <section class="checkpoint">
             <h3>
+              <Emoji symbol={EMOJI.next} />
               Last checkpoint <span class="muted small">{formatTime(task.lastCheckpoint.at)} · written by Claude</span>
             </h3>
             <p>{task.lastCheckpoint.summary}</p>
@@ -362,7 +370,10 @@ export const Tasks = defineComponent({
             <ImplementationReportView report={task.lastReport} />
           ) : (
             <details class="plan-section">
-              <summary>Implementation report v{task.lastReport.version}</summary>
+              <summary>
+                <Emoji symbol={EMOJI.report} />
+                Implementation report v{task.lastReport.version}
+              </summary>
               <ImplementationReportView report={task.lastReport} />
             </details>
           ))}
@@ -372,13 +383,17 @@ export const Tasks = defineComponent({
             <PlanDocumentView plan={task.plan.document} />
           ) : (
             <details class="plan-section">
-              <summary>Approved plan v{task.plan.version}</summary>
+              <summary>
+                <Emoji symbol={EMOJI.plan} />
+                Approved plan v{task.plan.version}
+              </summary>
               <PlanDocumentView plan={task.plan.document} />
             </details>
           ))}
         {task.finalCheck !== null && (
           <section class={['final-check', task.finalCheck.passed ? 'final-check--passed' : 'final-check--failed']}>
             <h3>
+              <Emoji symbol={task.finalCheck.passed ? EMOJI.done : EMOJI.fail} />
               {task.finalCheck.passed ? 'Completed by JERRY' : 'JERRY did not complete the task'}{' '}
               <span class="muted small">
                 final checks {formatTime(task.finalCheck.at)}
@@ -388,7 +403,10 @@ export const Tasks = defineComponent({
             <ul class="list">
               {task.finalCheck.conditions.map((condition) => (
                 <li key={condition.id}>
-                  <Badge tone={condition.passed ? 'pass' : condition.blocking ? 'deny' : 'warn'}>{condition.passed ? 'ok' : condition.blocking ? 'blocks' : 'note'}</Badge> {condition.detail}
+                  <Badge tone={condition.passed ? 'pass' : condition.blocking ? 'deny' : 'warn'} emoji={resultEmoji(condition.passed ? 'PASS' : condition.blocking ? 'FAIL' : 'WARN')}>
+                    {condition.passed ? 'ok' : condition.blocking ? 'blocks' : 'note'}
+                  </Badge>{' '}
+                  {condition.detail}
                 </li>
               ))}
             </ul>
@@ -413,7 +431,10 @@ export const Tasks = defineComponent({
         <div class="stack">
           {state.tasks.length === 0 && (
             <section class="panel">
-              <h2>No tasks yet</h2>
+              <h2>
+                <Emoji symbol={EMOJI.task} />
+                No tasks yet
+              </h2>
               <p class="muted">
                 Ask Claude for a plan with <code>/jerry:plan</code>, or create one with <code>jerry task create --repo &lt;path&gt; --title &lt;text&gt; --scope &lt;glob&gt;</code>.
               </p>
@@ -423,7 +444,10 @@ export const Tasks = defineComponent({
           <ArtifactsList decisions={artifacts.value} />
           {closed.length > 0 && (
             <details class="panel">
-              <summary>Finished and cancelled ({closed.length})</summary>
+              <summary>
+                <Emoji symbol={EMOJI.done} />
+                Finished and cancelled ({closed.length})
+              </summary>
               <div class="stack">{closed.map(card)}</div>
             </details>
           )}

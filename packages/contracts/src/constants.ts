@@ -1,6 +1,6 @@
 /**
  * Plain constants, free of any runtime dependency. The hook bridge runs on every guarded tool call
- * and imports only this module from the contracts, so it starts without loading Zod (ADR 0010).
+ * and imports only this module from the contracts, so it starts without loading Zod.
  * The Zod schemas in index.ts are built from these same lists, so there is one source of truth.
  */
 
@@ -23,8 +23,7 @@ export const HOOK_EVENT_TYPES = [
 export const GATE_VERDICTS = ['PASS', 'WARN', 'DENY'] as const;
 
 /**
- * Task workflow states (spec §7.1), plus PAUSED and CANCELLED. The review states exist from the start
- * so later milestones only add transitions.
+ * Task workflow states, plus PAUSED and CANCELLED.
  */
 export const WORKFLOW_STATES = [
   'DISCOVERY',

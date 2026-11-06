@@ -1,5 +1,5 @@
 /**
- * Detectors (ADR 0018): what a repository is made of, from its file list and a few small manifest
+ * Detectors: what a repository is made of, from its file list and a few small manifest
  * files. Pure functions: they read through the given reader and never run anything. Commands are
  * reported as the project defines them, for Claude and the user to run.
  */

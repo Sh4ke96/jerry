@@ -23,9 +23,10 @@ import {
 } from '@jerry/platform';
 import { claudeVersion, listInstalledPlugins, listMarketplaceNames, MARKETPLACE_NAME, PLUGIN_ID, runClaudeOrThrow } from './claude-cli.js';
 import { getCoreStatus } from './core-commands.js';
+import { guardMark, mark, resultMark, type EmojiName, type GuardState } from './emoji.js';
 
 /**
- * Spec §20: everything that decides whether JERRY actually guards the sessions, grouped by area.
+ * Everything that decides whether JERRY actually guards the sessions, grouped by area.
  * Read-only: it never repairs anything, it says what to run.
  */
 
@@ -37,9 +38,9 @@ interface Check {
   detail: string;
 }
 
-/** The hook config uses `onFailure` (Claude Code 2.1.295+), see ADR 0001 and ADR 0003. */
+/** The hook config uses `onFailure` (Claude Code 2.1.295+). */
 const MIN_CLAUDE_VERSION = [2, 1, 295] as const;
-/** node:sqlite without a flag (ADR 0005); Core is started with the `node` the hooks find on PATH. */
+/** node:sqlite without a flag; Core is started with the `node` the hooks find on PATH. */
 const MIN_NODE_VERSION = [22, 13, 0] as const;
 const DISK_WARN_MIB = 1024;
 /** Names JERRY must never create inside a project. */
@@ -47,6 +48,8 @@ const FOOTPRINT_NAMES = ['.jerry', '.harness', '.jerry.json', 'jerry.config.json
 /** The plugin payload and Core built next to this CLI, to detect an installation that is out of date. */
 const SIBLING_PLUGIN = fileURLToPath(new URL('../plugin/', import.meta.url));
 const SIBLING_CORE = fileURLToPath(new URL('../core/core.mjs', import.meta.url));
+/** One emoji per section heading of the report. */
+const SECTION_EMOJI: Record<string, EmojiName> = { System: 'info', 'Claude Code': 'agent', 'JERRY Core': 'jerry', Data: 'info', Project: 'repository' };
 
 export async function doctor(): Promise<void> {
   const checks: Check[] = [];
@@ -160,23 +163,24 @@ export async function doctor(): Promise<void> {
   let printed = '';
   for (const check of checks) {
     if (check.section !== printed) {
-      console.log(`${printed === '' ? '' : '\n'}${check.section}`);
+      console.log(`${printed === '' ? '' : '\n'}${mark(SECTION_EMOJI[check.section] ?? 'info', check.section)}`);
       printed = check.section;
     }
-    console.log(`  ${check.status.padEnd(4)}  ${check.name.padEnd(18)} ${check.detail}`);
+    console.log(`  ${resultMark(check.status, check.status.padEnd(4))}  ${check.name.padEnd(18)} ${check.detail}`);
   }
   const pluginActive = pluginRoot !== null && !checks.some((check) => check.section === 'Claude Code' && check.status === 'FAIL');
+  const guardState: GuardState = pluginActive && coreHealthy ? 'GUARDED' : pluginActive ? 'DEGRADED' : 'UNGUARDED';
   const guard = pluginActive && coreHealthy
     ? 'GUARDED (monitoring on, hard rules enforced)'
     : pluginActive
       ? 'DEGRADED (Core down: monitoring off, hard rules still enforced)'
       : 'UNGUARDED (plugin not active: nothing is monitored or enforced)';
-  console.log(`\nGuard status: ${guard}`);
+  console.log(`\n${guardMark(guardState, `Guard status: ${guard}`)}`);
   if (checks.some((check) => check.status === 'FAIL')) process.exitCode = 1;
 }
 
 /** Version, plugin state, hook files, marketplace and whether the installed plugin matches this build. */
-/** Files of the installed plugin: hooks, MCP server and one subagent definition per role (ADR 0022). */
+/** Files of the installed plugin: hooks, MCP server and one subagent definition per role. */
 const PLUGIN_FILES: readonly string[] = ['hooks/hooks.json', 'hooks/bridge.mjs', 'mcp/server.mjs', '.mcp.json', ...AGENT_ROLES.map((role) => `agents/${role.id}.md`)];
 
 function checkClaude(claude: ClaudeBinary, add: (name: string, status: CheckStatus, detail: string) => void): string | null {

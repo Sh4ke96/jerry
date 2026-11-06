@@ -43,6 +43,7 @@ import {
   type TaskDetail,
   type TaskSummary,
 } from '@jerry/contracts';
+import { EMOJI, SEVERITY_EMOJI, decorate } from '@jerry/contracts/emoji';
 import { absolutePath, approvedPlansForRepo, comparablePath, evaluateGate, gradePlan, isRepoExcluded, relativeInside } from '@jerry/policy-engine';
 import { isTerminal, WORK_STATES } from '@jerry/workflow';
 import { buildEventEnvelope } from '@jerry/trace-engine';
@@ -92,9 +93,9 @@ export interface CoreAppOptions {
   /** Short hash of the running core.mjs (see buildHash). */
   build?: string;
   onShutdownRequested: () => void;
-  /** Project profiles (ADR 0020); tests may pass one with a fake PATH lookup. */
+  /** Project profiles; tests may pass one with a fake PATH lookup. */
   profiles?: ProfileService;
-  /** Continuous quality checks (ADR 0029); tests may pass one with a short debounce. */
+  /** Continuous quality checks; tests may pass one with a short debounce. */
   quality?: QualityScheduler;
 }
 
@@ -288,9 +289,9 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     const relative =
       typeof target === 'string' && decision.repoRoot !== null ? relativeInside(absolutePath(realPathOfNearestExisting(absolutePath(target, gateRequest.cwd, process.platform)), gateRequest.cwd, process.platform), decision.repoRoot, process.platform) : null;
     if (decision.ruleId === 'monitor.user-uncommitted-file' && decision.taskId !== null && relative !== null) store.markUserFileWarned(decision.taskId, relative);
-    // Who edits which file (ADR 0031): concurrent writes, and an implementer's first edit binds it to its assignment.
+    // Who edits which file: concurrent writes, and an implementer's first edit binds it to its assignment.
     if (decision.verdict !== 'DENY' && decision.taskId !== null && relative !== null) await store.noteWrite(decision.taskId, relative, gateRequest.agentId ?? null, now);
-    // New quality findings of the work this session does, each told once (ADR 0029).
+    // New quality findings of the work this session does, each told once.
     if (decision.verdict !== 'DENY') {
       const feedback = await qualityFeedback(store, gateRequest.sessionId, now);
       if (feedback !== null) return { ...decision, feedback };
@@ -302,9 +303,9 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     const body = parse(eventIngestRequestSchema, request.body);
     const events = body.events.map((event) => withRepoRoot(evaluatePending(event, evaluate)));
     const inserted = await store.recordEvents(events, new Date(), false);
-    // Edits feed the continuous quality checks (ADR 0029); they run later, after a quiet period.
+    // Edits feed the continuous quality checks; they run later, after a quiet period.
     for (const event of events) quality.observe(event);
-    // How Claude's test commands ended (ADR 0030); never their output.
+    // How Claude's test commands ended; never their output.
     for (const event of events) await collectTestRun(store, event);
     return reply.code(202).send({ accepted: body.events.length, inserted });
   });
@@ -383,7 +384,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
 
   app.get('/api/v1/repositories/exclusions', { config: TOKEN_OR_SESSION }, async () => store.snapshot().excludedRepos);
 
-  /** The project profile of the repository containing a path (ADR 0020); rescanned when stale. */
+  /** The project profile of the repository containing a path; rescanned when stale. */
   app.get('/api/v1/repositories/profile', { config: TOKEN_OR_SESSION }, async (request) => {
     const query = request.query as Record<string, unknown>;
     const target = query['path'];
@@ -420,7 +421,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     return summaries;
   });
 
-  /** Links between known repositories from their cached profiles (ADR 0021). */
+  /** Links between known repositories from their cached profiles. */
   app.get('/api/v1/workspace/graph', { config: TOKEN_OR_SESSION }, async () => profiles.graph(await store.knownRepositories()));
 
   app.post('/api/v1/repositories/exclusions', { config: TOKEN_OR_SESSION }, async (request) => {
@@ -470,7 +471,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
       .send(await store.createTask({ repoRoot, title: body.title, scope: body.scope, ...(body.document === undefined ? {} : { document: body.document }), submittedBy: body.submittedBy, sessionId }, new Date()));
   });
 
-  /** Task intake before a plan (ADR 0024): DISCOVERY with the area to analyse; nothing is approved. */
+  /** Task intake before a plan: DISCOVERY with the area to analyse; nothing is approved. */
   app.post('/api/v1/tasks/intake', { config: TOKEN_ONLY }, async (request, reply) => {
     const body = parse(taskIntakeRequestSchema, request.body);
     const repoRoot = findGitRoot(realPathOfNearestExisting(body.repoPath));
@@ -482,7 +483,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   app.post('/api/v1/tasks/:taskId/plan', { config: TOKEN_ONLY }, async (request) => {
     const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId);
     const body = parse(planReviseRequestSchema, request.body);
-    // A plan may cite only this task's analysis reports (ADR 0024).
+    // A plan may cite only this task's analysis reports.
     const cited = body.document?.analysis?.reports ?? [];
     if (cited.length > 0) {
       const known = new Set((await store.analysesOf(taskId)).map((record) => record.id));
@@ -492,7 +493,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     return store.revisePlan(taskId, body.scope, new Date(), body.document, body.submittedBy, await store.resolveOrigin(body.origin));
   });
 
-  /** An analyst's evidence-backed report (through MCP, ADR 0023); Core checks its citations. */
+  /** An analyst's evidence-backed report (through MCP); Core checks its citations. */
   app.post('/api/v1/tasks/:taskId/analyses', { config: TOKEN_ONLY }, async (request, reply) => {
     const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId);
     const body = parse(analysisReportRequestSchema, request.body);
@@ -525,7 +526,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     return store.listTransitions(taskId);
   });
 
-  /** Quality findings (ADR 0027), newest first: by task, repository, status or file. */
+  /** Quality findings, newest first: by task, repository, status or file. */
   app.get('/api/v1/findings', { config: TOKEN_OR_SESSION }, async (request) => {
     const query = parse(findingsQuerySchema, request.query);
     const repoRoot = query.repoPath === undefined ? undefined : (findGitRoot(realPathOfNearestExisting(query.repoPath)) ?? undefined);
@@ -553,14 +554,14 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     return store.setFindingStatus(findingId, body.status, body.reason, new Date(), fromDashboard ? 'dashboard' : 'cli');
   });
 
-  /** Up to three implementers with disjoint files (ADR 0031); Claude's orchestrator records them through MCP. */
+  /** Up to three implementers with disjoint files; Claude's orchestrator records them through MCP. */
   app.post('/api/v1/tasks/:taskId/assignments', { config: TOKEN_ONLY }, async (request, reply) => {
     const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId.toUpperCase());
     const body = parse(assignmentRequestSchema, request.body);
     return reply.code(201).send(await store.assignWork(taskId, body.assignments, await store.resolveOrigin(body.origin), new Date()));
   });
 
-  // --- Final report and the optional Artifact (ADR 0041–0042) ------------------------------------
+  // --- Final report and the optional Artifact ----------------------------------------------------
 
   /** The final report, assembled from stored facts; a draft until the task is DONE. */
   app.get('/api/v1/tasks/:taskId/final-report', { config: TOKEN_OR_SESSION }, async (request) => {
@@ -570,7 +571,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     return buildFinalReport(store, task);
   });
 
-  /** The user's choice about an Artifact, recorded by the skill through MCP (ADR 0042). */
+  /** The user's choice about an Artifact, recorded by the skill through MCP. */
   app.post('/api/v1/tasks/:taskId/artifact', { config: TOKEN_ONLY }, async (request, reply) => {
     const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId.toUpperCase());
     const body = parse(artifactDecisionRequestSchema, request.body);
@@ -580,7 +581,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
 
   app.get('/api/v1/artifacts', { config: TOKEN_OR_SESSION }, async () => store.artifactDecisions());
 
-  // --- Evals (ADR 0036–0040) ---------------------------------------------------------------------
+  // --- Evals -------------------------------------------------------------------------------------
   const evals = new EvalStore(store.kysely);
   // The plugin this Core ships with (dist/plugin next to dist/core): what the evals measure.
   const ownFingerprint = (): JerryFingerprint | null => {
@@ -595,7 +596,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   app.get('/api/v1/evals/status', { config: TOKEN_OR_SESSION }, async () => evals.status(ownFingerprint()));
   app.get('/api/v1/evals/calibration', { config: TOKEN_OR_SESSION }, async () => evals.calibration());
 
-  /** The user's baseline choice: the dashboard also needs the run ID typed (ADR 0039). */
+  /** The user's baseline choice: the dashboard also needs the run ID typed. */
   app.post('/api/v1/evals/baseline', { config: TOKEN_OR_SESSION }, async (request) => {
     const body = parse(evalBaselineRequestSchema, request.body);
     if (request.client?.kind === 'session' && body.confirm?.trim().toUpperCase() !== body.runId.toUpperCase()) throw new HttpError(400, `Type ${body.runId} to confirm the new baseline`);
@@ -608,7 +609,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     return reply.code(201).send(await evals.calibration());
   });
 
-  // --- Independent review (ADR 0032–0035) -------------------------------------------------------
+  // --- Independent review -----------------------------------------------------------------------
   const taskParam = (request: { params: unknown }): string => parse(taskIdSchema, (request.params as { taskId: string }).taskId.toUpperCase());
 
   /** A reviewer's submission (through MCP); tied to its subagent run through the hook's record. */
@@ -644,14 +645,14 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     return store.skipReview(taskId, body.reason, new Date(), fromDashboard ? 'dashboard' : 'cli');
   });
 
-  /** The task's current implementer assignments (ADR 0031); cheap, no Git. */
+  /** The task's current implementer assignments; cheap, no Git. */
   app.get('/api/v1/tasks/:taskId/assignments', { config: TOKEN_OR_SESSION }, async (request) => {
     const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId.toUpperCase());
     if (!store.snapshot().tasks.some((candidate) => candidate.taskId === taskId)) throw new HttpError(404, `Unknown task ${taskId}`);
     return store.assignmentsOf(taskId);
   });
 
-  /** Where the work strays from the plan, the step layers and the assignments (ADR 0031). */
+  /** Where the work strays from the plan, the step layers and the assignments. */
   app.get('/api/v1/tasks/:taskId/drift', { config: TOKEN_OR_SESSION }, async (request) => {
     const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId.toUpperCase());
     const task = store.snapshot().tasks.find((candidate) => candidate.taskId === taskId);
@@ -659,7 +660,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     return store.planDrift(task);
   });
 
-  /** The tests that belong to the task's changes, and the command limited to them (ADR 0030). */
+  /** The tests that belong to the task's changes, and the command limited to them. */
   app.get('/api/v1/tasks/:taskId/targeted-tests', { config: TOKEN_OR_SESSION }, async (request) => {
     const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId.toUpperCase());
     const task = store.snapshot().tasks.find((candidate) => candidate.taskId === taskId);
@@ -667,7 +668,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     return targetedTestsFor(store, task);
   });
 
-  /** Every plan version, oldest first; the dashboard and CLI diff them (ADR 0026). */
+  /** Every plan version, oldest first; the dashboard and CLI diff them. */
   app.get('/api/v1/tasks/:taskId/plans', { config: TOKEN_OR_SESSION }, async (request) => {
     const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId);
     return store.planVersions(taskId);
@@ -727,8 +728,8 @@ function sameRepo(a: string, b: string): boolean {
 const NO_ACTIVITY = { activity: { sessionCount: 0, lastSessionId: null, lastActivityAt: null, lastSessionEndedAt: null }, lastCheckpoint: null };
 
 /**
- * Findings Claude has not heard about yet, for the tasks in implementation this session works on
- * (ADR 0029). Compact on purpose: it goes into Claude's context with a tool call.
+ * Findings Claude has not heard about yet, for the tasks in implementation this session works on.
+ * Compact on purpose: it goes into Claude's context with a tool call.
  */
 async function qualityFeedback(store: StateStore, sessionId: string, now: Date): Promise<string | null> {
   const working = new Set(store.snapshot().tasks.filter((task) => WORK_STATES.has(task.state)).map((task) => task.taskId));
@@ -736,11 +737,11 @@ async function qualityFeedback(store: StateStore, sessionId: string, now: Date):
   const lines: string[] = [];
   for (const taskId of tasks) {
     for (const finding of await store.takeFeedback(taskId, now)) {
-      lines.push(`- ${finding.findingId} ${finding.severity} ${finding.file}:${finding.lineStart} ${finding.title}: ${finding.evidence} → ${finding.suggestedFix}`);
+      lines.push(`- ${SEVERITY_EMOJI[finding.severity]} ${finding.findingId} ${finding.severity} ${finding.file}:${finding.lineStart} ${finding.title}: ${finding.evidence} → ${finding.suggestedFix}`);
     }
   }
   if (lines.length === 0) return null;
-  return [`JERRY quality: ${lines.length} new finding(s) in your changes (only changed lines are checked):`, ...lines, 'Fix them within the approved scope, or tell the user why not; jerry_list_findings lists all open ones. The user dismisses findings, not you.'].join('\n');
+  return [decorate(EMOJI.finding, `JERRY quality: ${lines.length} new finding(s) in your changes (only changed lines are checked):`), ...lines, 'Fix them within the approved scope, or tell the user why not; jerry_list_findings lists all open ones. The user dismisses findings, not you.'].join('\n');
 }
 
 async function summarize(store: StateStore, tasks: readonly Task[]): Promise<TaskSummary[]> {
@@ -761,7 +762,7 @@ async function summarize(store: StateStore, tasks: readonly Task[]): Promise<Tas
       reportDecision: report === null ? null : store.reportDecision(report),
       analyses,
       agentRuns,
-      // Informational (ADR 0025): it never blocks an approval.
+      // Informational: it never blocks an approval.
       planGrade: open ? gradePlan({ planVersion: task.plan.version, document: task.plan.document, analyses, agentRuns, caseInsensitive: process.platform === 'win32' }) : null,
       findings: findingCounts.get(task.taskId) ?? null,
       lastTestRun: testRuns.get(task.taskId) ?? null,
@@ -774,7 +775,7 @@ async function summarize(store: StateStore, tasks: readonly Task[]): Promise<Tas
 const MAX_OPEN_TASKS = 10;
 
 /**
- * What a starting session should know to resume work (ADR 0013): the repository's open tasks,
+ * What a starting session should know to resume work: the repository's open tasks,
  * the ones this session already worked on first (same ID after resume or compaction), then the
  * most recently active.
  */

@@ -1,24 +1,29 @@
 import type { ImplementationReportRecord } from '@jerry/contracts';
+import { EMOJI } from '@jerry/contracts/emoji';
 import { defineComponent, type PropType, type VNodeChild } from 'vue';
 import { formatTime } from '../format';
 import { Badge, type Tone } from './Badge';
+import { Emoji, resultEmoji } from './Emoji';
 
 const RESULT_TONE: Record<'PASS' | 'FAIL' | 'NOT_RUN', Tone> = { PASS: 'pass', FAIL: 'deny', NOT_RUN: 'warn' };
 const SEVERITY_TONE: Record<'low' | 'medium' | 'high' | 'critical', Tone> = { low: 'neutral', medium: 'warn', high: 'deny', critical: 'deny' };
 
-function section(title: string, content: VNodeChild, empty: boolean, open = false): VNodeChild {
+function section(title: string, content: VNodeChild, empty: boolean, open = false, emoji?: string): VNodeChild {
   if (empty) return null;
   return (
     <details class="plan-section" open={open}>
-      <summary>{title}</summary>
+      <summary>
+        {emoji !== undefined && <Emoji symbol={emoji} />}
+        {title}
+      </summary>
       <div class="plan-section__body">{content}</div>
     </details>
   );
 }
 
 /**
- * Claude's implementation report (spec §7.2 Phase 5) next to what JERRY recorded itself, so the
- * user judges the claims against the facts before accepting (ADR 0014).
+ * Claude's implementation report next to what JERRY recorded itself, so the user judges the
+ * claims against the facts before accepting.
  */
 export const ImplementationReportView = defineComponent({
   name: 'ImplementationReportView',
@@ -30,6 +35,7 @@ export const ImplementationReportView = defineComponent({
       return (
         <div class="plan report">
           <h3>
+            <Emoji symbol={EMOJI.report} />
             Implementation report v{props.report.version}{' '}
             <span class="muted small">
               for plan v{props.report.planVersion} · {formatTime(props.report.createdAt)} · written by {props.report.submittedBy === 'claude' ? 'Claude' : 'you'}
@@ -38,12 +44,16 @@ export const ImplementationReportView = defineComponent({
           <p class="plan__goal">{document.summary}</p>
 
           <section class={['evidence', evidence.unreportedEdits.length > 0 || evidence.deviationCount > 0 || problems.length > 0 ? 'evidence--attention' : '']}>
-            <h4>Recorded by JERRY since the plan approval</h4>
+            <h4>
+              <Emoji symbol={EMOJI.jerry} />
+              Recorded by JERRY since the plan approval
+            </h4>
             <p>
               {evidence.deviationCount} deviation(s) · {evidence.blockedCount} blocked · {evidence.observedEdits.length} file(s) edited with the file tools
             </p>
             {evidence.unreportedEdits.length > 0 && (
               <p class="attention">
+                <Emoji symbol={EMOJI.warning} />
                 Edited but not in the report:{' '}
                 {evidence.unreportedEdits.map((file) => (
                   <code class="chip" key={file}>
@@ -52,7 +62,12 @@ export const ImplementationReportView = defineComponent({
                 ))}
               </p>
             )}
-            {problems.length > 0 && <p class="attention">{problems.length} check(s) failed or did not run.</p>}
+            {problems.length > 0 && (
+              <p class="attention">
+                <Emoji symbol={EMOJI.warning} />
+                {problems.length} check(s) failed or did not run.
+              </p>
+            )}
             {evidence.deviations.length > 0 && (
               <ul class="list small">
                 {evidence.deviations.map((deviation, index) => (
@@ -65,11 +80,14 @@ export const ImplementationReportView = defineComponent({
             {evidence.quality !== undefined && (
               <div class="evidence__quality">
                 <p>
+                  <Emoji symbol={EMOJI.finding} />
                   Quality: {evidence.quality.openFindings} open finding(s)
                   {evidence.quality.lastTestRun !== null && (
                     <span>
                       {' '}
-                      · last tests JERRY saw: <Badge tone={evidence.quality.lastTestRun.result === 'PASS' ? 'pass' : 'deny'}>{evidence.quality.lastTestRun.result}</Badge> <code>{evidence.quality.lastTestRun.command}</code>
+                      · last tests JERRY saw: <Badge tone={evidence.quality.lastTestRun.result === 'PASS' ? 'pass' : 'deny'} emoji={resultEmoji(evidence.quality.lastTestRun.result)}>
+                        {evidence.quality.lastTestRun.result}
+                      </Badge> <code>{evidence.quality.lastTestRun.command}</code>
                     </span>
                   )}
                 </p>
@@ -90,13 +108,17 @@ export const ImplementationReportView = defineComponent({
             <ul class="list">
               {document.checks.map((check, index) => (
                 <li key={index}>
-                  <Badge tone={RESULT_TONE[check.result]}>{check.result}</Badge> <Badge>{check.kind}</Badge> <code>{check.command}</code>
+                  <Badge tone={RESULT_TONE[check.result]} emoji={resultEmoji(check.result)}>
+                    {check.result}
+                  </Badge>{' '}
+                  <Badge>{check.kind}</Badge> <code>{check.command}</code>
                   {check.details !== '' && <span class="muted"> · {check.details}</span>}
                 </li>
               ))}
             </ul>,
             false,
             true,
+            EMOJI.tests,
           )}
           {section(
             `Changes (${document.changes.length})`,
@@ -109,6 +131,7 @@ export const ImplementationReportView = defineComponent({
             </ul>,
             false,
             true,
+            EMOJI.implementation,
           )}
           {section(
             `Differences from the plan (${document.planDeviations.length})`,
@@ -121,6 +144,7 @@ export const ImplementationReportView = defineComponent({
             </ul>,
             document.planDeviations.length === 0,
             true,
+            EMOJI.plan,
           )}
           {section(
             `Risks and findings (${document.risks.length})`,
@@ -134,6 +158,7 @@ export const ImplementationReportView = defineComponent({
             </ul>,
             document.risks.length === 0,
             document.risks.some((risk) => risk.severity === 'high' || risk.severity === 'critical'),
+            EMOJI.warning,
           )}
           {section(
             `Manual QA (${document.qaScenarios.length})`,
@@ -162,6 +187,8 @@ export const ImplementationReportView = defineComponent({
               ))}
             </ul>,
             false,
+            false,
+            EMOJI.tests,
           )}
           {section(
             'Agents and skills',
@@ -179,6 +206,8 @@ export const ImplementationReportView = defineComponent({
               ))}
             </ul>,
             document.agents.length === 0 && document.skills.length === 0,
+            false,
+            EMOJI.agent,
           )}
           {section(
             'Proposed commits',
@@ -190,8 +219,10 @@ export const ImplementationReportView = defineComponent({
               ))}
             </ul>,
             false,
+            false,
+            EMOJI.next,
           )}
-          {section('Artifact', <p class="prewrap">{document.artifact}</p>, document.artifact === '')}
+          {section('Artifact', <p class="prewrap">{document.artifact}</p>, document.artifact === '', false, EMOJI.artifact)}
         </div>
       );
     };

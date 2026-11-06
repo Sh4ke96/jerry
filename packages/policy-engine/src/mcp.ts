@@ -1,7 +1,7 @@
 import type { GitAssessment } from './shell.js';
 
 /**
- * Hard rule for MCP tools (ADR 0003): MCP servers for Git hosting or Git itself (GitHub, GitLab,
+ * Hard rule for MCP tools: MCP servers for Git hosting or Git itself (GitHub, GitLab,
  * Bitbucket, Gitea, mcp-server-git, ...) can push, commit, branch and merge without any shell
  * command. Only those servers are inspected, so unrelated tools that happen to share a verb
  * (a payment "checkout", a document "merge") are never blocked. Issues, comments and reviews are

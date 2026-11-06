@@ -2,7 +2,7 @@ import path from 'node:path';
 import type { ReadFile } from './detectors.js';
 
 /**
- * Links between repositories (spec §14.1, ADR 0021): which repository depends on which, from
+ * Links between repositories: which repository depends on which, from
  * evidence in their manifests and code-generation configs. Read-only and heuristic; every edge
  * carries the evidence it came from.
  */

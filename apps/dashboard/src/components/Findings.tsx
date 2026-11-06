@@ -1,9 +1,11 @@
 import type { Finding, FindingSeverity, TaskSummary } from '@jerry/contracts';
+import { EMOJI, SEVERITY_EMOJI } from '@jerry/contracts/emoji';
 import { computed, defineComponent, onMounted, ref, watch, type PropType } from 'vue';
 import { api } from '../api';
 import { formatTime } from '../format';
 import { handleError, perform } from '../state';
 import { Badge, type Tone } from './Badge';
+import { Emoji } from './Emoji';
 import { ConfirmDialog } from './ConfirmDialog';
 
 const SEVERITY_TONE: Record<FindingSeverity, Tone> = { P1: 'deny', P2: 'deny', P3: 'warn', P4: 'neutral' };
@@ -13,7 +15,7 @@ const DECISION_LABEL: Record<Decision, string> = { OPEN: 'Reopen', ACCEPTED: 'Ac
 const STATUS_LABEL: Record<Finding['status'], string> = { OPEN: 'open', ACCEPTED: 'accepted', FIXED: 'fixed', WONT_FIX: "won't fix", FALSE_POSITIVE: 'false positive' };
 
 /**
- * A task's quality findings (ADR 0027): what JERRY found on the lines Claude changed. JERRY marks
+ * A task's quality findings: what JERRY found on the lines Claude changed. JERRY marks
  * findings FIXED itself; only the user accepts or dismisses one, with a reason.
  */
 export const FindingsPanel = defineComponent({
@@ -81,6 +83,7 @@ export const FindingsPanel = defineComponent({
       return (
         <details class="plan-section findings" open={serious > 0} onToggle={(event: Event) => (event.target as HTMLDetailsElement).open && findings.value === null && void load()}>
           <summary>
+            <Emoji symbol={EMOJI.finding} />
             Quality findings{' '}
             <Badge tone={serious > 0 ? 'deny' : counts.open > 0 ? 'warn' : 'pass'}>{counts.open} open</Badge>{' '}
             <span class="muted small">
@@ -115,7 +118,10 @@ export const FindingsPanel = defineComponent({
               {shown.value.map((finding) => (
                 <li key={finding.findingId} class={['finding', `finding--${finding.status.toLowerCase()}`]}>
                   <div class="finding__head">
-                    <Badge tone={SEVERITY_TONE[finding.severity]}>{finding.severity}</Badge> <strong>{finding.title}</strong>{' '}
+                    <Badge tone={SEVERITY_TONE[finding.severity]} emoji={SEVERITY_EMOJI[finding.severity]}>
+                      {finding.severity}
+                    </Badge>{' '}
+                    <strong>{finding.title}</strong>{' '}
                     <code>
                       {finding.file}:{finding.lineStart}
                     </code>{' '}

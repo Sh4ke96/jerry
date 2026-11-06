@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 /**
- * Bounded, read-only walk of a repository (ADR 0018). It lists files; it never opens them, never
+ * Bounded, read-only walk of a repository. It lists files; it never opens them, never
  * follows links, and never descends into dependency, build or VCS directories. Discovery is
  * about what the project is, not about every byte it contains.
  */

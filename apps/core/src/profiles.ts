@@ -5,7 +5,7 @@ import { buildWorkspaceGraph, fingerprintScan, scanRepository, staleParts, type 
 import type { StateStore } from './state-store.js';
 
 /**
- * Project profiles (spec §6.4, ADR 0020): the read-only scan of a repository, kept in JERRY's
+ * Project profiles: the read-only scan of a repository, kept in JERRY's
  * database as a cache. It is refreshed when its sources changed, and never replaces reading the
  * files that matter for a task.
  */
@@ -71,7 +71,7 @@ export class ProfileService {
     return this.refresh(repoRoot, now);
   }
 
-  /** Links between the repositories JERRY has profiles for (ADR 0021); cached profiles only, no scan. */
+  /** Links between the repositories JERRY has profiles for; cached profiles only, no scan. */
   async graph(repoRoots: readonly string[]): Promise<WorkspaceGraph> {
     const inputs = [];
     for (const repoRoot of repoRoots) {

@@ -1,16 +1,18 @@
 import type { PlanGrade } from '@jerry/contracts';
+import { EMOJI } from '@jerry/contracts/emoji';
 import { defineComponent, type PropType } from 'vue';
 import { Badge, type Tone } from './Badge';
+import { Emoji } from './Emoji';
 
-const LEVEL: Record<PlanGrade['level'], { label: string; tone: Tone }> = {
-  complete: { label: 'complete', tone: 'pass' },
-  'mostly-complete': { label: 'mostly complete', tone: 'warn' },
-  incomplete: { label: 'incomplete', tone: 'deny' },
-  'scope-only': { label: 'scope only', tone: 'neutral' },
+const LEVEL: Record<PlanGrade['level'], { label: string; tone: Tone; emoji: string }> = {
+  complete: { label: 'complete', tone: 'pass', emoji: EMOJI.pass },
+  'mostly-complete': { label: 'mostly complete', tone: 'warn', emoji: EMOJI.warning },
+  incomplete: { label: 'incomplete', tone: 'deny', emoji: EMOJI.fail },
+  'scope-only': { label: 'scope only', tone: 'neutral', emoji: EMOJI.info },
 };
 
 /**
- * JERRY's completeness check of the plan (ADR 0025). Informational: the gaps are shown to help
+ * JERRY's completeness check of the plan. Informational: the gaps are shown to help
  * the review, and the approval stays the user's decision.
  */
 export const PlanGradeView = defineComponent({
@@ -24,7 +26,11 @@ export const PlanGradeView = defineComponent({
       return (
         <details class="plan-section plan-grade" open={missing.some((check) => check.weight === 'major')}>
           <summary>
-            Plan completeness <Badge tone={level.tone}>{level.label}</Badge>{' '}
+            <Emoji symbol={EMOJI.plan} />
+            Plan completeness{' '}
+            <Badge tone={level.tone} emoji={level.emoji}>
+              {level.label}
+            </Badge>{' '}
             <span class="muted small">
               {grade.level === 'scope-only' ? 'nothing to grade' : `${grade.score}/100`} · plan v{grade.planVersion} · informational, you decide
             </span>

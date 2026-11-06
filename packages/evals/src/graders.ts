@@ -5,7 +5,7 @@ import type { EvalCase, Grader } from './case.js';
 import { changedFiles, gitState, type Fixture } from './fixture.js';
 
 /**
- * Graders (spec §13.4, ADR 0037): deterministic ones read the session's output, the fixture and what
+ * Graders: deterministic ones read the session's output, the fixture and what
  * JERRY recorded; execution graders run a command in the fixture (JERRY's throwaway repository,
  * never the user's); rubric graders ask a pinned model, and count only once calibrated.
  */
@@ -31,7 +31,7 @@ export interface GradeContext {
   taskState: string | null;
   /** Scores an output against a rubric with a pinned model. */
   rubric?(grader: Extract<Grader, { type: 'rubric' }>, output: string): Promise<RubricVerdict>;
-  /** Whether a rubric grader is calibrated against human labels (ADR 0039). */
+  /** Whether a rubric grader is calibrated against human labels. */
   calibrated?(rubricId: string): boolean;
 }
 

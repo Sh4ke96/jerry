@@ -8,7 +8,7 @@ import { samplePlan } from '../helpers/plan-fixture.js';
 import { sampleReport } from '../helpers/report-fixture.js';
 
 /**
- * ADR 0014: Claude reports the implementation; JERRY adds what it recorded itself; the user accepts
+ * Claude reports the implementation; JERRY adds what it recorded itself; the user accepts
  * exactly that report version or sends it back with a comment.
  */
 describe('implementation report and acceptance (bundled bridge + MCP + Core)', () => {
@@ -39,7 +39,7 @@ describe('implementation report and acceptance (bundled bridge + MCP + Core)', (
   const tool = (toolName: string, toolInput: Record<string, unknown>, toolUseId: string) =>
     runBridge('pre-tool-use', { session_id: 'session-r', cwd: repo, hook_event_name: 'PreToolUse', tool_name: toolName, tool_input: toolInput, tool_use_id: toolUseId }, env);
   const decide = (version: number, decision: 'APPROVED' | 'REJECTED', comment = '') => api(core, 'POST', `/api/v1/tasks/${taskId}/approvals`, { stage: 'IMPLEMENTATION', version, decision, comment });
-  /** These tests are about the final checks; the review is waived as a user would (ADR 0034). */
+  /** These tests are about the final checks; the review is waived as a user would. */
   const skipReview = (id = taskId) => api(core, 'POST', `/api/v1/tasks/${id}/review/skip`, { reason: 'review covered elsewhere' });
   const detail = async (): Promise<TaskDetail> => (await api(core, 'GET', `/api/v1/tasks/${taskId}`)).body as TaskDetail;
 

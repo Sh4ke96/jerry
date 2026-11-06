@@ -1,4 +1,4 @@
-// M0 spike: measures PreToolUse hook latency for the hook launch variants under consideration.
+// Measures PreToolUse hook latency for the hook launch variants under consideration.
 // Usage: pnpm build && node scripts/bench-hook.mjs [iterations]
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';

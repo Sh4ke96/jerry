@@ -1,4 +1,6 @@
+import { EMOJI } from '@jerry/contracts/emoji';
 import { computed, defineComponent, ref } from 'vue';
+import { Emoji } from './components/Emoji';
 import { waitsForUser } from './format';
 import { signOut, state } from './state';
 import { Evals } from './views/Evals';
@@ -9,12 +11,12 @@ import { Timeline } from './views/Timeline';
 
 type Tab = 'overview' | 'tasks' | 'timeline' | 'repositories' | 'evals';
 
-const TABS: Array<{ id: Tab; label: string }> = [
-  { id: 'overview', label: 'Overview' },
-  { id: 'tasks', label: 'Tasks' },
-  { id: 'timeline', label: 'Timeline' },
-  { id: 'repositories', label: 'Repositories' },
-  { id: 'evals', label: 'Evals' },
+const TABS: Array<{ id: Tab; label: string; emoji: string }> = [
+  { id: 'overview', label: 'Overview', emoji: EMOJI.jerry },
+  { id: 'tasks', label: 'Tasks', emoji: EMOJI.task },
+  { id: 'timeline', label: 'Timeline', emoji: EMOJI.session },
+  { id: 'repositories', label: 'Repositories', emoji: EMOJI.repository },
+  { id: 'evals', label: 'Evals', emoji: EMOJI.evals },
 ];
 
 export const App = defineComponent({
@@ -44,7 +46,10 @@ export const App = defineComponent({
         return (
           <div class="centered">
             <div class="panel narrow">
-              <h1>JERRY Control Center</h1>
+              <h1>
+                <Emoji symbol={EMOJI.jerry} />
+                JERRY Control Center
+              </h1>
               <p>The dashboard session ended. Run <code>jerry ui</code> in a terminal to open it again.</p>
             </div>
           </div>
@@ -54,8 +59,14 @@ export const App = defineComponent({
         return (
           <div class="centered">
             <div class="panel narrow">
-              <h1>JERRY Control Center</h1>
-              <p>JERRY Core did not answer: {state.error}</p>
+              <h1>
+                <Emoji symbol={EMOJI.jerry} />
+                JERRY Control Center
+              </h1>
+              <p>
+                <Emoji symbol={EMOJI.fail} />
+                JERRY Core did not answer: {state.error}
+              </p>
             </div>
           </div>
         );
@@ -70,6 +81,7 @@ export const App = defineComponent({
             <nav class="tabs" aria-label="Sections">
               {TABS.map((item) => (
                 <button key={item.id} class={['tab', tab.value === item.id && 'tab--active']} aria-current={tab.value === item.id ? 'page' : undefined} onClick={() => (tab.value = item.id)}>
+                  <Emoji symbol={item.emoji} />
                   {item.label}
                   {item.id === 'tasks' && waiting.value > 0 && <span class="count">{waiting.value}</span>}
                 </button>

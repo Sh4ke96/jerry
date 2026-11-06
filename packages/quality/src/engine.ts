@@ -64,7 +64,7 @@ export interface RunOptions {
   disabled?: ReadonlySet<string>;
 }
 
-/** Runs the rules on one file and keeps only hits on changed lines (spec §2.1: the diff, not the repository). */
+/** Runs the rules on one file and keeps only hits on changed lines (the diff, not the repository). */
 export function checkFile(file: CheckedFile, rules: readonly Rule[], options: RunOptions = {}): DetectedFinding[] {
   const language = languageOf(file.path);
   const isTest = isTestFile(file.path);

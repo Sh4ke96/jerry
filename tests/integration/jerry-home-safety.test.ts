@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { CORE, createFixtureRepo, snapshotRepo, tempDir } from '../helpers/harness.js';
 
-/** ADR 0002: JERRY never writes into a repository, even when JERRY_HOME is misconfigured to point into one. */
+/** JERRY never writes into a repository, even when JERRY_HOME is misconfigured to point into one. */
 describe('JERRY_HOME inside a repository', () => {
   const base = tempDir('home-safety');
   afterAll(() => fs.rmSync(base, { recursive: true, force: true }));

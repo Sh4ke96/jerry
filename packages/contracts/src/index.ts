@@ -4,12 +4,13 @@ import { CORE_TOKEN_PATTERN, EVENT_SCHEMA_VERSION, GATE_VERDICTS, HOOK_EVENT_TYP
 /**
  * Shared, versioned contracts between the Claude Code hook bridge, JERRY Core and the CLI.
  * Everything crossing a process boundary is validated against these schemas. The hook bridge is
- * the exception: it validates with the dependency-free guards in guards.ts (ADR 0010), which tests
+ * the exception: it validates with the dependency-free guards in guards.ts, which tests
  * keep equivalent to these schemas.
  */
 
 export * from './constants.js';
 export * from './agents.js';
+export * from './emoji.js';
 
 // ---------------------------------------------------------------------------
 // Claude Code hook input (stdin of a command hook)
@@ -60,7 +61,7 @@ export const gateCheckRequestSchema = z.object({
 export type GateCheckRequest = z.infer<typeof gateCheckRequestSchema>;
 
 /**
- * JERRY monitors; it blocks only hard rules (ADR 0003).
+ * JERRY monitors; it blocks only hard rules.
  * PASS: nothing to report; Claude Code's own permission system decides.
  *       JERRY never grants permissions.
  * WARN: the action proceeds, is recorded as a deviation, and Claude and the user are told.
@@ -75,13 +76,13 @@ export const gateDecisionSchema = z.object({
   reason: z.string().min(1),
   taskId: z.string().nullable(),
   repoRoot: z.string().nullable(),
-  /** New quality findings for Claude (ADR 0029), delivered with the next guarded call; never a block. */
+  /** New quality findings for Claude, delivered with the next guarded call; never a block. */
   feedback: z.string().optional(),
 });
 export type GateDecision = z.infer<typeof gateDecisionSchema>;
 
 // ---------------------------------------------------------------------------
-// Events (spec §11.2 envelope)
+// Events (the recorded envelope)
 // ---------------------------------------------------------------------------
 
 export const hookEventTypeSchema = z.enum(HOOK_EVENT_TYPES);
@@ -94,7 +95,7 @@ export const redactionSchema = z.object({
 
 /**
  * One recorded event. Payloads hold metadata only (paths, redacted commands, sizes, outcomes):
- * never file contents, edit strings, prompt text or tool output (spec §18.2).
+ * never file contents, edit strings, prompt text or tool output.
  */
 export const eventEnvelopeSchema = z.object({
   eventId: z.string().min(8).max(128),
@@ -142,7 +143,7 @@ export const planScopeSchema = z.array(z.string().min(1)).min(1);
 const text = z.string().trim().min(1);
 
 /**
- * The plan document (spec §7.2, Phase 3, the 18 sections). Claude drafts it with the /jerry:plan
+ * The plan document (18 sections). Claude drafts it with the /jerry:plan
  * skill and submits it through MCP; the user approves exactly this document (its hash). The
  * sections that make a plan reviewable are required; the rest may be empty lists.
  */
@@ -184,7 +185,7 @@ export const planDocumentSchema = z.object({
   /** 18. Unresolved questions and decisions for the user. */
   openQuestions: z.array(text).default([]),
   /**
-   * The analysis the plan is built on (ADR 0024): the IDs of the analysts' reports it uses and the
+   * The analysis the plan is built on: the IDs of the analysts' reports it uses and the
    * gaps they left. Optional and without a default, so plans submitted before it keep their hash.
    */
   analysis: z.object({ reports: z.array(z.number().int().positive()), gaps: z.array(text).default([]) }).optional(),
@@ -201,7 +202,7 @@ export const planSchema = z.object({
 });
 export type Plan = z.infer<typeof planSchema>;
 
-/** A manual QA scenario (spec §15.1). */
+/** A manual QA scenario. */
 export const qaScenarioSchema = z.object({
   id: text,
   priority: z.enum(['P1', 'P2', 'P3']),
@@ -222,8 +223,8 @@ export const qaScenarioSchema = z.object({
 export type QaScenario = z.infer<typeof qaScenarioSchema>;
 
 /**
- * Claude's implementation report (spec §7.2 Phase 5). Results are reported as they were, never
- * assumed: a check that did not run is NOT_RUN with the reason, never PASS (spec §19).
+ * Claude's implementation report. Results are reported as they were, never
+ * assumed: a check that did not run is NOT_RUN with the reason, never PASS.
  */
 export const implementationReportSchema = z.object({
   /** What was done, in a few sentences. */
@@ -271,9 +272,9 @@ export const reportEvidenceSchema = z.object({
   /** Checks the report marks FAIL or NOT_RUN. */
   failedOrNotRunChecks: z.number().int().nonnegative(),
   /**
-   * What Git shows since the plan's baseline (ADR 0017), including changes made by shell commands.
+   * What Git shows since the plan's baseline, including changes made by shell commands.
    * Files the user had changed before approval count only if their content changed again. Null
-   * when Git could not be read; absent in reports made before M3.
+   * when Git could not be read; absent in reports made before JERRY read Git.
    */
   git: z
     .object({
@@ -286,8 +287,8 @@ export const reportEvidenceSchema = z.object({
     .nullable()
     .default(null),
   /**
-   * Continuous quality at the time of the report (ADR 0027–0031): open findings, the test runs
-   * JERRY saw against what the report claims, and plan drift. Absent in reports made before M5.
+   * Continuous quality at the time of the report: open findings, the test runs
+   * JERRY saw against what the report claims, and plan drift. Absent in reports made before quality tracking existed.
    */
   quality: z
     .object({
@@ -320,7 +321,7 @@ export const implementationReportRecordSchema = z.object({
 export type ImplementationReportRecord = z.infer<typeof implementationReportRecordSchema>;
 
 /** PLAN binds to a plan version and hash; IMPLEMENTATION to a report version and hash. */
-/** PLAN: the plan version; IMPLEMENTATION: the report version; REVIEW_FIX: the review round's fix plan (ADR 0034). */
+/** PLAN: the plan version; IMPLEMENTATION: the report version; REVIEW_FIX: the review round's fix plan. */
 export const approvalStageSchema = z.enum(['PLAN', 'IMPLEMENTATION', 'REVIEW_FIX']);
 export const approvalDecisionSchema = z.enum(['APPROVED', 'REJECTED']);
 
@@ -349,10 +350,10 @@ export const taskSchema = z.object({
   title: z.string().min(1),
   repoRoot: z.string().min(1),
   createdAt: z.iso.datetime(),
-  /** Where the task is in the workflow (spec §7.1); changed only by Core's transition validator. */
+  /** Where the task is in the workflow; changed only by Core's transition validator. */
   state: workflowStateSchema,
   plan: planSchema,
-  /** The goal given at intake, for tasks that began with analysis instead of a plan (ADR 0024). */
+  /** The goal given at intake, for tasks that began with analysis instead of a plan. */
   goal: z.string().optional(),
 });
 export type Task = z.infer<typeof taskSchema>;
@@ -378,7 +379,7 @@ export const taskTransitionRequestSchema = z.object({
 });
 
 /**
- * Which Claude Code session made a call through the MCP server (ADR 0013). The tool-use ID is
+ * Which Claude Code session made a call through the MCP server. The tool-use ID is
  * matched against the PreToolUse event the hook recorded, so the session comes from the hook, not
  * from the caller; the session ID from the MCP server's environment is the fallback.
  */
@@ -406,7 +407,7 @@ export const planReviseRequestSchema = z.object({
   origin: callOriginSchema.optional(),
 });
 
-/** Task intake before a plan (ADR 0024): a title, the goal and the area to analyse. */
+/** Task intake before a plan: a title, the goal and the area to analyse. */
 export const taskIntakeRequestSchema = z.object({
   repoPath: z.string().min(1),
   title: z.string().trim().min(1),
@@ -452,7 +453,7 @@ export const approvedPlanSummarySchema = z.object({
 });
 export type ApprovedPlanSummary = z.infer<typeof approvedPlanSummarySchema>;
 
-/** Claude's progress note on a task, so a later session can pick the work up (ADR 0013). */
+/** Claude's progress note on a task, so a later session can pick the work up. */
 export const checkpointRequestSchema = z.object({
   summary: z.string().trim().min(1).max(2000),
   nextSteps: z.array(z.string().trim().min(1).max(300)).max(10).default([]),
@@ -482,7 +483,7 @@ export const openTaskSchema = z.object({
   workedInThisSession: z.boolean(),
   lastActivityAt: z.iso.datetime().nullable(),
   checkpoint: z.object({ summary: z.string(), nextSteps: z.array(z.string()), at: z.iso.datetime() }).nullable(),
-  /** What changed in the repository since the checkpoint (ADR 0017); absent when unknown. */
+  /** What changed in the repository since the checkpoint; absent when unknown. */
   sinceCheckpoint: z.object({ headBefore: z.string().nullable(), headNow: z.string().nullable(), changedFiles: z.number().int().nonnegative() }).optional(),
 });
 export type OpenTask = z.infer<typeof openTaskSchema>;
@@ -564,7 +565,7 @@ export const databaseBackupResultSchema = z.object({ file: z.string().min(1) });
 export const taskWithDecisionSchema = taskSchema.extend({ planDecision: approvalRecordSchema.nullable() });
 export type TaskWithDecision = z.infer<typeof taskWithDecisionSchema>;
 
-/** Which Claude Code sessions worked on a task, and when (ADR 0013). */
+/** Which Claude Code sessions worked on a task, and when. */
 export const taskActivitySchema = z.object({
   sessionCount: z.number().int().nonnegative(),
   lastSessionId: z.string().nullable(),
@@ -574,7 +575,7 @@ export const taskActivitySchema = z.object({
 });
 export type TaskActivity = z.infer<typeof taskActivitySchema>;
 
-/** Core's final checks when the user accepted a report (ADR 0016); DONE follows only if they pass. */
+/** Core's final checks when the user accepted a report; DONE follows only if they pass. */
 export const completionCheckSchema = z.object({
   taskId: taskIdSchema,
   reportVersion: z.number().int().positive().nullable(),
@@ -589,7 +590,7 @@ export type CompletionCheck = z.infer<typeof completionCheckSchema>;
 /** `path:line` or `path:line-line`, repo-relative (absolute paths inside the repository are accepted). */
 const evidenceSchema = z.string().trim().regex(/^.+:\d+(-\d+)?$/, 'evidence is path:line or path:line-line');
 
-/** An analyst's report (spec §7.2 Phase 2, ADR 0023): every observation carries file:line evidence. */
+/** An analyst's report: every observation carries file:line evidence. */
 export const analysisReportSchema = z.object({
   role: z.enum(['jerry-architecture-analyst', 'jerry-risk-analyst', 'jerry-quality-analyst']),
   /** What the analyst was asked to look at. */
@@ -630,7 +631,7 @@ export const analysisReportRecordSchema = z.object({
 });
 export type AnalysisReportRecord = z.infer<typeof analysisReportRecordSchema>;
 
-/** A subagent run as JERRY saw it through SubagentStart/SubagentStop (ADR 0023). */
+/** A subagent run as JERRY saw it through SubagentStart/SubagentStop. */
 export const agentRunSchema = z.object({
   agentId: z.string(),
   agentType: z.string().nullable(),
@@ -645,7 +646,7 @@ export type AgentRun = z.infer<typeof agentRunSchema>;
 
 /** A task as lists show it: decisions, session activity, the latest checkpoint and report. */
 /**
- * JERRY's deterministic completeness check of a plan (ADR 0025). Informational: it never blocks an
+ * JERRY's deterministic completeness check of a plan. Informational: it never blocks an
  * approval; it shows the user and Claude what the plan leaves out.
  */
 export const planGradeCheckSchema = z.object({
@@ -667,7 +668,7 @@ export type PlanGrade = z.infer<typeof planGradeSchema>;
 export type PlanGradeCheck = z.infer<typeof planGradeCheckSchema>;
 
 /**
- * A quality finding (spec §12.4, ADR 0027). Core records and resolves findings; only the user
+ * A quality finding. Core records and resolves findings; only the user
  * dismisses one (ACCEPTED, WONT_FIX, FALSE_POSITIVE) and always with a reason.
  */
 export const FINDING_STATUSES = ['OPEN', 'ACCEPTED', 'FIXED', 'WONT_FIX', 'FALSE_POSITIVE'] as const;
@@ -724,7 +725,7 @@ export const findingStatusRequestSchema = z.object({
   reason: z.string().trim().min(1).max(500),
 });
 
-/** A test command Claude ran, as JERRY saw it end (ADR 0030); the output itself is never stored. */
+/** A test command Claude ran, as JERRY saw it end; the output itself is never stored. */
 export const testRunSchema = z.object({
   taskId: taskIdSchema.nullable(),
   sessionId: z.string().nullable(),
@@ -738,7 +739,7 @@ export const testRunSchema = z.object({
 });
 export type TestRun = z.infer<typeof testRunSchema>;
 
-/** Which tests to run for the changes so far, and the command limited to them (ADR 0030). */
+/** Which tests to run for the changes so far, and the command limited to them. */
 export const targetedTestsSchema = z.object({
   changed: z.array(z.string()),
   files: z.array(z.string()),
@@ -749,7 +750,7 @@ export const targetedTestsSchema = z.object({
 });
 export type TargetedTestsAnswer = z.infer<typeof targetedTestsSchema>;
 
-/** One implementer's part of an approved plan (ADR 0031): plan steps and the files only it edits. */
+/** One implementer's part of an approved plan: plan steps and the files only it edits. */
 export const implementerAssignmentSchema = z.object({
   label: z.string().trim().min(1).max(40),
   steps: z.array(z.number().int().positive()).min(1),
@@ -771,7 +772,7 @@ export const assignmentSchema = z.object({
 });
 export type Assignment = z.infer<typeof assignmentSchema>;
 
-/** Where the work strays from the plan (ADR 0031); informational. */
+/** Where the work strays from the plan; informational. */
 export const planDriftSchema = z.object({
   taskId: taskIdSchema,
   /** Files changed in scope that no plan step or change names. */
@@ -785,14 +786,14 @@ export const planDriftSchema = z.object({
 });
 export type PlanDrift = z.infer<typeof planDriftSchema>;
 
-/** The three independent reviewers (ADR 0015, 0032). */
+/** The three independent reviewers. */
 export const REVIEWER_ROLES = ['jerry-correctness-reviewer', 'jerry-security-reviewer', 'jerry-design-reviewer'] as const;
 export const reviewerRoleSchema = z.enum(REVIEWER_ROLES);
 export type ReviewerRole = z.infer<typeof reviewerRoleSchema>;
-/** Initial review plus at most two re-reviews; then the user decides (spec §12.5, ADR 0035). */
+/** Initial review plus at most two re-reviews; then the user decides. */
 export const MAX_REVIEW_ROUNDS = 3;
 
-/** One reviewer's result for a round (ADR 0032): what it read and what it found. */
+/** One reviewer's result for a round: what it read and what it found. */
 export const reviewSubmissionSchema = z.object({
   role: reviewerRoleSchema,
   /** Repo-relative files the reviewer read in full; the coverage ledger is built from them. */
@@ -819,7 +820,7 @@ export const reviewSubmissionSchema = z.object({
 export type ReviewSubmission = z.infer<typeof reviewSubmissionSchema>;
 export const reviewSubmissionRequestSchema = z.object({ review: reviewSubmissionSchema, origin: callOriginSchema.optional() });
 
-/** Claude's remediation plan for review findings (ADR 0034); only the user approves it. */
+/** Claude's remediation plan for review findings; only the user approves it. */
 export const fixPlanSchema = z.object({
   summary: z.string().trim().min(1),
   items: z.array(z.object({ findings: z.array(findingIdSchema).min(1), change: z.string().trim().min(1), files: z.array(z.string().trim().min(1)).min(1) })).min(1),
@@ -873,9 +874,9 @@ export const reviewStateSchema = z.object({
 });
 export type ReviewState = z.infer<typeof reviewStateSchema>;
 
-// --- Final report and the optional Artifact (ADR 0041–0042) ------------------------------------
+// --- Final report and the optional Artifact ----------------------------------------------------
 
-/** Only claude.ai artifact links are recorded (ADR 0042): the Artifact is Claude's, the link is JERRY's. */
+/** Only claude.ai artifact links are recorded: the Artifact is Claude's, the link is JERRY's. */
 export const artifactUrlSchema = z.url().refine((value) => /^https:\/\/claude\.ai\/(code\/)?artifact\/[\w-]+(?:[/?#][^\s]*)?$/.test(value), 'a https://claude.ai/…/artifact/… link');
 export const ARTIFACT_KINDS = ['stakeholder-presentation', 'architecture-before-after', 'ui-flows', 'endpoint-contract-map', 'other'] as const;
 /** The user's choice about an Artifact for a task: created by Claude (with its link), or declined. */
@@ -894,7 +895,7 @@ export const artifactDecisionSchema = z.object({
 });
 export type ArtifactDecision = z.infer<typeof artifactDecisionSchema>;
 
-/** The final report of a task (spec Phase 9, ADR 0041), assembled by Core from what it recorded. */
+/** The final report of a task, assembled by Core from what it recorded. */
 export const finalReportSchema = z.object({
   taskId: taskIdSchema,
   title: z.string(),
@@ -926,7 +927,7 @@ export const finalReportSchema = z.object({
   rules: z.object({ skills: z.array(z.object({ name: z.string(), used: z.boolean(), note: z.string() })), deviations: z.number().int(), blocked: z.number().int(), planDeviations: z.array(z.string()) }),
   commitSubjects: z.array(z.string()),
   artifact: z.object({ planned: z.string(), decision: z.enum(['created', 'declined', 'not-asked']), kind: z.string().nullable(), title: z.string().nullable(), url: z.string().nullable() }),
-  /** What was checked and what was not (spec Phase 9: coverage ledger). */
+  /** What was checked and what was not (the coverage ledger). */
   coverage: z.object({ reviewedFiles: z.array(z.string()), notReviewed: z.array(z.string()), checksNotRun: z.array(z.string()) }),
   limitations: z.array(z.string()),
   decisions: z.array(z.string()),
@@ -934,7 +935,7 @@ export const finalReportSchema = z.object({
 });
 export type FinalReport = z.infer<typeof finalReportSchema>;
 
-// --- Evals (ADR 0036–0040) ---------------------------------------------------------------------
+// --- Evals -------------------------------------------------------------------------------------
 
 export const evalOutcomeSchema = z.enum(['PASS', 'FAIL', 'FLAKY', 'ERROR']);
 export const evalAttemptSchema = z.object({
@@ -988,7 +989,7 @@ export const evalComparisonSchema = z.object({
     }),
   ),
   regressions: z.array(z.string()),
-  /** A regression in a critical safety case blocks a JERRY release (spec §13.5). */
+  /** A regression in a critical safety case blocks a JERRY release. */
   releaseBlocked: z.boolean(),
 });
 export const evalRunDetailSchema = evalRunSummarySchema.extend({ results: z.array(evalCaseResultSchema), comparison: evalComparisonSchema });
@@ -1031,11 +1032,11 @@ export const findingCountsSchema = z.object({
 export type FindingCounts = z.infer<typeof findingCountsSchema>;
 
 export const taskSummarySchema = taskWithDecisionSchema.extend({
-  /** Quality findings of the task (ADR 0027); open tasks only. */
+  /** Quality findings of the task; open tasks only. */
   findings: findingCountsSchema.nullable().default(null),
-  /** The latest test command Claude ran for the task (ADR 0030). */
+  /** The latest test command Claude ran for the task. */
   lastTestRun: testRunSchema.nullable().default(null),
-  /** JERRY's completeness check of the current plan, for open tasks (ADR 0025). */
+  /** JERRY's completeness check of the current plan, for open tasks. */
   planGrade: planGradeSchema.nullable().default(null),
   /** The latest final checks, if any were run. */
   finalCheck: completionCheckSchema.nullable(),
@@ -1044,7 +1045,7 @@ export const taskSummarySchema = taskWithDecisionSchema.extend({
   lastReport: implementationReportRecordSchema.nullable(),
   /** The user's latest decision on exactly the latest report (version and hash). */
   reportDecision: approvalRecordSchema.nullable(),
-  /** Analysts' reports, oldest first (ADR 0023). */
+  /** Analysts' reports, oldest first. */
   analyses: z.array(analysisReportRecordSchema).default([]),
   /** Subagent runs of the sessions linked to the task. */
   agentRuns: z.array(agentRunSchema).default([]),
@@ -1068,7 +1069,7 @@ export const taskDetailSchema = taskSummarySchema.extend({
   checkpoints: z.array(checkpointSchema),
   /** Every implementation report version, newest first. */
   reports: z.array(implementationReportRecordSchema),
-  /** The Git baseline taken when the current plan was approved (ADR 0017). */
+  /** The Git baseline taken when the current plan was approved. */
   baseline: z
     .object({
       at: z.iso.datetime(),
@@ -1097,7 +1098,7 @@ export const repositoryStateSchema = z.object({
 export type RepositoryState = z.infer<typeof repositoryStateSchema>;
 
 /**
- * What JERRY knows about a repository (spec §6.4, ADR 0020): a cache of the read-only scan, never
+ * What JERRY knows about a repository: a cache of the read-only scan, never
  * the source of truth. Paths, titles and hashes only; no file contents.
  */
 /** Bumped when the profile gains fields; older stored profiles are rescanned. */
@@ -1131,7 +1132,7 @@ export const projectProfileSchema = z.object({
     complete: z.boolean(),
   }),
   skippedDirectories: z.array(z.string()),
-  /** Package identity per manifest, for links between repositories (ADR 0021). */
+  /** Package identity per manifest, for links between repositories. */
   packages: z
     .array(z.object({ manifest: z.string(), ecosystem: z.string(), name: z.string().nullable(), dependencies: z.array(z.string()), localPaths: z.array(z.string()) }))
     .default([]),
@@ -1140,7 +1141,7 @@ export const projectProfileSchema = z.object({
 });
 export type ProjectProfile = z.infer<typeof projectProfileSchema>;
 
-/** Links between known repositories (spec §14.1, ADR 0021). */
+/** Links between known repositories. */
 export const workspaceGraphSchema = z.object({
   nodes: z.array(z.object({ repoRoot: z.string(), names: z.array(z.string()), apiSchemas: z.array(z.string()) })),
   edges: z.array(z.object({ from: z.string(), to: z.string(), kind: z.enum(['local-path', 'package', 'api-contract']), evidence: z.string() })),

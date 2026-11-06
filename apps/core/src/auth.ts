@@ -1,7 +1,7 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 
 /**
- * Browser access to Core (ADR 0007). The dashboard never sees the CLI/hook token. Instead:
+ * Browser access to Core. The dashboard never sees the CLI/hook token. Instead:
  *   1. the user runs `jerry ui`; the CLI (token-authenticated) asks Core for a one-time login code;
  *   2. the browser opens /ui/login?code=…; Core redeems the code (single use, 60 s) and sets an
  *      HttpOnly, SameSite=Strict session cookie;

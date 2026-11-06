@@ -20,7 +20,7 @@ const evalCase = (overrides: Record<string, unknown>): EvalCase =>
     ...overrides,
   });
 
-/** ADR 0038: the runner end to end with a stand-in claude through the real hook bridge and an isolated Core. */
+/** The eval runner end to end with a stand-in claude through the real hook bridge and an isolated Core. */
 describe('eval runner (bundled bridge + Core, fake claude)', () => {
   it('runs cases in isolation, grades them from what JERRY recorded, and classifies the results', async () => {
     const base = tempDir('evals');

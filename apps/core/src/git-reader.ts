@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 /**
- * Read-only Git access for Core (ADR 0017). JERRY never modifies a repository (ADR 0002), and that
+ * Read-only Git access for Core. JERRY never modifies a repository, and that
  * includes `.git`: every call runs with `--no-optional-locks` and `GIT_OPTIONAL_LOCKS=0`, so even
  * `git status` does not refresh the index; fsmonitor is off, so no user hook runs; only commands
  * that read are used. Commands run without a shell.
@@ -30,7 +30,7 @@ export interface GitReader {
   /** Repo-relative files that differ from `baseHead` (working tree and index), plus untracked files. */
   changedSince(repoRoot: string, baseHead: string | null): Promise<string[]>;
   /**
-   * Zero-context diff of one repo-relative file against HEAD (ADR 0029), or null when there is
+   * Zero-context diff of one repo-relative file against HEAD, or null when there is
    * nothing to compare with (untracked file, no commit yet). External diff drivers and textconv
    * filters are switched off: JERRY never runs programs the repository configures.
    */

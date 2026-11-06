@@ -278,10 +278,10 @@ describe('computeReportHash', () => {
   });
 });
 
-describe('subagents (ADR 0015, ADR 0023)', () => {
+describe('subagents', () => {
   const spawn = (toolName = 'Task'): GateCheckRequest => ({ sessionId: 's1', cwd: REPO, toolName, toolInput: {}, toolUseId: null, agentId: null });
 
-  it('passes the implementer checks the edit and its agent, and warns on their verdict (ADR 0031)', () => {
+  it('passes the implementer checks the edit and its agent, and warns on their verdict', () => {
     const state = approvedState(task(['src/**']));
     const seen: Array<[string, string | null, string]> = [];
     const check = (taskId: string, agentId: string | null, file: string) => {
@@ -298,7 +298,7 @@ describe('subagents (ADR 0015, ADR 0023)', () => {
     expect(evaluateGate(write('README.md'), context(state, { implementerCheck: () => ({ ruleId: 'monitor.concurrent-write', reason: 'x' }) })).ruleId).toBe('monitor.out-of-scope');
   });
 
-  it('warns when a read-only JERRY agent writes or runs a modifying command (ADR 0033)', () => {
+  it('warns when a read-only JERRY agent writes or runs a modifying command', () => {
     const state = approvedState(task(['src/**']));
     const types: Record<string, string> = { rev: 'jerry:jerry-security-reviewer', ana: 'jerry:jerry-risk-analyst', imp: 'jerry:jerry-implementer' };
     const ctx = context(state, { agentType: (agentId) => types[agentId] ?? null });

@@ -7,7 +7,7 @@ import { McpClient } from '../helpers/mcp-client.js';
 import { samplePlan } from '../helpers/plan-fixture.js';
 import { sampleReport } from '../helpers/report-fixture.js';
 
-/** ADR 0032–0035: three independent reviewers, coverage, the fix gate and re-review, then DONE. */
+/** Three independent reviewers, coverage, the fix gate and re-review, then DONE. */
 describe('independent code review (bundled bridge + MCP + Core)', () => {
   const base = tempDir('review');
   const repo = createFixtureRepo(path.join(base, 'repo'));
@@ -49,7 +49,7 @@ describe('independent code review (bundled bridge + MCP + Core)', () => {
     return result;
   };
 
-  /** ADR 0041–0042: the final report of the DONE task, and the Artifact as the user's recorded choice. */
+  /** The final report of the DONE task, and the Artifact as the user's recorded choice. */
   const checkFinalReportAndArtifact = async (): Promise<void> => {
     const filesBefore = (fs.readdirSync(repo, { recursive: true }) as string[]).filter((entry) => !entry.startsWith('.git')).sort();
     const report = await mcp.call('jerry_get_final_report', { taskId });
@@ -75,7 +75,7 @@ describe('independent code review (bundled bridge + MCP + Core)', () => {
     expect((fs.readdirSync(repo, { recursive: true }) as string[]).filter((entry) => !entry.startsWith('.git')).sort()).toEqual(filesBefore);
   };
 
-  /** After three rounds JERRY stops the automatic loop; the user waives the rest (ADR 0035). */
+  /** After three rounds JERRY stops the automatic loop; the user waives the rest. */
   const checkMaxRounds = async (): Promise<void> => {
     const plan = samplePlan(repo, ['src/**']);
     const id = ((await api(core, 'POST', '/api/v1/tasks', { repoPath: repo, title: 'Stubborn finding', scope: plan.scope.include, document: plan })).body as { taskId: string }).taskId;

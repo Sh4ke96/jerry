@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { samplePlan } from '../../../tests/helpers/plan-fixture.js';
 import { planDocumentSchema } from '../src/index.js';
 
-describe('planDocumentSchema (spec §7.2)', () => {
+describe('planDocumentSchema', () => {
   it('accepts a complete plan', () => {
     expect(planDocumentSchema.safeParse(samplePlan('D:/Work/repo')).success).toBe(true);
   });

@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { api, createFixtureRepo, preToolUse, runBridge, snapshotRepo, startCore, tempDir, type BridgeResult, type RunningCore } from '../helpers/harness.js';
 
 /**
- * ADR 0003 acceptance: the shipped bridge + Core monitor a real Git repository (warn, never
+ * The shipped bridge + Core monitor a real Git repository (warn, never
  * block edits), enforce the hard rules with or without Core, and never modify the repository.
  */
 describe('JERRY guard (bundled bridge + Core)', () => {
@@ -103,7 +103,7 @@ describe('JERRY guard (bundled bridge + Core)', () => {
   it('after approval, is silent inside the scope and warns outside it; hard rules still apply', async () => {
     expect((await api(core, 'POST', `/api/v1/tasks/${taskId}/approvals`, { stage: 'PLAN', version: 1, decision: 'APPROVED' })).status).toBe(201);
 
-    // src/app.ts holds the user's uncommitted change (fixture): one warning, then silence (ADR 0017).
+    // src/app.ts holds the user's uncommitted change (fixture): one warning, then silence.
     expectWarned(write('src/app.ts'), 'monitor.user-uncommitted-file');
     expectPassed(write('src/app.ts'));
     expectPassed(write('src/new/module.ts'));

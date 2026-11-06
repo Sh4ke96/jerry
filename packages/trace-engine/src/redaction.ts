@@ -1,5 +1,5 @@
 /**
- * Masks credentials in text JERRY records (commands, error messages). Spec §18.2: tokens,
+ * Masks credentials in text JERRY records (commands, error messages). Tokens,
  * passwords, keys, cookies and connection strings are never stored. Patterns are deliberately
  * broad; masking a harmless value costs nothing, missing a secret does.
  */

@@ -7,7 +7,7 @@ import { classifyToolCall, type ToolAction } from './tool-call.js';
 import { MAX_SUBAGENTS } from '@jerry/contracts/agents';
 
 /**
- * Gate policy (ADR 0003): JERRY monitors Claude Code and blocks only hard rules.
+ * Gate policy: JERRY monitors Claude Code and blocks only hard rules.
  *
  * Hard rules (DENY, evaluated first, need no Core and no state):
  *   - any command or Git-server MCP tool that changes Git state; only the user runs Git operations
@@ -31,26 +31,26 @@ export interface GateContext {
   isExcluded(repoRoot: string): boolean;
   /**
    * True when the file had the user's uncommitted changes when the task's plan was approved and
-   * Claude was not warned about it yet (ADR 0017). Absent where Git baselines are not known.
+   * Claude was not warned about it yet. Absent where Git baselines are not known.
    */
   isUserChangedFile?(taskId: string, relativePath: string): boolean;
-  /** Subagents the session started and has not finished (ADR 0023); absent where unknown. */
+  /** Subagents the session started and has not finished; absent where unknown. */
   activeSubagents?(sessionId: string): number;
   /**
-   * Implementer checks of an in-scope edit (ADR 0031): concurrent writes to one file, and an
+   * Implementer checks of an in-scope edit: concurrent writes to one file, and an
    * implementer outside its assignment. `agentId` is null for the main session. Warnings only.
    */
   implementerCheck?(taskId: string, agentId: string | null, relativePath: string): { ruleId: string; reason: string } | null;
-  /** The plugin agent type of a subagent (e.g. "jerry:jerry-security-reviewer"), when known (ADR 0033). */
+  /** The plugin agent type of a subagent (e.g. "jerry:jerry-security-reviewer"), when known. */
   agentType?(agentId: string): string | null;
 }
 
-/** JERRY's read-only roles: analysts and reviewers never write (ADR 0022, 0033). */
+/** JERRY's read-only roles: analysts and reviewers never write. */
 const READ_ONLY_AGENT = /jerry-[\w-]*-(?:analyst|reviewer)$/;
 
 /**
  * Commands only the user may run. Read-only ones (status, doctor, task list/show, repo list, core
- * status) stay available. Pausing, resuming and cancelling a task are user decisions (ADR 0012).
+ * status) stay available. Pausing, resuming and cancelling a task are user decisions.
  */
 const USER_ONLY_JERRY_COMMAND = /\bjerry(?:\.mjs|\.cmd|\.ps1)?\s+(?:approve|reject|install|uninstall|ui|repo\s+(?:exclude|include)|task\s+(?:pause|resume|cancel)|core\s+(?:start|stop)|db\s+restore)\b/i;
 /** Tools that start a Claude Code subagent. */
@@ -137,8 +137,8 @@ function hardRulesForShell(command: string, dialect: 'bash' | 'powershell', cwd:
 }
 
 function evaluateMonitoring(action: ToolAction, request: GateCheckRequest, context: GateContext): GateDecision {
-  // A read-only JERRY agent that writes or runs a modifying command (ADR 0033): warned, not blocked;
-  // blocking would be a new hard rule, which is the product owner's decision.
+  // A read-only JERRY agent that writes or runs a modifying command: warned, not blocked;
+  // blocking would be a new hard rule, and hard rules change only by the maintainer's explicit decision.
   if (request.agentId !== null && request.agentId !== undefined) {
     const type = context.agentType?.(request.agentId) ?? null;
     const writes = action.kind === 'file-write' || action.kind === 'file-write-unknown' || action.kind === 'shell-opaque' || (action.kind === 'shell' && !assessShellCommand(action.command, action.dialect).readOnly);
@@ -148,11 +148,11 @@ function evaluateMonitoring(action: ToolAction, request: GateCheckRequest, conte
   }
   switch (action.kind) {
     case 'not-guarded': {
-      // ADR 0015: at most three subagents at a time. A fourth is warned about, not blocked.
+      // At most three subagents at a time. A fourth is warned about, not blocked.
       if (SUBAGENT_TOOLS.has(request.toolName)) {
         const active = context.activeSubagents?.(request.sessionId) ?? 0;
         if (active >= MAX_SUBAGENTS) {
-          return decision('WARN', 'monitor.subagent-cap', `${active} subagents are already running in this session; JERRY works with at most ${MAX_SUBAGENTS} at a time (ADR 0015). Wait for one to finish instead of starting another.`);
+          return decision('WARN', 'monitor.subagent-cap', `${active} subagents are already running in this session; JERRY works with at most ${MAX_SUBAGENTS} at a time. Wait for one to finish instead of starting another.`);
         }
       }
       return decision('PASS', 'tool.not-guarded', `${request.toolName} is not a write or shell tool`);

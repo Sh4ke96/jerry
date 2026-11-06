@@ -1,8 +1,9 @@
 import { storedEventSchema, type StoredEvent } from '@jerry/contracts';
 import { readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
 import { z } from 'zod';
+import { mark, resultMark } from './emoji.js';
 
-/** Timeline in the terminal until the dashboard exists: oldest first, one line per event. */
+/** The session timeline in the terminal: oldest first, one line per event. */
 export async function showEvents(options: { sessionId?: string; verdict?: string; limit: number }): Promise<void> {
   const params = new URLSearchParams({ limit: String(options.limit) });
   if (options.sessionId !== undefined) params.set('sessionId', options.sessionId);
@@ -10,7 +11,7 @@ export async function showEvents(options: { sessionId?: string; verdict?: string
   const info = readCoreRuntimeInfo(resolveJerryHome());
   const events = z.array(storedEventSchema).parse(await requestCore(info, { method: 'GET', path: `/api/v1/events?${params.toString()}`, timeoutMs: 5000 }));
   if (events.length === 0) {
-    console.log('No events.');
+    console.log(mark('info', 'No events.'));
     return;
   }
   for (const event of events.reverse()) console.log(formatEvent(event));
@@ -21,7 +22,7 @@ function formatEvent(event: StoredEvent): string {
   const today = new Date().toDateString() === when.toDateString();
   const time = today ? when.toLocaleTimeString() : when.toLocaleString();
   const actor = event.toolName ?? event.agentType ?? '';
-  const verdict = event.verdict === null ? '' : `${event.verdict} ${event.ruleId ?? ''}`;
+  const verdict = event.verdict === null ? '' : resultMark(event.verdict, `${event.verdict} ${event.ruleId ?? ''}`);
   const flags = [event.spooled ? 'spooled' : '', event.payload['evaluatedLate'] === true ? 'late' : ''].filter(Boolean).join(',');
   return [time.padEnd(10), event.eventType.padEnd(18), actor.padEnd(14), verdict.padEnd(36), detail(event), flags === '' ? '' : `(${flags})`].join(' ').trimEnd();
 }

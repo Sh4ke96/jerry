@@ -10,6 +10,7 @@ import {
   resolveJerryHome,
   spawnDetachedCore,
 } from '@jerry/platform';
+import { mark } from './emoji.js';
 
 /** Core from the same build as this CLI; falls back to the installed runtime copy. */
 const SIBLING_CORE = fileURLToPath(new URL('../core/core.mjs', import.meta.url));
@@ -28,7 +29,7 @@ export async function startCore(): Promise<void> {
 
   try {
     const { info } = await getCoreStatus(home);
-    console.log(`JERRY Core already running (pid ${info.pid}, port ${info.port}).`);
+    console.log(mark('info', `JERRY Core already running (pid ${info.pid}, port ${info.port}).`));
     return;
   } catch (error) {
     if (!(error instanceof CoreUnavailableError)) throw error;
@@ -44,7 +45,7 @@ export async function startCore(): Promise<void> {
     try {
       const { info } = await getCoreStatus(home);
       const fallback = info.configuredPort !== undefined && info.configuredPort !== 0 && info.configuredPort !== info.port;
-      console.log(`JERRY Core started (pid ${info.pid}, port ${info.port}${fallback ? `, configured port ${info.configuredPort} was in use` : ''}, home ${home}).`);
+      console.log(mark('pass', `JERRY Core started (pid ${info.pid}, port ${info.port}${fallback ? `, configured port ${info.configuredPort} was in use` : ''}, home ${home}).`));
       return;
     } catch {
       // not ready yet
@@ -65,7 +66,7 @@ export async function stopCore(): Promise<void> {
     info = readCoreRuntimeInfo(home);
   } catch (error) {
     if (error instanceof CoreUnavailableError) {
-      console.log('JERRY Core is not running. Automatic start is disabled until "jerry core start".');
+      console.log(mark('paused', 'JERRY Core is not running. Automatic start is disabled until "jerry core start".'));
       return;
     }
     throw error;
@@ -74,12 +75,12 @@ export async function stopCore(): Promise<void> {
     await requestCore(info, { method: 'POST', path: '/api/v1/shutdown', body: {}, timeoutMs: 2000 });
   } catch (error) {
     if (!(error instanceof CoreUnavailableError)) throw error;
-    console.log(`JERRY Core (pid ${info.pid}) did not answer; it is probably already stopped.`);
+    console.log(mark('warning', `JERRY Core (pid ${info.pid}) did not answer; it is probably already stopped.`));
     return;
   }
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline && fs.existsSync(paths.coreInfoFile)) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  console.log(`JERRY Core (pid ${info.pid}) stopped. Automatic start is disabled until "jerry core start".`);
+  console.log(mark('paused', `JERRY Core (pid ${info.pid}) stopped. Automatic start is disabled until "jerry core start".`));
 }

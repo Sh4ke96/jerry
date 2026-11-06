@@ -2,7 +2,7 @@ import type { FinalReport, Task } from '@jerry/contracts';
 import type { StateStore } from './state-store.js';
 
 /**
- * The final report of a task (spec Phase 9, ADR 0041). Assembled only from what JERRY recorded:
+ * The final report of a task. Assembled only from what JERRY recorded:
  * the plan, the accepted implementation report and its evidence, the review, findings, observed
  * test runs, the final checks and the artifact decision. A draft until the task is DONE.
  */

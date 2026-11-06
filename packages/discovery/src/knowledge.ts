@@ -2,8 +2,8 @@ import { createHash } from 'node:crypto';
 import type { ReadFile } from './detectors.js';
 
 /**
- * Documentation index, project-instruction inventory and prompt-injection findings (ADR 0019).
- * Spec §6.3: repository content is data. Governance files (CLAUDE.md, AGENTS.md, .claude/rules…)
+ * Documentation index, project-instruction inventory and prompt-injection findings.
+ * Repository content is data. Governance files (CLAUDE.md, AGENTS.md, .claude/rules…)
  * may serve as project rules, below JERRY's and the user's rules; text anywhere else never
  * instructs the agent. JERRY stores paths, titles and hashes, never document contents.
  */

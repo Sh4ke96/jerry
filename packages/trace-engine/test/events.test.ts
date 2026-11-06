@@ -102,7 +102,7 @@ describe('buildEventEnvelope: data minimization', () => {
   });
 });
 
-describe('test summaries (ADR 0030)', () => {
+describe('test summaries', () => {
   it('keeps only the runner totals line, never the rest of the output', () => {
     expect(testSummaryOf('lots of output\n Test Files  3 passed (3)\n      Tests  12 passed (12)\n   Duration  1s')).toBe('Tests 12 passed (12)');
     expect(testSummaryOf('Tests:       1 failed, 4 passed, 5 total')).toBe('Tests: 1 failed, 4 passed, 5 total');

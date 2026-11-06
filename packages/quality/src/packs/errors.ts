@@ -1,7 +1,7 @@
 import type { Rule, RuleHit } from '../types.js';
 import { braceBlock, C_LIKE, eachLine, JS_TS } from './helpers.js';
 
-/** Error handling (spec §2.1, §12.2): errors that disappear without a trace. */
+/** Error handling: errors that disappear without a trace. */
 
 const ONLY_LOGGING = /^\s*(console\.(log|error|warn|info|debug)|logger\.\w+|log\.\w+|this\.logger\.\w+|print|logging\.\w+|System\.out\.println|fmt\.Print\w*)\s*\(/;
 

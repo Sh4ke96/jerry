@@ -4,6 +4,7 @@ import { CoreUnavailableError, jerryPaths, readCoreRuntimeInfo, requestCore, res
 import { WORK_STATES } from '@jerry/workflow';
 import { z } from 'zod';
 import { getCoreStatus } from './core-commands.js';
+import { guardMark, mark, type GuardState } from './emoji.js';
 
 /**
  * Quick summary for everyday use (no Claude Code calls, so it answers instantly). "jerry doctor"
@@ -21,11 +22,12 @@ export async function showStatus(): Promise<void> {
     if (!(error instanceof CoreUnavailableError)) throw error;
   }
 
+  const guardState: GuardState = !installed ? 'UNGUARDED' : core === null ? 'DEGRADED' : 'GUARDED';
   const guard = !installed ? 'UNGUARDED (JERRY is not installed: run "jerry install")' : core === null ? 'DEGRADED (Core is not running: monitoring off, hard rules still enforced)' : 'GUARDED (monitoring on, hard rules enforced)';
-  console.log(`JERRY: ${guard}`);
+  console.log(guardMark(guardState, `JERRY: ${guard}`));
   if (core === null) {
     const paused = fs.existsSync(paths.autostartDisabledFile);
-    console.log(paused ? 'Core was stopped with "jerry core stop"; start it with "jerry core start".' : 'Core starts with the next Claude Code session, or now with "jerry core start".');
+    console.log(paused ? mark('paused', 'Core was stopped with "jerry core stop"; start it with "jerry core start".') : mark('next', 'Core starts with the next Claude Code session, or now with "jerry core start".'));
     return;
   }
 
@@ -41,8 +43,11 @@ export async function showStatus(): Promise<void> {
   const paused = tasks.filter((candidate) => candidate.state === 'PAUSED').length;
   const uptimeMinutes = Math.round((Date.now() - Date.parse(core.status.startedAt)) / 60_000);
 
-  console.log(`Core:      ${core.status.version}, pid ${core.info.pid}, up ${uptimeMinutes < 120 ? `${uptimeMinutes} min` : `${Math.round(uptimeMinutes / 60)} h`}, ${core.status.sessionCount} session(s)`);
-  console.log(`Tasks:     ${working} in implementation, ${waiting} waiting for your decision${paused > 0 ? `, ${paused} paused` : ''}`);
-  console.log(`Today:     ${flagged.filter((event) => event.verdict === 'WARN').length} deviation(s), ${flagged.filter((event) => event.verdict === 'DENY').length} blocked`);
-  console.log(`Dashboard: http://127.0.0.1:${core.info.port} (open with "jerry ui")`);
+  const deviations = flagged.filter((event) => event.verdict === 'WARN').length;
+  const blocked = flagged.filter((event) => event.verdict === 'DENY').length;
+
+  console.log(mark('pass', `Core:      ${core.status.version}, pid ${core.info.pid}, up ${uptimeMinutes < 120 ? `${uptimeMinutes} min` : `${Math.round(uptimeMinutes / 60)} h`}, ${core.status.sessionCount} session(s)`));
+  console.log(mark(waiting > 0 ? 'waiting' : 'task', `Tasks:     ${working} in implementation, ${waiting} waiting for your decision${paused > 0 ? `, ${paused} paused` : ''}`));
+  console.log(mark(blocked > 0 ? 'blocked' : deviations > 0 ? 'warning' : 'pass', `Today:     ${deviations} deviation(s), ${blocked} blocked`));
+  console.log(mark('next', `Dashboard: http://127.0.0.1:${core.info.port} (open with "jerry ui")`));
 }

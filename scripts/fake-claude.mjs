@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// A stand-in for the `claude` binary in JERRY's eval tests (ADR 0038). It takes the same flags the
+// A stand-in for the `claude` binary in JERRY's eval tests. It takes the same flags the
 // runner passes (-p, --plugin-dir, --output-format json, …). The prompt is a script, not a request:
 //
 //   FAKE: [{"tool":"Write","input":{"file_path":"src/a.txt","content":"x"}}, {"tool":"Bash","input":{"command":"git commit -m x"}}, {"say":"done"}]

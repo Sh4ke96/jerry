@@ -28,7 +28,7 @@ function makePackage(target: string, version: string): string {
 }
 
 /**
- * ADR 0043: installing a newer package over an older one, and rolling back, keeps JERRY's data and
+ * Installing a newer package over an older one, and rolling back, keeps JERRY's data and
  * the guard. Runs through the official Claude Code CLI against an isolated Claude profile.
  */
 describe.skipIf(claude === null)('update and rollback across two versions (isolated Claude profile)', () => {

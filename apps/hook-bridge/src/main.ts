@@ -1,6 +1,8 @@
 import fs from 'node:fs';
-// Types only from the contracts index: the bridge must not load Zod (ADR 0010; checked by the build).
+// Types only from the contracts index: the bridge runs on every tool call and must not load Zod
+// (checked by the build). The guards and the emoji vocabulary are dependency-free.
 import type { EventEnvelope, GateCheckRequest, GateDecision, OpenTask, SessionRegistrationResponse, SessionStartInput } from '@jerry/contracts';
+import { EMOJI, STATE_EMOJI, decorate } from '@jerry/contracts/emoji';
 import { isGateDecision, isPreToolUseInput, isSessionRegistrationResponse, isSessionStartInput } from '@jerry/contracts/guards';
 import { autostartCore, protectedRoots, readCoreRuntimeInfo, requestCore, resolveJerryHome, spoolEvent } from '@jerry/platform';
 import { classifyToolCall, evaluateHardRules } from '@jerry/policy-engine';
@@ -8,7 +10,7 @@ import { buildEventEnvelope, newEventId, type EnvelopeOverrides } from '@jerry/t
 import { STATE_LABELS } from '@jerry/workflow';
 
 /**
- * Claude Code command-hook adapter (ADR 0003: JERRY monitors, and blocks only hard rules).
+ * Claude Code command-hook adapter: JERRY monitors, and blocks only hard rules.
  *
  * PreToolUse flow:
  *   1. Parse stdin and evaluate the hard rules locally (Git state changes, .git, JERRY data).
@@ -46,7 +48,7 @@ function writeOut(text: string): void {
 }
 
 function block(reason: string): never {
-  fs.writeSync(2, `JERRY: ${reason}\n`);
+  fs.writeSync(2, `${decorate(EMOJI.blocked, `JERRY: ${reason}`)}\n`);
   process.exit(2);
 }
 
@@ -206,35 +208,35 @@ function emit(decision: GateDecision): never {
     case 'WARN':
       writeOut(
         JSON.stringify({
-          systemMessage: `JERRY: ${decision.reason} [${decision.ruleId}]`,
+          systemMessage: decorate(EMOJI.warning, `JERRY: ${decision.reason} [${decision.ruleId}]`),
           hookSpecificOutput: {
             hookEventName: 'PreToolUse',
-            additionalContext: `JERRY warning: ${decision.reason} [${decision.ruleId}]${decision.feedback === undefined ? '' : `\n${decision.feedback}`}`,
+            additionalContext: `${decorate(EMOJI.warning, `JERRY warning: ${decision.reason} [${decision.ruleId}]`)}${decision.feedback === undefined ? '' : `\n${decision.feedback}`}`,
           },
         }),
       );
       proceed();
       break;
     case 'PASS':
-      // Quality findings go to Claude only; the user sees them in the dashboard (ADR 0029).
+      // Quality findings go to Claude only; the user sees them in the dashboard. Core formats them.
       if (decision.feedback !== undefined) writeOut(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: decision.feedback } }));
       proceed();
   }
 }
 
 /**
- * The full hard-rule statement, verbatim. The product owner requires it unchanged (2026-11-06):
- * token savings never come from shortening the safety rules Claude is told about.
+ * The full hard-rule statement, kept verbatim: token savings never come from shortening the safety
+ * rules Claude is told about.
  */
 const HARD_RULES_TEXT =
   'Hard rules, always enforced: you may not run any Git command that changes anything (commit, push, merge, rebase, checkout, switch, reset, restore, stash, fetch, pull, tag, branch changes, config changes, gh/npm version and similar), and you may not use MCP tools of Git servers that push, commit, create branches or files, or open or merge pull requests; the user does all Git operations manually. Read-only Git (status, diff, log, show, blame) is fine. You may not write inside .git, modify JERRY data or the Claude Code settings that enable JERRY, run "jerry approve/reject/install/uninstall/ui", "jerry repo exclude/include", "jerry core start/stop" or "jerry db restore", or call the JERRY API or dashboard.';
 
 /**
  * Tells the model what is actually approved right now. A generic message made models refuse
- * even in-scope edits of an already approved plan (M0 live finding).
+ * even in-scope edits of an already approved plan.
  */
 function monitoredSessionContext(registration: SessionRegistrationResponse): string {
-  const lines = ['JERRY: monitoring this session; it never blocks edits, it records deviations from the approved plan and warns you.'];
+  const lines = [decorate(EMOJI.jerry, 'JERRY: monitoring this session; it never blocks edits, it records deviations from the approved plan and warns you.')];
   if (registration.repoRoot === null) {
     lines.push('Not inside a Git repository.');
   } else if (registration.excluded) {
@@ -243,12 +245,12 @@ function monitoredSessionContext(registration: SessionRegistrationResponse): str
     lines.push(`There is no approved JERRY plan for ${registration.repoRoot}.`);
   } else {
     const plans = registration.approvedPlans.map((plan) => `${plan.taskId} v${plan.planVersion} (scope: ${plan.scope.join(', ')})`).join('; ');
-    lines.push(`Approved plan: ${plans}.`);
+    lines.push(decorate(EMOJI.plan, `Approved plan: ${plans}.`));
   }
   if (registration.repoRoot !== null && !registration.excluded) lines.push(...resumeContext(registration.openTasks ?? []));
   lines.push(
     'Mention JERRY warnings in your summary. If you need the current plan state (it can change mid-session), use the jerry MCP tools.',
-    HARD_RULES_TEXT,
+    decorate(EMOJI.security, HARD_RULES_TEXT),
     'If JERRY blocks an action, report the reason to the user instead of working around it.',
   );
   return lines.join(' ');
@@ -264,19 +266,19 @@ function oneLine(text: string, max: number): string {
 }
 
 /**
- * What the session needs to pick up the work after a restart, resume or compaction (ADR 0013):
- * open tasks with their state and Claude's last checkpoint. Kept short; it is in every session.
+ * What the session needs to pick up the work after a restart, resume or compaction: open tasks
+ * with their state and Claude's last checkpoint. Kept short; it is in every session.
  */
 function resumeContext(openTasks: readonly OpenTask[]): string[] {
   if (openTasks.length === 0) return [];
   const shown = openTasks.slice(0, OPEN_TASKS_IN_CONTEXT).map((task) => {
-    let entry = `${task.taskId} "${oneLine(task.title, 80)}": ${STATE_LABELS[task.state].toLowerCase()}`;
+    let entry = decorate(STATE_EMOJI[task.state], `${task.taskId} "${oneLine(task.title, 80)}": ${STATE_LABELS[task.state].toLowerCase()}`);
     if (task.state === 'PAUSED') entry += ', do not continue it until the user resumes it';
     if (task.workedInThisSession) entry += ', you worked on it in this session';
     else if (task.lastActivityAt !== null) entry += `, last worked on ${task.lastActivityAt.slice(0, 16).replace('T', ' ')} UTC`;
     if (task.checkpoint !== null) {
-      entry += `; last checkpoint: ${oneLine(task.checkpoint.summary, 300)}`;
-      if (task.checkpoint.nextSteps.length > 0) entry += ` Next: ${task.checkpoint.nextSteps.slice(0, 3).map((step) => oneLine(step, 120)).join('; ')}`;
+      entry += `; ${EMOJI.report} last checkpoint: ${oneLine(task.checkpoint.summary, 300)}`;
+      if (task.checkpoint.nextSteps.length > 0) entry += ` ${EMOJI.next} Next: ${task.checkpoint.nextSteps.slice(0, 3).map((step) => oneLine(step, 120)).join('; ')}`;
       const since = task.sinceCheckpoint;
       if (since !== undefined && (since.headBefore !== since.headNow || since.changedFiles > 0)) {
         const head = since.headBefore !== since.headNow ? `HEAD moved from ${since.headBefore?.slice(0, 7) ?? 'none'} to ${since.headNow?.slice(0, 7) ?? 'none'}` : 'HEAD unchanged';
@@ -310,7 +312,7 @@ async function sessionStart(raw: string): Promise<void> {
     context = monitoredSessionContext(registration);
   } catch (error) {
     const cause = error instanceof Error ? error.message : String(error);
-    context = `JERRY: Core unavailable (${cause}); edits are checked against the plan once it is back. ${HARD_RULES_TEXT}`;
+    context = `${decorate(EMOJI.warning, `JERRY: Core unavailable (${cause}); edits are checked against the plan once it is back.`)} ${decorate(EMOJI.security, HARD_RULES_TEXT)}`;
     try {
       spool(buildEventEnvelope(JSON.parse(raw) as Record<string, unknown>));
     } catch {

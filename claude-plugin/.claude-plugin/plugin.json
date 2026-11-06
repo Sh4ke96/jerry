@@ -2,6 +2,5 @@
   "name": "jerry",
   "displayName": "JERRY Development Guardian",
   "version": "0.1.0",
-  "description": "Local development workflow governance for Claude Code: approval gate for file edits and shell commands, backed by the local JERRY Core.",
-  "author": { "name": "Artur Michałek" }
+  "description": "Local guardian for Claude Code: monitors edits against the plan you approved, enforces hard safety rules, and tracks tasks, reviews and reports in the local JERRY Core."
 }

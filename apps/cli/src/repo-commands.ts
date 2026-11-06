@@ -3,6 +3,7 @@ import readline from 'node:readline/promises';
 import { repositoryExclusionSchema } from '@jerry/contracts';
 import { readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
 import { z } from 'zod';
+import { mark } from './emoji.js';
 
 const exclusionResultSchema = z.object({ repoRoot: z.string(), excluded: z.boolean() });
 
@@ -24,26 +25,26 @@ export async function excludeRepository(repo: string): Promise<void> {
   const typed = (await prompt.question(`JERRY will stop monitoring the repository containing ${repoPath}.\nGit and JERRY-protection rules stay enforced. Type "exclude" to confirm: `)).trim();
   prompt.close();
   if (typed !== 'exclude') {
-    console.log('Confirmation did not match. Nothing changed.');
+    console.log(mark('fail', 'Confirmation did not match. Nothing changed.'));
     process.exitCode = 1;
     return;
   }
   const result = exclusionResultSchema.parse(await callCore('POST', '/api/v1/repositories/exclusions', { repoPath, excluded: true }));
-  console.log(`Excluded ${result.repoRoot} from monitoring.`);
+  console.log(mark('paused', `Excluded ${result.repoRoot} from monitoring.`));
 }
 
 export async function includeRepository(repo: string): Promise<void> {
   const result = exclusionResultSchema.parse(await callCore('POST', '/api/v1/repositories/exclusions', { repoPath: path.resolve(repo), excluded: false }));
-  console.log(`JERRY monitors ${result.repoRoot} again.`);
+  console.log(mark('pass', `JERRY monitors ${result.repoRoot} again.`));
 }
 
 export async function listExcludedRepositories(): Promise<void> {
   const exclusions = z.array(repositoryExclusionSchema).parse(await callCore('GET', '/api/v1/repositories/exclusions'));
   if (exclusions.length === 0) {
-    console.log('No excluded repositories. JERRY monitors every Git repository.');
+    console.log(mark('pass', 'No excluded repositories. JERRY monitors every Git repository.'));
     return;
   }
   for (const exclusion of exclusions) {
-    console.log(`${exclusion.repoRoot}  (excluded ${exclusion.excludedAt})`);
+    console.log(mark('repository', `${exclusion.repoRoot}  (excluded ${exclusion.excludedAt})`));
   }
 }

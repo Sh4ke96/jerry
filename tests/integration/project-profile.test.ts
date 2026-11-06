@@ -7,7 +7,7 @@ import { resolveCommands } from '../../apps/core/src/profiles.js';
 import { api, createFixtureRepo, runBridge, snapshotRepo, startCore, tempDir, type RunningCore } from '../helpers/harness.js';
 import { McpClient } from '../helpers/mcp-client.js';
 
-/** ADR 0020: the project profile is a cache in JERRY's database, refreshed when its sources change. */
+/** The project profile is a cache in JERRY's database, refreshed when its sources change. */
 describe('project profile (bundled Core, bridge and MCP)', () => {
   const base = tempDir('profile');
   const repo = createFixtureRepo(path.join(base, 'repo'));

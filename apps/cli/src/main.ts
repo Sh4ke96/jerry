@@ -3,6 +3,7 @@ import { Command, InvalidArgumentError } from 'commander';
 import { getCoreStatus, startCore, stopCore } from './core-commands.js';
 import { backupNow, restoreFromBackup, showBackups } from './db-commands.js';
 import { doctor } from './doctor.js';
+import { mark } from './emoji.js';
 import { showEvents } from './events-command.js';
 import { install, uninstall } from './install-commands.js';
 import { evalStatus, labelRun, listCases, listRuns, runEvals, runPluginEval, setBaseline, showRun } from './eval-commands.js';
@@ -60,7 +61,7 @@ core
   .description('Show Core process details')
   .action(async () => {
     const { info, status } = await getCoreStatus();
-    console.log(`JERRY Core ${status.version}: pid ${info.pid}, 127.0.0.1:${info.port}, started ${status.startedAt}, home ${status.jerryHome}, ${status.taskCount} task(s), ${status.sessionCount} session(s)`);
+    console.log(`${mark('jerry', `JERRY Core ${status.version}`)}: pid ${info.pid}, 127.0.0.1:${info.port}, started ${status.startedAt}, home ${status.jerryHome}, ${status.taskCount} task(s), ${status.sessionCount} session(s)`);
   });
 
 const task = program.command('task').description('Tasks and their plans');
@@ -220,6 +221,6 @@ db.command('backups').description('List database backups').action(() => showBack
 db.command('restore <file>').description('Replace the database with a backup (Core stopped; interactive)').action((file: string) => restoreFromBackup(file));
 
 program.parseAsync(process.argv).catch((error: unknown) => {
-  process.stderr.write(`jerry: ${error instanceof Error ? error.message : String(error)}\n`);
+  process.stderr.write(`${mark('fail', 'jerry:')} ${error instanceof Error ? error.message : String(error)}\n`);
   process.exitCode = 1;
 });

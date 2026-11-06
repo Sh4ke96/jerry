@@ -18,13 +18,13 @@ export interface RepositoryScanResult extends RepositoryScan {
   docs: DocEntry[];
   instructions: InstructionEntry[];
   injection: { findings: InjectionFinding[]; scannedFiles: number; complete: boolean };
-  /** Package identity and dependencies, for links between repositories (ADR 0021). */
+  /** Package identity and dependencies, for links between repositories. */
   packages: PackageInfo[];
   contractReferences: ContractReference[];
 }
 
 /**
- * Read-only scan of one repository (ADR 0018, ADR 0019): a bounded file walk, the detectors, the
+ * Read-only scan of one repository: a bounded file walk, the detectors, the
  * documentation index, the project-instruction inventory and the prompt-injection scan. Nothing
  * is executed and nothing is written; the repository is only read.
  */

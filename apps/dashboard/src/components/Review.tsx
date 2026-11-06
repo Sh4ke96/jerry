@@ -1,9 +1,11 @@
 import type { ReviewState, TaskSummary } from '@jerry/contracts';
+import { EMOJI, SEVERITY_EMOJI } from '@jerry/contracts/emoji';
 import { defineComponent, onMounted, ref, watch, type PropType } from 'vue';
 import { api } from '../api';
 import { formatTime } from '../format';
 import { handleError, perform } from '../state';
 import { Badge } from './Badge';
+import { Emoji } from './Emoji';
 import { ConfirmDialog } from './ConfirmDialog';
 
 /** The three reviewers (kept here: a value import from the contracts would bundle Zod). */
@@ -17,7 +19,7 @@ const ROLE_LABEL: Record<string, string> = {
 type Decision = 'approve-fixes' | 'reject-fixes' | 'waive';
 
 /**
- * The independent review of a task (ADR 0032–0035): rounds, the three reviewers, coverage of the
+ * The independent review of a task: rounds, the three reviewers, coverage of the
  * changed files, independence, the fix plan and the user's decisions on it.
  */
 export const ReviewPanel = defineComponent({
@@ -66,8 +68,12 @@ export const ReviewPanel = defineComponent({
       return (
         <section class="review panel-section">
           <h3>
+            <Emoji symbol={EMOJI.review} />
             Independent review{' '}
-            <Badge tone={state.outcome === 'passed' ? 'pass' : state.outcome === 'skipped' ? 'warn' : state.openFindings.length > 0 ? 'deny' : 'neutral'}>
+            <Badge
+              tone={state.outcome === 'passed' ? 'pass' : state.outcome === 'skipped' ? 'warn' : state.openFindings.length > 0 ? 'deny' : 'neutral'}
+              emoji={state.outcome === 'passed' ? EMOJI.pass : state.outcome === 'skipped' ? EMOJI.skipped : state.openFindings.length > 0 ? EMOJI.finding : EMOJI.waiting}
+            >
               {state.outcome ?? (state.openFindings.length > 0 ? `${state.openFindings.length} open finding(s)` : 'in progress')}
             </Badge>{' '}
             <span class="muted small">
@@ -79,6 +85,7 @@ export const ReviewPanel = defineComponent({
               const submission = round.submissions.find((entry) => entry.role === role);
               return (
                 <li key={role}>
+                  <Emoji symbol={EMOJI.agent} />
                   <strong>{ROLE_LABEL[role]}</strong>:{' '}
                   {submission === undefined ? (
                     <span class="muted">{round.completedAt === null ? 'not reported yet' : 'no report (gap)'}</span>
@@ -92,12 +99,20 @@ export const ReviewPanel = defineComponent({
               );
             })}
           </ul>
-          {round.uncovered.length > 0 && <p class="attention">Changed files no reviewer covered: {round.uncovered.join(', ')}</p>}
+          {round.uncovered.length > 0 && (
+            <p class="attention">
+              <Emoji symbol={EMOJI.warning} />
+              Changed files no reviewer covered: {round.uncovered.join(', ')}
+            </p>
+          )}
           {state.openFindings.length > 0 && (
             <ul class="list">
               {state.openFindings.map((finding) => (
                 <li key={finding.findingId}>
-                  <Badge tone={finding.severity === 'P1' || finding.severity === 'P2' ? 'deny' : 'warn'}>{finding.severity}</Badge> {finding.title}{' '}
+                  <Badge tone={finding.severity === 'P1' || finding.severity === 'P2' ? 'deny' : 'warn'} emoji={SEVERITY_EMOJI[finding.severity]}>
+                    {finding.severity}
+                  </Badge>{' '}
+                  {finding.title}{' '}
                   <code>
                     {finding.file}:{finding.lineStart}
                   </code>{' '}
@@ -108,7 +123,10 @@ export const ReviewPanel = defineComponent({
           )}
           {round.fixPlan !== null && (
             <div class="review__fix-plan">
-              <h4>Fix plan (round {round.round})</h4>
+              <h4>
+                <Emoji symbol={EMOJI.plan} />
+                Fix plan (round {round.round})
+              </h4>
               <p>{round.fixPlan.summary}</p>
               <ul class="list">
                 {round.fixPlan.items.map((item, index) => (
@@ -125,7 +143,12 @@ export const ReviewPanel = defineComponent({
               {round.fixesSummary !== null && <p class="muted">Fixes reported: {round.fixesSummary}</p>}
             </div>
           )}
-          {round.skippedAt !== null && <p class="muted">Waived by the user: {round.skipReason}</p>}
+          {round.skippedAt !== null && (
+            <p class="muted">
+              <Emoji symbol={EMOJI.skipped} />
+              Waived by the user: {round.skipReason}
+            </p>
+          )}
           <div class="actions">
             {waiting && (
               <button type="button" class="button button--primary" onClick={() => (pending.value = 'approve-fixes')}>

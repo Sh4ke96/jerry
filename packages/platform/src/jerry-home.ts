@@ -41,7 +41,7 @@ export interface JerryPaths {
   /** Events written by hooks while Core was unreachable; drained by Core. */
   spoolDir: string;
   logsDir: string;
-  /** M0/M1 gate log; imported into the database once, then renamed. */
+  /** Gate log from before the database existed; imported into the database once, then renamed. */
   gateLogFile: string;
   coreLogFile: string;
   configDir: string;

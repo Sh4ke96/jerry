@@ -17,7 +17,7 @@ const baseCase = (overrides: Record<string, unknown> = {}): EvalCase =>
     ...overrides,
   });
 
-describe('golden cases (ADR 0036)', () => {
+describe('golden cases', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jerry-cases-'));
   afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
 
@@ -52,7 +52,7 @@ describe('golden cases (ADR 0036)', () => {
   });
 });
 
-describe('fixtures and graders (ADR 0036–0037)', () => {
+describe('fixtures and graders', () => {
   const evalCase = baseCase({
     graders: [
       { type: 'output-matches', pattern: 'deviation' },
@@ -131,7 +131,7 @@ describe('fixtures and graders (ADR 0036–0037)', () => {
   });
 });
 
-describe('flakiness, regressions and calibration (ADR 0038–0039)', () => {
+describe('flakiness, regressions and calibration', () => {
   it('classifies repeated attempts', () => {
     expect(classify(['PASS', 'PASS', 'PASS'])).toBe('PASS');
     expect(classify(['FAIL', 'FAIL'])).toBe('FAIL');

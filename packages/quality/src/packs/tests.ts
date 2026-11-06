@@ -1,7 +1,7 @@
 import type { Rule, RuleHit } from '../types.js';
 import { braceBlock, eachLine, JS_TS } from './helpers.js';
 
-/** Test quality (spec §2.1, §12.2): tests that do not test, or that silently run less. */
+/** Test quality: tests that do not test, or that silently run less. */
 
 export const focusedOrSkipped: Rule = {
   id: 'tests.focused-or-skipped',

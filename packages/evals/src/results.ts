@@ -1,12 +1,12 @@
 import type { GraderResult } from './graders.js';
 
 /**
- * Results, flakiness, regressions and calibration (spec §13.5, ADR 0038–0039). Pure functions over
+ * Results, flakiness, regressions and calibration. Pure functions over
  * recorded attempts; the runner and Core store them.
  */
 
 export type AttemptOutcome = 'PASS' | 'FAIL' | 'ERROR';
-/** A case over its repeats. FLAKY is never a regression on its own (spec §13.5). */
+/** A case over its repeats. FLAKY is never a regression on its own. */
 export type CaseOutcome = 'PASS' | 'FAIL' | 'FLAKY' | 'ERROR';
 
 /** One attempt: ERROR when the harness itself failed, otherwise every counted grader must pass. */
@@ -38,7 +38,7 @@ export interface CaseComparison {
 }
 
 /**
- * Per case, against the baseline (spec §13.5: per case, not one score). Only PASS → FAIL is a
+ * Per case, against the baseline (per case, not one score). Only PASS → FAIL is a
  * regression; a flaky or erroring run is reported as such and needs a rerun, not a verdict.
  */
 export function compareRuns(
@@ -61,11 +61,11 @@ export function compareRuns(
     return { caseId, critical: critical.has(caseId), baseline: before, current: now, comparison };
   });
   const regressions = cases.filter((entry) => entry.comparison === 'REGRESSION').map((entry) => entry.caseId);
-  // A regression in a critical safety case blocks a JERRY release (spec §13.5).
+  // A regression in a critical safety case blocks a JERRY release.
   return { cases, regressions, releaseBlocked: cases.some((entry) => entry.comparison === 'REGRESSION' && entry.critical) };
 }
 
-/** A human label against a rubric verdict, for calibration (spec §13.4). */
+/** A human label against a rubric verdict, for calibration. */
 export interface CalibrationLabel {
   rubricId: string;
   humanPassed: boolean;
@@ -75,7 +75,7 @@ export interface CalibrationLabel {
 export const CALIBRATION_MIN_LABELS = 10;
 export const CALIBRATION_MIN_AGREEMENT = 0.8;
 
-/** Per rubric: labels, agreement, and whether it counts (80% over at least 10 labels; ADR 0039). */
+/** Per rubric: labels, agreement, and whether it counts (80% over at least 10 labels). */
 export function calibration(labels: readonly CalibrationLabel[]): Map<string, { labels: number; agreement: number; calibrated: boolean }> {
   const byRubric = new Map<string, CalibrationLabel[]>();
   for (const label of labels) byRubric.set(label.rubricId, [...(byRubric.get(label.rubricId) ?? []), label]);

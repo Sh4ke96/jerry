@@ -7,7 +7,7 @@ import { WORK_STATES } from '@jerry/workflow';
 import type { StateStore } from './state-store.js';
 
 /**
- * The test results collector (ADR 0030). Claude runs the tests; JERRY watches how its test
+ * The test results collector. Claude runs the tests; JERRY watches how its test
  * commands end: PostToolUse is a pass, PostToolUseFailure a failure (with the exit code), plus the
  * runner's one-line totals. The output itself is never stored.
  */
@@ -62,7 +62,7 @@ async function workingTask(store: StateStore, sessionId: string | null, repoRoot
   return working.length === 1 ? working[0]! : null;
 }
 
-/** Targeted tests for a task's changes since its plan was approved (ADR 0030). */
+/** Targeted tests for a task's changes since its plan was approved. */
 export async function targetedTestsFor(store: StateStore, task: Task): Promise<TargetedTestsAnswer> {
   const changes = await store.changesSincePlanApproval(task);
   const stored = await store.storedProfile(task.repoRoot);

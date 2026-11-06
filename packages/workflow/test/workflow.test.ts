@@ -4,8 +4,8 @@ import { applyEvent, availableEvents, isTerminal } from '../src/index.js';
 
 const go = (current: WorkflowState | null, event: WorkflowEvent, actor: WorkflowActor = 'user', pausedFrom: WorkflowState | null = null) => applyEvent(current, event, actor, pausedFrom);
 
-describe('workflow transitions (spec §7.1)', () => {
-  it('walks the M2 happy path from plan to done', () => {
+describe('workflow transitions', () => {
+  it('walks the happy path from plan to done', () => {
     expect(go(null, 'plan.submitted', 'claude')).toEqual({ ok: true, to: 'WAIT_PLAN_APPROVAL' });
     expect(go('WAIT_PLAN_APPROVAL', 'plan.approved')).toEqual({ ok: true, to: 'IMPLEMENTATION' });
     expect(go('IMPLEMENTATION', 'report.submitted', 'claude')).toEqual({ ok: true, to: 'WAIT_IMPLEMENTATION_ACCEPTANCE' });
@@ -83,7 +83,7 @@ describe('workflow transitions (spec §7.1)', () => {
     expect(go('IMPLEMENTATION', 'plan.submitted', 'claude').ok).toBe(false);
   });
 
-  it('runs the independent review loop between acceptance and the final checks (ADR 0032)', () => {
+  it('runs the independent review loop between acceptance and the final checks', () => {
     expect(go('WAIT_IMPLEMENTATION_ACCEPTANCE', 'implementation.accepted')).toEqual({ ok: true, to: 'CODE_REVIEW' });
     expect(go('CODE_REVIEW', 'review.reported', 'core')).toEqual({ ok: true, to: 'REVIEW_REPORT' });
     expect(go('REVIEW_REPORT', 'review.passed', 'core')).toEqual({ ok: true, to: 'FINAL_REPORT' });

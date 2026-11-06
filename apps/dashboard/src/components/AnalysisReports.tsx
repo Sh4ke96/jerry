@@ -1,7 +1,9 @@
 import type { AgentRun, AnalysisReportRecord } from '@jerry/contracts';
+import { EMOJI } from '@jerry/contracts/emoji';
 import { defineComponent, type PropType } from 'vue';
 import { formatTime } from '../format';
 import { Badge, type Tone } from './Badge';
+import { Emoji } from './Emoji';
 
 const ROLE_LABEL: Record<string, string> = {
   'jerry-architecture-analyst': 'Architecture and contracts',
@@ -11,7 +13,7 @@ const ROLE_LABEL: Record<string, string> = {
 const CONFIDENCE_TONE: Record<string, Tone> = { low: 'warn', medium: 'neutral', high: 'pass' };
 const SEVERITY_TONE: Record<string, Tone> = { low: 'neutral', medium: 'warn', high: 'deny', critical: 'deny' };
 
-/** The analysts' reports (ADR 0023) with Core's citation check, and runs that left a gap. */
+/** The analysts' reports with Core's citation check, and runs that left a gap. */
 export const AnalysisReports = defineComponent({
   name: 'AnalysisReports',
   props: {
@@ -24,10 +26,14 @@ export const AnalysisReports = defineComponent({
       if (props.analyses.length === 0 && gaps.length === 0) return null;
       return (
         <details class="plan-section analysis" open>
-          <summary>Analysis ({props.analyses.length} report(s))</summary>
+          <summary>
+            <Emoji symbol={EMOJI.analysis} />
+            Analysis ({props.analyses.length} report(s))
+          </summary>
           <div class="plan-section__body">
             {gaps.map((run) => (
               <p key={run.agentId} class="attention">
+                <Emoji symbol={EMOJI.warning} />
                 {run.agentType ?? run.agentId}: {run.status === 'no-report' ? 'stopped without a report' : 'no result after 30 minutes'} (a gap, not a result)
               </p>
             ))}
@@ -37,6 +43,7 @@ export const AnalysisReports = defineComponent({
               return (
                 <section key={analysis.id} class="analysis__report">
                   <h4>
+                    <Emoji symbol={EMOJI.agent} />
                     {ROLE_LABEL[report.role] ?? report.role} <Badge tone={CONFIDENCE_TONE[report.confidence.level] ?? 'neutral'}>{report.confidence.level} confidence</Badge>{' '}
                     <span class="muted small">
                       #{analysis.id} · {formatTime(analysis.createdAt)}
@@ -45,7 +52,12 @@ export const AnalysisReports = defineComponent({
                   <p class="muted small">
                     {report.filesRead.length} file(s) read · citations {citations.checked - problems.length}/{citations.checked} verified
                   </p>
-                  {problems.length > 0 && <p class="attention small">Unverified citations: {problems.join(', ')}</p>}
+                  {problems.length > 0 && (
+                    <p class="attention small">
+                      <Emoji symbol={EMOJI.warning} />
+                      Unverified citations: {problems.join(', ')}
+                    </p>
+                  )}
                   <ul class="list">
                     {report.observations.map((observation, index) => (
                       <li key={`o${index}`}>

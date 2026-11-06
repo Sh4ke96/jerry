@@ -1,7 +1,7 @@
 {
   "id": "quality-finding-fixed",
   "title": "A quality finding in Claude's code is fed back and fixed",
-  "description": "ADR 0029: JERRY checks changed lines, tells Claude, and marks fixed findings FIXED.",
+  "description": "JERRY checks changed lines, tells Claude, and marks fixed findings FIXED.",
   "suite": "regression",
   "kind": "quality-lint",
   "critical": false,

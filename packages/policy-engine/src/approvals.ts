@@ -27,7 +27,7 @@ export function computePlanHash(input: { taskId: string; title: string; repoRoot
   return `sha256:${createHash('sha256').update(canonical, 'utf8').digest('hex')}`;
 }
 
-/** Hash of an implementation report version; the user's acceptance binds to it (ADR 0014). */
+/** Hash of an implementation report version; the user's acceptance binds to it. */
 export function computeReportHash(input: { taskId: string; version: number; planVersion: number; document: unknown }): string {
   const canonical = JSON.stringify({ kind: 'implementation-report', taskId: input.taskId, version: input.version, planVersion: input.planVersion, document: canonicalize(input.document) });
   return `sha256:${createHash('sha256').update(canonical, 'utf8').digest('hex')}`;
@@ -65,7 +65,7 @@ export function isRepoExcluded(state: CoreState, repoRoot: string, platform: Nod
 }
 
 /**
- * Plans that cover edits right now: the task is being implemented (ADR 0012) and the user approved
+ * Plans that cover edits right now: the task is being implemented and the user approved
  * exactly its current plan. A paused task, or one waiting for acceptance, covers nothing.
  */
 export function approvedPlansForRepo(state: CoreState, repoRoot: string, platform: NodeJS.Platform): ApprovedPlan[] {

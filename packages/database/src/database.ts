@@ -32,7 +32,7 @@ export interface OpenOptions {
 /**
  * Opens (or creates) the database and migrates it to the latest schema. An existing database is
  * backed up before pending migrations run; if a migration fails, the backup is restored and the
- * error is rethrown, so Core never starts on a half-migrated database (spec §17).
+ * error is rethrown, so Core never starts on a half-migrated database.
  */
 export async function openJerryDatabase(options: OpenOptions): Promise<JerryDatabase> {
   const sqlite = await loadSqlite();

@@ -4,7 +4,7 @@ import { coreRuntimeInfoSchema, gateDecisionSchema, preToolUseInputSchema, sessi
 import type { z } from 'zod';
 
 /**
- * ADR 0010: the hook bridge validates with dependency-free guards instead of Zod. Each guard must
+ * The hook bridge validates with dependency-free guards instead of Zod. Each guard must
  * accept exactly what its schema accepts. Every fixture below is checked both ways.
  */
 

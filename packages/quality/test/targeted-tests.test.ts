@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { exitCodeOf, isTestCommand, selectTargetedTests, testCandidates } from '../src/index.js';
 
-describe('targeted tests (ADR 0030)', () => {
+describe('targeted tests', () => {
   it('finds test files by the usual conventions', () => {
     expect(testCandidates('src/auth/login.ts')).toEqual(expect.arrayContaining(['src/auth/login.test.ts', 'src/auth/__tests__/login.test.ts', 'tests/auth/login.test.ts']));
     expect(testCandidates('app/models/user.py')).toEqual(expect.arrayContaining(['app/models/test_user.py', 'tests/models/test_user.py']));

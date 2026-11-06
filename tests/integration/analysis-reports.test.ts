@@ -5,7 +5,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { api, createFixtureRepo, runBridge, startCore, tempDir, type RunningCore } from '../helpers/harness.js';
 import { McpClient } from '../helpers/mcp-client.js';
 
-/** ADR 0023: analysts' evidence-backed reports, subagent runs, and the warning before a fourth subagent. */
+/** Analysts' evidence-backed reports, subagent runs, and the warning before a fourth subagent. */
 describe('analysis reports and subagent runs (bundled bridge + MCP + Core)', () => {
   const base = tempDir('analysis');
   const repo = createFixtureRepo(path.join(base, 'repo'));

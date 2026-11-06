@@ -29,7 +29,7 @@ is now, not on memory or assumptions.
 
 ## 2. Draft the plan
 
-Fill every section of the plan document (spec §7.2):
+Fill every section of the plan document:
 
 | Field | Content |
 |---|---|

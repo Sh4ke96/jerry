@@ -83,7 +83,7 @@ export type SessionActivity = 'plan.submitted' | 'plan.revised' | 'edit' | 'chec
 /** A subagent run without SubagentStop after this long is timed-out; also the window for counting active ones. */
 const SUBAGENT_TIMEOUT_MS = 30 * 60 * 1000;
 
-/** Findings category of each reviewer (ADR 0032). */
+/** Findings category of each reviewer. */
 const REVIEW_CATEGORY: Readonly<Record<ReviewerRole, string>> = {
   'jerry-correctness-reviewer': 'correctness',
   'jerry-security-reviewer': 'security',
@@ -91,7 +91,7 @@ const REVIEW_CATEGORY: Readonly<Record<ReviewerRole, string>> = {
 };
 const SEVERITY_RANK: Readonly<Record<FindingSeverity, number>> = { P1: 0, P2: 1, P3: 2, P4: 3 };
 
-/** Automatic fix rounds per finding before it is left to the user (spec §12.5; the product owner's proposal: 2). */
+/** Automatic fix rounds per finding before it is left to the user: two attempts, then a person decides. */
 const MAX_AUTO_FIX_ROUNDS = 2;
 
 /** Tools whose target path JERRY sees, so their edits count as observed. */
@@ -102,7 +102,7 @@ const MAX_EVIDENCE_DEVIATIONS = 50;
 /** User decisions about a whole task (approvals and plans have their own methods). */
 export type TaskControlEvent = Extract<WorkflowEvent, 'task.paused' | 'task.resumed' | 'task.cancelled'>;
 
-/** The M0 JSON state predates workflow states; its tasks get theirs from their approvals on import. */
+/** The old JSON state file predates workflow states; its tasks get theirs from their approvals on import. */
 const legacyStateSchema = coreStateSchema.extend({ tasks: z.array(taskSchema.omit({ state: true })) });
 
 export class StateError extends Error {
@@ -118,9 +118,9 @@ export class StateError extends Error {
 export interface StateStoreOptions {
   databaseFile: string;
   backupsDir: string;
-  /** M0 JSON state; imported once into an empty database, then renamed. */
+  /** The old JSON state file; imported once into an empty database, then renamed. */
   legacyStateFile: string;
-  /** Read-only Git access (ADR 0017); tests may replace it. */
+  /** Read-only Git access; tests may replace it. */
   git?: GitReader;
 }
 
@@ -143,7 +143,7 @@ interface PreparedSnapshot {
 }
 
 /**
- * JERRY state in SQLite (ADR 0005). Gate checks read an in-memory snapshot, so they never wait for
+ * JERRY state in SQLite. Gate checks read an in-memory snapshot, so they never wait for
  * the database; every mutation is one transaction followed by a snapshot reload. Core is the only
  * writer, so the snapshot cannot go stale.
  */
@@ -154,9 +154,9 @@ export class StateStore {
   private userDirty = new Map<string, Set<string>>();
   /** (task, file) pairs Claude was already warned about; one warning per file and task. */
   private readonly userFileWarnings = new Set<string>();
-  /** Active implementer assignments per task (ADR 0031), for the synchronous gate. */
+  /** Active implementer assignments per task, for the synchronous gate. */
   private assignments = new Map<string, Assignment[]>();
-  /** The last subagent that edited a file of a task: (task|file) → writer (ADR 0031). */
+  /** The last subagent that edited a file of a task: (task|file) → writer. */
   private readonly recentWriters = new Map<string, { agentId: string; at: number }>();
 
   private constructor(
@@ -177,12 +177,12 @@ export class StateStore {
     return store;
   }
 
-  /** The query builder, for stores that own their own tables (eval runs, ADR 0039). */
+  /** The query builder, for stores that own their own tables (eval runs). */
   get kysely(): Kysely<JerrySchema> {
     return this.database.db;
   }
 
-  /** The read-only Git reader (ADR 0017); the quality scheduler shares it. */
+  /** The read-only Git reader; the quality scheduler shares it. */
   get gitReader(): GitReader {
     return this.git;
   }
@@ -212,7 +212,7 @@ export class StateStore {
   }
 
   /**
-   * Task intake before a plan (ADR 0024): the task starts in DISCOVERY with an intake plan v1 whose
+   * Task intake before a plan: the task starts in DISCOVERY with an intake plan v1 whose
    * scope is the area to analyse. Nothing is approved; edits stay deviations until a real plan is.
    */
   async startTask(input: { repoRoot: string; title: string; goal: string; focus: string[]; submittedBy?: 'user' | 'claude'; sessionId?: string | null }, now: Date): Promise<Task> {
@@ -255,7 +255,7 @@ export class StateStore {
     const at = now.toISOString();
     const version = task.plan.version + 1;
     await this.database.db.transaction().execute(async (trx) => {
-      // The plan built on the analysts' reports closes the analysis (ADR 0024).
+      // The plan built on the analysts' reports closes the analysis.
       if (task.state === 'PARALLEL_ANALYSIS') await this.transition(trx, taskId, 'analysis.completed', 'core', `plan version ${version} submitted`, at);
       await this.transition(trx, taskId, 'plan.revised', submittedBy, `plan version ${version}`, at);
       if (sessionId !== null) await linkSession(trx, sessionId, taskId, 'plan.revised', at);
@@ -279,7 +279,7 @@ export class StateStore {
     const approvingPlan = request.stage === 'PLAN' && request.decision === 'APPROVED';
     const accepting = request.stage === 'IMPLEMENTATION' && request.decision === 'APPROVED';
     const gitNow = approvingPlan ? await this.prepareSnapshot(task, 'plan.approved') : null;
-    // The first review round covers every file changed since the plan was approved (ADR 0032).
+    // The first review round covers every file changed since the plan was approved.
     const toReview = accepting ? await this.changesSincePlanApproval(task) : [];
     const record = await this.database.db.transaction().execute(async (trx) => {
       const label = request.stage === 'PLAN' ? 'plan' : request.stage === 'IMPLEMENTATION' ? 'implementation report' : 'review fix plan';
@@ -325,7 +325,7 @@ export class StateStore {
         .execute();
       await audit(trx, at, `approval.${record.decision.toLowerCase()}`, taskId, { stage: record.stage, version: record.version, contentHash: record.contentHash, channel });
       if (event === 'plan.approved' && gitNow !== null) await insertSnapshot(trx, task, 'plan.approved', gitNow, at);
-      // Accepting the implementation starts the independent review (ADR 0032); its end runs the final checks.
+      // Accepting the implementation starts the independent review; its end runs the final checks.
       if (event === 'implementation.accepted') {
         const previous = await trx.selectFrom('review_rounds').select((eb) => eb.fn.max('round').as('round')).where('task_id', '=', taskId).executeTakeFirst();
         await trx.insertInto('review_rounds').values({ task_id: taskId, round: Number(previous?.round ?? 0) + 1, started_at: at, changed_files_json: JSON.stringify(toReview) }).execute();
@@ -338,7 +338,7 @@ export class StateStore {
   }
 
   /**
-   * Reads Git for a task's repository (ADR 0017). Never throws: when Git cannot be read the reason
+   * Reads Git for a task's repository. Never throws: when Git cannot be read the reason
    * is kept, and checks that depend on Git say so instead of guessing.
    */
   private async prepareSnapshot(task: Task, kind: SnapshotKind): Promise<PreparedSnapshot> {
@@ -358,7 +358,7 @@ export class StateStore {
 
   /**
    * True when a file had the user's uncommitted changes when the task's plan was approved and
-   * Claude has not been warned about it yet (ADR 0017). Pure lookup: previews do not use it up.
+   * Claude has not been warned about it yet. Pure lookup: previews do not use it up.
    */
   isUserChangedFile(taskId: string, relativePath: string): boolean {
     const key = fileKey(relativePath);
@@ -380,7 +380,7 @@ export class StateStore {
 
   /** What changed in the repository since the task's last checkpoint, if one was taken. */
   /**
-   * In-scope files changed since the plan was approved (ADR 0030), from read-only Git; the user's
+   * In-scope files changed since the plan was approved, from read-only Git; the user's
    * files that were already changed then and have not changed since are left out.
    */
   async changesSincePlanApproval(task: Task): Promise<string[]> {
@@ -404,19 +404,19 @@ export class StateStore {
   }
 
   /**
-   * The DONE validator (ADR 0016): Core gathers the facts, records the result, and sets DONE only
+   * The DONE validator: Core gathers the facts, records the result, and sets DONE only
    * when every blocking condition passed. No model and no API call can set DONE otherwise.
    */
   private async runFinalChecks(trx: Transaction<JerrySchema>, task: Task, at: string, gitNow: PreparedSnapshot | null): Promise<CompletionCheck> {
     const reportRow = await trx.selectFrom('implementation_reports').selectAll().where('task_id', '=', task.taskId).orderBy('version', 'desc').limit(1).executeTakeFirst();
     const report = reportRow === undefined ? null : reportFromRow(reportRow);
-    // The review (ADR 0032–0035): approved fixes after the report are legitimate, so edits count
+    // The review: approved fixes after the report are legitimate, so edits count
     // from the end of the last review round (or the user's waiver) when that is later.
     const rounds = await trx.selectFrom('review_rounds').selectAll().where('task_id', '=', task.taskId).orderBy('round').execute();
     const lastRound = rounds.at(-1);
     // Edits after the report: seen by the hooks (file tools), and by Git (also shell commands). Edits
     // made between the user's approval of a fix plan and the fixes report are the approved fixes;
-    // the re-review covered them (ADR 0035). Everything else after the report still counts.
+    // the re-review covered them. Everything else after the report still counts.
     const fixWindows = rounds.filter((round) => round.fixes_approved_at !== null).map((round) => ({ from: round.fixes_approved_at!, until: round.fixes_reported_at ?? at }));
     const hookEdits = report === null ? [] : await editsInScopeBetween(trx, task, report.createdAt, at, fixWindows);
     const lastFixes = rounds.map((round) => round.fixes_reported_at).filter((value): value is string => value !== null).sort().at(-1) ?? null;
@@ -478,7 +478,7 @@ export class StateStore {
   }
 
   /**
-   * Claude's implementation report (ADR 0014): the next report version, with what JERRY recorded
+   * Claude's implementation report: the next report version, with what JERRY recorded
    * itself since the plan was approved. Only a task in implementation can report.
    */
   async submitReport(taskId: string, document: ImplementationReport, submittedBy: 'user' | 'claude', sessionId: string | null, now: Date): Promise<ImplementationReportRecord> {
@@ -579,7 +579,7 @@ export class StateStore {
   }
 
   /**
-   * Records that a session worked on a task (ADR 0013). Unknown tasks are ignored: the link is
+   * Records that a session worked on a task. Unknown tasks are ignored: the link is
    * bookkeeping and must never fail the call that caused it.
    */
   async linkSession(sessionId: string, taskId: string, activity: SessionActivity, now: Date): Promise<void> {
@@ -622,7 +622,7 @@ export class StateStore {
     return row?.agent_id ?? null;
   }
 
-  /** An analyst's report with Core's citation check (ADR 0023); open tasks only. */
+  /** An analyst's report with Core's citation check; open tasks only. */
   async saveAnalysisReport(
     taskId: string,
     report: AnalysisReport,
@@ -641,7 +641,7 @@ export class StateStore {
         .returning('id')
         .executeTakeFirstOrThrow();
       if (sessionId !== null) await linkSession(trx, sessionId, taskId, 'analysis', at);
-      // The first analyst's report moves a task in discovery into analysis (ADR 0024).
+      // The first analyst's report moves a task in discovery into analysis.
       if (task.state === 'DISCOVERY') await this.transition(trx, taskId, 'analysis.started', 'core', `first analysis report (${report.role})`, at);
       return inserted.id;
     });
@@ -650,7 +650,7 @@ export class StateStore {
   }
 
   /**
-   * Applies one quality check of some files (ADR 0027). For each checked file: findings seen again are
+   * Applies one quality check of some files. For each checked file: findings seen again are
    * refreshed (and reopened if they had been FIXED), new ones are OPEN, and OPEN or ACCEPTED findings
    * the check no longer reports are FIXED with the reason. The user's dismissals stay as they are.
    */
@@ -749,7 +749,7 @@ export class StateStore {
     return result;
   }
 
-  /** The user's decision on a finding, always with a reason (ADR 0027). FIXED is Core's alone. */
+  /** The user's decision on a finding, always with a reason. FIXED is Core's alone. */
   async setFindingStatus(findingId: string, status: Exclude<FindingStatus, 'FIXED'>, reason: string, now: Date, channel: Channel): Promise<Finding> {
     const id = findingNumber(findingId);
     const at = now.toISOString();
@@ -812,7 +812,7 @@ export class StateStore {
   }
 
   /**
-   * Open findings Claude has not been told about yet, for a session's task (ADR 0029); marks them
+   * Open findings Claude has not been told about yet, for a session's task; marks them
    * as told, so each goes out once. P4 findings are left to the dashboard.
    */
   async takeFeedback(taskId: string, now: Date, limit = 5): Promise<Finding[]> {
@@ -824,7 +824,7 @@ export class StateStore {
       .where('status', '=', 'OPEN')
       .where('fed_back_at', 'is', null)
       .where('severity', 'in', ['P1', 'P2', 'P3'])
-      // After MAX_AUTO_FIX_ROUNDS fixes that came back, the finding waits for the user (spec §12.5).
+      // After MAX_AUTO_FIX_ROUNDS fixes that came back, the finding waits for the user.
       .where(
         'id',
         'not in',
@@ -855,13 +855,13 @@ export class StateStore {
   }
 
   /**
-   * Records who works on what (ADR 0031): up to three implementers, each with plan steps and the
+   * Records who works on what: up to three implementers, each with plan steps and the
    * files only it edits. A new set replaces the previous one. Overlapping files are refused.
    */
   async assignWork(taskId: string, requested: ReadonlyArray<{ label: string; steps: number[]; files: string[] }>, sessionId: string | null, now: Date): Promise<Assignment[]> {
     const task = this.requireTask(taskId);
     if (!WORK_STATES.has(task.state) || this.planDecision(taskId)?.decision !== 'APPROVED') throw new StateError(409, `${taskId} is not being implemented under an approved plan; assign work after the user approves it`);
-    if (requested.length > MAX_SUBAGENTS) throw new StateError(400, `At most ${MAX_SUBAGENTS} implementers work at a time (ADR 0015); got ${requested.length}`);
+    if (requested.length > MAX_SUBAGENTS) throw new StateError(400, `At most ${MAX_SUBAGENTS} implementers work at a time; got ${requested.length}`);
     const labels = requested.map((assignment) => assignment.label.toLowerCase());
     if (new Set(labels).size !== labels.length) throw new StateError(400, 'Each implementer needs its own label');
     const steps = task.plan.document?.steps ?? [];
@@ -903,7 +903,7 @@ export class StateStore {
   }
 
   /**
-   * The implementer checks of an edit (ADR 0031), synchronous for the gate:
+   * The implementer checks of an edit, synchronous for the gate:
    *   - another active subagent edited this file recently: the writes must be serialized;
    *   - an implementer edits outside its assignment, or a file assigned to another implementer.
    * Warnings only. `agentId` is null for the main session.
@@ -912,7 +912,7 @@ export class StateStore {
     const key = `${taskId}|${fileKey(file)}`;
     const writer = this.recentWriters.get(key);
     if (writer !== undefined && writer.agentId !== agentId && this.isAgentActive(writer.agentId)) {
-      return { ruleId: 'monitor.concurrent-write', reason: `${file} is being edited by another running subagent (${writer.agentId}); writes to one file must be serialized. Wait for it to finish, or hand the file over explicitly (ADR 0031).` };
+      return { ruleId: 'monitor.concurrent-write', reason: `${file} is being edited by another running subagent (${writer.agentId}); writes to one file must be serialized. Wait for it to finish, or hand the file over explicitly.` };
     }
     if (agentId === null || !(this.agentTypeOf(agentId) ?? '').includes('jerry-implementer')) return null;
     const assignments = this.assignments.get(taskId) ?? [];
@@ -921,12 +921,12 @@ export class StateStore {
     const inFiles = (assignment: Assignment): boolean => matchesAnyGlob(file, assignment.files, insensitive) || assignment.files.some((entry) => fileKey(entry) === fileKey(file));
     const own = assignments.find((assignment) => assignment.agentId === agentId);
     if (own !== undefined) {
-      return inFiles(own) ? null : { ruleId: 'monitor.implementer-scope', reason: `${file} is outside ${own.label}'s assignment (${own.files.join(', ')}). The edit proceeds and is recorded; stay within your files or ask the orchestrator to reassign (ADR 0031).` };
+      return inFiles(own) ? null : { ruleId: 'monitor.implementer-scope', reason: `${file} is outside ${own.label}'s assignment (${own.files.join(', ')}). The edit proceeds and is recorded; stay within your files or ask the orchestrator to reassign.` };
     }
     const matching = assignments.filter(inFiles);
     if (matching.some((assignment) => assignment.agentId === null)) return null;
-    if (matching.length > 0) return { ruleId: 'monitor.implementer-scope', reason: `${file} belongs to ${matching.map((assignment) => assignment.label).join(', ')}, assigned to another implementer (ADR 0031).` };
-    return { ruleId: 'monitor.implementer-scope', reason: `${file} is in no implementer's assignment (${assignments.map((assignment) => assignment.label).join(', ')}) (ADR 0031).` };
+    if (matching.length > 0) return { ruleId: 'monitor.implementer-scope', reason: `${file} belongs to ${matching.map((assignment) => assignment.label).join(', ')}, assigned to another implementer.` };
+    return { ruleId: 'monitor.implementer-scope', reason: `${file} is in no implementer's assignment (${assignments.map((assignment) => assignment.label).join(', ')}).` };
   }
 
   /** After a real edit: remember the writer, and bind an implementer to its assignment by its first edit. */
@@ -944,7 +944,7 @@ export class StateStore {
     await this.database.db.updateTable('implementer_assignments').set({ agent_id: agentId }).where('task_id', '=', taskId).where('label', '=', chosen.label).where('released_at', 'is', null).execute();
   }
 
-  /** Where the work strays from the plan (ADR 0031): files no step names, steps not started. */
+  /** Where the work strays from the plan: files no step names, steps not started. */
   async planDrift(task: Task): Promise<PlanDrift> {
     const document = task.plan.document;
     const changed = await this.changesSincePlanApproval(task);
@@ -964,7 +964,7 @@ export class StateStore {
     };
   }
 
-  /** The plugin agent type of a subagent run, from SubagentStart (ADR 0023). */
+  /** The plugin agent type of a subagent run, from SubagentStart. */
   agentTypeOf(agentId: string): string | null {
     const row = this.database.raw.prepare('SELECT agent_type FROM agent_runs WHERE agent_id = ?').get(agentId) as { agent_type: string | null } | undefined;
     return row?.agent_type ?? null;
@@ -986,7 +986,7 @@ export class StateStore {
     this.assignments = assignments;
   }
 
-  // --- The optional Artifact (ADR 0042) -----------------------------------------------------------
+  // --- The optional Artifact ----------------------------------------------------------------------
 
   /** The user's choice about an Artifact, recorded by the skill through MCP; the latest counts. */
   async recordArtifactDecision(taskId: string, decision: { decision: 'created'; kind: string; title: string; url: string } | { decision: 'declined'; reason: string }, sessionId: string | null, now: Date): Promise<ArtifactDecision> {
@@ -1028,7 +1028,7 @@ export class StateStore {
     return rows.map(artifactDecisionFromRow);
   }
 
-  // --- Independent review (ADR 0032–0035) -------------------------------------------------------
+  // --- Independent review -----------------------------------------------------------------------
 
   /** A reviewer's submission for the current round; the round completes when all three reported. */
   async submitReview(taskId: string, review: ReviewSubmission, sessionId: string | null, agentId: string | null, now: Date): Promise<ReviewState> {
@@ -1171,7 +1171,7 @@ export class StateStore {
     }
   }
 
-  /** Claude's remediation plan for the open review findings (ADR 0034); only the user approves it. */
+  /** Claude's remediation plan for the open review findings; only the user approves it. */
   async proposeFixes(taskId: string, plan: FixPlan, sessionId: string | null, now: Date): Promise<ReviewState> {
     const task = this.requireTask(taskId);
     if (task.state !== 'REVIEW_REPORT' && task.state !== 'WAIT_REVIEW_FIX_APPROVAL') throw new StateError(409, `${taskId} is ${task.state}; a fix plan follows a review report`);
@@ -1196,7 +1196,7 @@ export class StateStore {
     return this.reviewState(taskId);
   }
 
-  /** The approved fixes are done: a new round starts for the same reviewers (ADR 0035). */
+  /** The approved fixes are done: a new round starts for the same reviewers. */
   async reportFixes(taskId: string, summary: string, sessionId: string | null, now: Date): Promise<ReviewState> {
     const task = this.requireTask(taskId);
     if (task.state !== 'FIX_IMPLEMENTATION') throw new StateError(409, `${taskId} is ${task.state}; fixes are reported after the user approved the fix plan`);
@@ -1216,7 +1216,7 @@ export class StateStore {
     return this.reviewState(taskId);
   }
 
-  /** The user waives the (rest of the) review with a reason; the final checks run (ADR 0034). */
+  /** The user waives the (rest of the) review with a reason; the final checks run. */
   async skipReview(taskId: string, reason: string, now: Date, channel: Channel): Promise<ReviewState> {
     const task = this.requireTask(taskId);
     const gitNow = await this.prepareSnapshot(task, 'report');
@@ -1290,7 +1290,7 @@ export class StateStore {
   }
 
   /**
-   * Whether a reviewer is independent of the implementation (spec JR-010): a separate subagent that
+   * Whether a reviewer is independent of the implementation: a separate subagent that
    * edited nothing of the task. A review from the main session (which implemented) is not.
    */
   private independenceOf(task: Task, agentId: string | null): { independent: boolean; note: string } {
@@ -1303,7 +1303,7 @@ export class StateStore {
   }
 
   /**
-   * What JERRY saw of the quality of the work, for the report (ADR 0027–0031): open findings, the
+   * What JERRY saw of the quality of the work, for the report: open findings, the
    * test runs against the checks the report claims passed, and plan drift.
    */
   private async qualityEvidence(task: Task, document: ImplementationReport): Promise<NonNullable<ReportEvidence['quality']>> {
@@ -1336,7 +1336,7 @@ export class StateStore {
     };
   }
 
-  /** A test command Claude ran (ADR 0030); the same hook event twice is one run. */
+  /** A test command Claude ran; the same hook event twice is one run. */
   async recordTestRun(run: TestRun & { repoRoot: string; eventId: string }): Promise<void> {
     await this.database.db
       .insertInto('test_runs')
@@ -1361,7 +1361,7 @@ export class StateStore {
     return new Map(rows.map((row) => [row.task_id!, testRunFromRow(row)]));
   }
 
-  /** Every version of a task's plan, oldest first (ADR 0026: the user compares revisions). */
+  /** Every version of a task's plan, oldest first: the user compares revisions. */
   async planVersions(taskId: string): Promise<Plan[]> {
     this.requireTask(taskId);
     const rows = await this.database.db.selectFrom('plans').selectAll().where('task_id', '=', taskId).orderBy('version').execute();
@@ -1543,7 +1543,7 @@ export class StateStore {
       if (event.eventType === 'PreToolUse' && (event.ruleId === 'monitor.in-approved-scope' || event.ruleId === 'monitor.user-uncommitted-file') && event.taskId !== null) {
         await this.linkSession(event.sessionId, event.taskId, 'edit', new Date(event.timestamp));
       }
-      // Subagent runs (ADR 0023): started and stopped as the hooks saw them.
+      // Subagent runs: started and stopped as the hooks saw them.
       if (event.eventType === 'SubagentStart' && event.agentId !== null) {
         await this.database.db
           .insertInto('agent_runs')
@@ -1602,7 +1602,7 @@ export class StateStore {
   }
 
   /**
-   * Retention (spec §18.2): events and sessions older than `days` are deleted. Governance records
+   * Retention: events and sessions older than `days` are deleted. Governance records
    * (tasks, plans, approvals, audit log) are kept. The database file shrinks after large deletions.
    */
   async applyRetention(now: Date, days: number): Promise<{ events: number; sessions: number }> {
@@ -1702,7 +1702,7 @@ export class StateStore {
     });
     this.sessionTotal = Number(sessionTotal.count);
 
-    // The user's uncommitted files at each open task's latest plan approval (ADR 0017).
+    // The user's uncommitted files at each open task's latest plan approval.
     const userDirty = new Map<string, Set<string>>();
     for (const task of this.state.tasks.filter((candidate) => !isTerminal(candidate.state))) {
       const baseline = await latestSnapshot(db, task.taskId, 'plan.approved');
@@ -1712,7 +1712,7 @@ export class StateStore {
     await this.loadAssignments();
   }
 
-  /** The stored profile of a repository with its freshness fingerprints (ADR 0020). */
+  /** The stored profile of a repository with its freshness fingerprints. */
   async storedProfile(repoRoot: string): Promise<{ profile: ProjectProfile; fingerprints: ProfileFingerprints; scannedAt: string } | null> {
     const row = await this.database.db.selectFrom('project_profiles').selectAll().where('repo_id', '=', repositoryId(repoRoot)).executeTakeFirst();
     if (row === undefined) return null;
@@ -1740,7 +1740,7 @@ export class StateStore {
     return rows.map((row) => row.root_path);
   }
 
-  /** One-time import of the M0 JSON state into an empty database; the JSON file is kept, renamed. */
+  /** One-time import of the old JSON state file into an empty database; the JSON file is kept, renamed. */
   private async importLegacyState(legacyStateFile: string): Promise<void> {
     if (!fs.existsSync(legacyStateFile)) return;
     const { db } = this.database;
@@ -1762,7 +1762,7 @@ export class StateStore {
         await trx.insertInto('plans').values({ task_id: task.taskId, version: task.plan.version, content_hash: task.plan.contentHash, scope_json: JSON.stringify(task.plan.scope), created_at: task.plan.createdAt }).execute();
       }
       for (const approval of legacy.approvals) {
-        // M0 kept only the current plan version; approvals of older versions have no plan row to reference.
+        // The old JSON state kept only the current plan version; approvals of older versions have no plan row to reference.
         if (!legacy.tasks.some((task) => task.taskId === approval.taskId && task.plan.version === approval.version)) continue;
         await trx
           .insertInto('approvals')
@@ -1852,7 +1852,7 @@ async function linkSession(trx: Transaction<JerrySchema> | Kysely<JerrySchema>, 
     .execute();
 }
 
-/** The current fix plan: its review round is the version the user decides on (ADR 0034). */
+/** The current fix plan: its review round is the version the user decides on. */
 async function latestFixPlanSubject(trx: Transaction<JerrySchema>, taskId: string): Promise<{ version: number; contentHash: string } | null> {
   const row = await trx.selectFrom('review_rounds').select(['round', 'fix_plan_hash']).where('task_id', '=', taskId).where('fix_plan_hash', 'is not', null).orderBy('round', 'desc').limit(1).executeTakeFirst();
   return row === undefined ? null : { version: row.round, contentHash: row.fix_plan_hash! };
@@ -1975,7 +1975,7 @@ async function collectEvidence(trx: Transaction<JerrySchema>, task: Task, docume
   const sameRepo = (repository: string): boolean => repository.trim() === '' || comparablePath(repository, task.repoRoot, platform) === comparablePath(task.repoRoot, task.repoRoot, platform);
   const reported = new Set(document.changes.filter((change) => sameRepo(change.repository)).map((change) => key(change.path.trim().replaceAll('\\', '/').replace(/^\.\//, ''))));
   const observedEdits = [...observed.values()].sort();
-  // Git also sees what shell commands and generators changed (ADR 0017).
+  // Git also sees what shell commands and generators changed.
   const changed = new Map(observed);
   for (const file of git?.changed ?? []) changed.set(key(file), file);
   return {

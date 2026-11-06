@@ -34,7 +34,7 @@ function fingerprintRealProfile(): string {
 }
 
 /**
- * M0 acceptance for install/uninstall through the official Claude Code CLI, against an
+ * Acceptance for install/uninstall through the official Claude Code CLI, against an
  * isolated CLAUDE_CONFIG_DIR that already contains user settings. The real profile must not change.
  */
 describe.skipIf(claude === null)('jerry install / doctor / uninstall (isolated Claude profile)', () => {

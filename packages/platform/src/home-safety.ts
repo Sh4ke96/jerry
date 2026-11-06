@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 /**
- * ADR 0002: JERRY never writes to, or deletes from, any repository. JERRY_HOME is the only place
+ * JERRY never writes to, or deletes from, any repository. JERRY_HOME is the only place
  * JERRY writes, so it must not lie inside a Git working tree. Called before anything is created.
  */
 export function assertJerryHomeOutsideRepositories(home: string): void {

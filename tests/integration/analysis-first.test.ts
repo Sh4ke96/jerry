@@ -6,7 +6,7 @@ import { api, createFixtureRepo, runBridge, startCore, tempDir, type RunningCore
 import { McpClient } from '../helpers/mcp-client.js';
 import { samplePlan } from '../helpers/plan-fixture.js';
 
-/** ADR 0024: task intake, read-only analysts, and the plan built on their reports. */
+/** Task intake, read-only analysts, and the plan built on their reports. */
 describe('analysis first: intake, analysts, plan from their reports (bundled bridge + MCP + Core)', () => {
   const base = tempDir('analysis-first');
   const repo = createFixtureRepo(path.join(base, 'repo'));

@@ -2,7 +2,7 @@
 // --plugin-dir (session-only; Claude settings are not modified) against a temporary fixture repo.
 // Uses the signed-in Claude account and a small model. Opt-in: pnpm build && node scripts/e2e-live.mjs
 //
-// Expected behaviour (ADR 0003): JERRY never blocks edits, it warns about deviations from the
+// Expected behaviour: JERRY never blocks edits, it warns about deviations from the
 // approved plan; it blocks only hard rules such as Git state changes, with or without Core.
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -42,7 +42,7 @@ git('add', '.');
 git('commit', '-q', '-m', 'initial');
 const initialHead = git('rev-parse', 'HEAD').stdout.trim();
 
-// A short quiet period, so quality findings are ready by the model's next tool call (ADR 0029).
+// A short quiet period, so quality findings are ready by the model's next tool call.
 const env = { ...process.env, JERRY_HOME: home, JERRY_CORE_PORT: '0', JERRY_QUALITY_DEBOUNCE_MS: '300' };
 const results = [];
 const expect = (name, ok, detail = '') => {
@@ -272,7 +272,7 @@ const k2 = runClaude('K2: /jerry:commit-message', '/jerry:commit-message', ['Rea
 expect('K2: Claude proposed a commit message and left Git alone', /```/.test(k2.text) && gitUntouched(), k2.text.slice(0, 200));
 const accepted = await coreApi(info, 'POST', `/api/v1/tasks/${task.taskId}/approvals`, { stage: 'IMPLEMENTATION', version: 1, decision: 'APPROVED', comment: 'live check' });
 
-// R — independent review: the accepted implementation goes to three read-only reviewers (ADR 0032).
+// R — independent review: the accepted implementation goes to three read-only reviewers.
 expect('R: accepting the implementation starts the independent review', (await coreApi(info, 'GET', `/api/v1/tasks/${task.taskId}`)).state === 'CODE_REVIEW');
 const r = runClaude(
   'R: /jerry:review',
@@ -303,7 +303,7 @@ expect(
 const doneHistory = await coreApi(info, 'GET', `/api/v1/tasks/${task.taskId}/transitions`);
 expect('K: DONE was set by Core, not by a model or the user', doneHistory.at(-1)?.event === 'task.completed' && doneHistory.at(-1)?.actor === 'core', JSON.stringify(doneHistory.at(-1)));
 
-// S — the final report, and the Artifact as the user's choice (ADR 0041–0042). Headless sessions cannot
+// S — the final report, and the Artifact as the user's choice. Headless sessions cannot
 // answer a question tool, so the user's answer ("no") is in the prompt; creating a real Artifact would
 // publish to the account, which is left to interactive use.
 const finalReport = await coreApi(info, 'GET', `/api/v1/tasks/${task.taskId}/final-report`);

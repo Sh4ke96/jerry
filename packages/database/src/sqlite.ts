@@ -7,7 +7,7 @@ export type DatabaseSync = NodeSqlite.DatabaseSync;
 let loaded: SqliteModule | null = null;
 
 /**
- * Loads the built-in node:sqlite module (ADR 0005). It is marked experimental in Node 22 and
+ * Loads the built-in node:sqlite module. It is marked experimental in Node 22 and
  * prints an ExperimentalWarning on load; that one warning is filtered so it does not pollute
  * core.log, every other warning is still printed. Loading lazily keeps the filter in front of it.
  */

@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { loginCodeResponseSchema } from '@jerry/contracts';
 import { readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
+import { mark } from './emoji.js';
 
 /**
  * Opens the dashboard: asks Core for a one-time login link (valid 60 s, single use) and hands it
@@ -15,7 +16,7 @@ export async function openDashboard(options: { printOnly: boolean }): Promise<vo
     return;
   }
   openInBrowser(login.url);
-  console.log(`Opened the JERRY dashboard at ${new URL(login.url).origin} (the login link works once and expires in 60 s).`);
+  console.log(mark('pass', `Opened the JERRY dashboard at ${new URL(login.url).origin} (the login link works once and expires in 60 s).`));
 }
 
 function openInBrowser(url: string): void {

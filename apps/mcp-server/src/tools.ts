@@ -36,13 +36,14 @@ import {
   type TaskWithDecision,
   type WorkflowState,
 } from '@jerry/contracts';
+import { EMOJI, decorate } from '@jerry/contracts/emoji';
 import { autostartCore, CoreUnavailableError, readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
 import { isTerminal, WORK_STATES } from '@jerry/workflow';
 import { z } from 'zod';
 import type { CallContext, ToolDefinition, ToolResult } from './protocol.js';
 
 /**
- * JERRY tools for Claude (spec §4.2 E). They read state, preview gate decisions, submit plans and
+ * JERRY tools for Claude. They read state, preview gate decisions, submit plans and
  * implementation reports, and save progress checkpoints. There is deliberately no tool that
  * approves, accepts, rejects, excludes, pauses or completes anything: those are user actions in the
  * CLI or dashboard. A submitted plan or report only ever waits for the user; a checkpoint is a note.
@@ -53,16 +54,16 @@ const DEFAULT_DEVIATION_WINDOW_MINUTES = 480;
 /** The plan document's JSON Schema, generated from the Zod schema Core validates with. */
 const PLAN_JSON_SCHEMA = (() => {
   const { $schema: _ignored, ...schema } = z.toJSONSchema(planDocumentSchema, { io: 'input' }) as Record<string, unknown>;
-  return { ...schema, description: 'The plan (spec §7.2). scope.include lists the repo-relative globs JERRY checks edits against.' };
+  return { ...schema, description: 'The plan. scope.include lists the repo-relative globs JERRY checks edits against.' };
 })();
 
 /** The analysis report's JSON Schema, generated from the Zod schema Core validates with. */
 const ANALYSIS_JSON_SCHEMA = (() => {
   const { $schema: _ignored, ...schema } = z.toJSONSchema(analysisReportSchema, { io: 'input' }) as Record<string, unknown>;
-  return { ...schema, description: 'Your analysis (spec §7.2 Phase 2): files read, observations with path:line evidence, risks, recommendations, confidence, gaps.' };
+  return { ...schema, description: 'Your analysis: files read, observations with path:line evidence, risks, recommendations, confidence, gaps.' };
 })();
 
-/** Review and fix-plan JSON Schemas, generated from the Zod schemas Core validates with (ADR 0032, 0034). */
+/** Review and fix-plan JSON Schemas, generated from the Zod schemas Core validates with. */
 const REVIEW_JSON_SCHEMA = (() => {
   const { $schema: _ignored, ...schema } = z.toJSONSchema(reviewSubmissionSchema, { io: 'input' }) as Record<string, unknown>;
   return { ...schema, description: 'Your review: your role, the files you read in full, findings with file:line evidence, and gaps.' };
@@ -75,7 +76,7 @@ const FIX_PLAN_JSON_SCHEMA = (() => {
 /** The report's JSON Schema, generated from the Zod schema Core validates with. */
 const REPORT_JSON_SCHEMA = (() => {
   const { $schema: _ignored, ...schema } = z.toJSONSchema(implementationReportSchema, { io: 'input' }) as Record<string, unknown>;
-  return { ...schema, description: 'The implementation report (spec §7.2 Phase 5). Real results only: a check that did not run is NOT_RUN with the reason.' };
+  return { ...schema, description: 'The implementation report. Real results only: a check that did not run is NOT_RUN with the reason.' };
 })();
 
 function projectDir(): string {
@@ -91,6 +92,11 @@ function ok(result: Record<string, unknown>): ToolResult {
   return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }], structuredContent: result };
 }
 
+/** An error Claude reads: the call did not do what was asked. */
+function failure(text: string): ToolResult {
+  return { content: [{ type: 'text', text: decorate(EMOJI.fail, text) }], isError: true };
+}
+
 /** Core down: say so plainly (and start it if installed) instead of guessing the state. */
 function unavailable(error: unknown): ToolResult {
   let started = 'unavailable';
@@ -101,7 +107,7 @@ function unavailable(error: unknown): ToolResult {
   }
   const cause = error instanceof Error ? error.message : String(error);
   const hint = started === 'unavailable' ? 'Ask the user to run "jerry core start".' : 'JERRY is starting Core; try again in a few seconds.';
-  return { content: [{ type: 'text', text: `JERRY Core is not reachable (${cause}). The plan state is unknown. ${hint} Hard rules (no Git changes) still apply.` }], isError: true };
+  return failure(`JERRY Core is not reachable (${cause}). The plan state is unknown. ${hint} Hard rules (no Git changes) still apply.`);
 }
 
 async function withCore(work: () => Promise<ToolResult>): Promise<ToolResult> {
@@ -110,7 +116,7 @@ async function withCore(work: () => Promise<ToolResult>): Promise<ToolResult> {
   } catch (error) {
     if (error instanceof CoreUnavailableError) return unavailable(error);
     const message = error instanceof Error ? error.message : String(error);
-    return { content: [{ type: 'text', text: `JERRY could not answer: ${message}` }], isError: true };
+    return failure(`JERRY could not answer: ${message}`);
   }
 }
 
@@ -120,7 +126,7 @@ function sessionId(): string | null {
   return value === undefined || value === '' ? null : value;
 }
 
-/** Tells Core which session made the call (ADR 0013); Core prefers the hook's record of the tool use. */
+/** Tells Core which session made the call; Core prefers the hook's record of the tool use. */
 function origin(call: CallContext): CallOrigin {
   const session = sessionId();
   return { ...(call.toolUseId === null ? {} : { toolUseId: call.toolUseId }), ...(session === null ? {} : { sessionId: session }) };
@@ -169,7 +175,7 @@ export const TOOLS: readonly ToolDefinition[] = [
         // The current task: the one this session worked on most recently, else the most recently active.
         const recency = (task: TaskSummary): string => task.activity.lastActivityAt ?? task.createdAt;
         const latest = open.find((task) => task.taskId === state.sessionTasks.find((id) => open.some((candidate) => candidate.taskId === id))) ?? [...open].sort((a, b) => recency(b).localeCompare(recency(a)))[0];
-        // While a plan is implemented, its steps and the implementers' assignments are the work order (ADR 0031).
+        // While a plan is implemented, its steps and the implementers' assignments are the work order.
         const document = latest !== undefined && coversEdits(latest) ? latest.plan.document : undefined;
         const assignments = document === undefined ? [] : z.array(assignmentSchema).parse(await core('GET', `/api/v1/tasks/${encodeURIComponent(latest!.taskId)}/assignments`));
         const workOrder =
@@ -225,7 +231,7 @@ export const TOOLS: readonly ToolDefinition[] = [
     handler: (args) =>
       withCore(async () => {
         const paths = z.array(z.string().min(1)).min(1).max(50).safeParse(args['paths']);
-        if (!paths.success) return { content: [{ type: 'text', text: 'paths must be a list of 1 to 50 file paths' }], isError: true };
+        if (!paths.success) return failure('paths must be a list of 1 to 50 file paths');
         const cwd = typeof args['cwd'] === 'string' && args['cwd'] !== '' ? args['cwd'] : projectDir();
         const preview = gatePreviewResponseSchema.parse(await core('POST', '/api/v1/gate/preview', { cwd, paths: paths.data }));
         return ok({ decisions: preview.decisions.map((decision) => ({ path: decision.path, verdict: decision.verdict, rule: decision.ruleId, reason: decision.reason, taskId: decision.taskId })) });
@@ -290,7 +296,7 @@ export const TOOLS: readonly ToolDefinition[] = [
     handler: (args, call) =>
       withCore(async () => {
         const plan = planDocumentSchema.safeParse(args['plan']);
-        if (!plan.success) return { content: [{ type: 'text', text: `The plan is incomplete or malformed; fix it and submit again:\n${z.prettifyError(plan.error)}` }], isError: true };
+        if (!plan.success) return failure(`The plan is incomplete or malformed; fix it and submit again:\n${z.prettifyError(plan.error)}`);
         const document = plan.data;
         const taskId = typeof args['taskId'] === 'string' && args['taskId'] !== '' ? args['taskId'] : null;
         let task: Task;
@@ -298,11 +304,11 @@ export const TOOLS: readonly ToolDefinition[] = [
           task = taskSchema.parse(await core('POST', `/api/v1/tasks/${encodeURIComponent(taskId)}/plan`, { scope: document.scope.include, document, submittedBy: 'claude', origin: origin(call) }));
         } else {
           const title = typeof args['title'] === 'string' ? args['title'].trim() : '';
-          if (title === '') return { content: [{ type: 'text', text: 'A new task needs a short title.' }], isError: true };
+          if (title === '') return failure('A new task needs a short title.');
           const repoPath = typeof args['repoPath'] === 'string' && args['repoPath'] !== '' ? args['repoPath'] : projectDir();
           task = taskSchema.parse(await core('POST', '/api/v1/tasks', { repoPath, title, scope: document.scope.include, document, submittedBy: 'claude', origin: origin(call) }));
         }
-        // JERRY's completeness check (ADR 0025): informational, the user still decides.
+        // JERRY's completeness check: informational, the user still decides.
         const grade = taskSummarySchema.parse(await core('GET', `/api/v1/tasks/${encodeURIComponent(task.taskId)}`)).planGrade;
         const missing = grade?.checks.filter((check) => !check.passed) ?? [];
         return ok({
@@ -335,7 +341,7 @@ export const TOOLS: readonly ToolDefinition[] = [
     handler: (args, call) =>
       withCore(async () => {
         const input = z.object({ title: z.string().trim().min(1), goal: z.string().trim().min(1), focus: z.array(z.string().trim().min(1)).min(1).max(50) }).safeParse(args);
-        if (!input.success) return { content: [{ type: 'text', text: `A task intake needs a title, a goal and 1 to 50 focus globs:\n${z.prettifyError(input.error)}` }], isError: true };
+        if (!input.success) return failure(`A task intake needs a title, a goal and 1 to 50 focus globs:\n${z.prettifyError(input.error)}`);
         const repoPath = typeof args['repoPath'] === 'string' && args['repoPath'] !== '' ? args['repoPath'] : projectDir();
         const task = taskSchema.parse(await core('POST', '/api/v1/tasks/intake', { repoPath, ...input.data, submittedBy: 'claude', origin: origin(call) }));
         return ok({
@@ -361,7 +367,7 @@ export const TOOLS: readonly ToolDefinition[] = [
     handler: (args) =>
       withCore(async () => {
         const taskId = typeof args['taskId'] === 'string' ? args['taskId'].trim().toUpperCase() : '';
-        if (taskId === '') return { content: [{ type: 'text', text: 'Which task? Pass its taskId (JRY-…).' }], isError: true };
+        if (taskId === '') return failure('Which task? Pass its taskId (JRY-…).');
         const task = taskSummarySchema.parse(await core('GET', `/api/v1/tasks/${encodeURIComponent(taskId)}`));
         return ok(analysisDigest(task));
       }),
@@ -370,13 +376,13 @@ export const TOOLS: readonly ToolDefinition[] = [
     name: 'jerry_get_final_report',
     title: 'Final report of a task',
     description:
-      'The final report of a task (spec Phase 9), assembled by JERRY from what it recorded: changes per repository, diff summary, tests and observed runs, QA handover, security, review, rules, commit subjects, the Artifact decision, coverage, limitations, decisions and the Definition of Done evidence. A draft until the task is DONE. Read-only.',
+      'The final report of a task, assembled by JERRY from what it recorded: changes per repository, diff summary, tests and observed runs, QA handover, security, review, rules, commit subjects, the Artifact decision, coverage, limitations, decisions and the Definition of Done evidence. A draft until the task is DONE. Read-only.',
     inputSchema: { type: 'object', properties: { taskId: { type: 'string', description: 'The task (JRY-…).' } }, required: ['taskId'], additionalProperties: false },
     readOnly: true,
     handler: (args) =>
       withCore(async () => {
         const taskId = typeof args['taskId'] === 'string' ? args['taskId'].trim().toUpperCase() : '';
-        if (taskId === '') return { content: [{ type: 'text', text: 'Which task? Pass its taskId (JRY-…).' }], isError: true };
+        if (taskId === '') return failure('Which task? Pass its taskId (JRY-…).');
         return ok(finalReportSchema.parse(await core('GET', `/api/v1/tasks/${encodeURIComponent(taskId)}/final-report`)));
       }),
   },
@@ -404,7 +410,7 @@ export const TOOLS: readonly ToolDefinition[] = [
         const taskId = typeof args['taskId'] === 'string' ? args['taskId'].trim().toUpperCase() : '';
         const { taskId: _task, ...rest } = args;
         const decision = artifactDecisionRequestSchema.safeParse(rest);
-        if (taskId === '' || !decision.success) return { content: [{ type: 'text', text: `Pass the taskId and the decision ('created' with kind, title and the claude.ai Artifact link, or 'declined').${decision.success ? '' : `\n${z.prettifyError(decision.error)}`}` }], isError: true };
+        if (taskId === '' || !decision.success) return failure(`Pass the taskId and the decision ('created' with kind, title and the claude.ai Artifact link, or 'declined').${decision.success ? '' : `\n${z.prettifyError(decision.error)}`}`);
         const saved = artifactDecisionSchema.parse(await core('POST', `/api/v1/tasks/${encodeURIComponent(taskId)}/artifact`, { ...decision.data, origin: origin(call) }));
         return ok({ saved: true, taskId: saved.taskId, decision: saved.decision, ...(saved.url === null ? {} : { url: saved.url }) });
       }),
@@ -428,7 +434,7 @@ export const TOOLS: readonly ToolDefinition[] = [
       withCore(async () => {
         const taskId = typeof args['taskId'] === 'string' ? args['taskId'].trim().toUpperCase() : '';
         const review = reviewSubmissionSchema.safeParse(args['review']);
-        if (taskId === '' || !review.success) return { content: [{ type: 'text', text: `The review needs the taskId and a complete review.${review.success ? '' : `\n${z.prettifyError(review.error)}`}` }], isError: true };
+        if (taskId === '' || !review.success) return failure(`The review needs the taskId and a complete review.${review.success ? '' : `\n${z.prettifyError(review.error)}`}`);
         const state = reviewStateSchema.parse(await core('POST', `/api/v1/tasks/${encodeURIComponent(taskId)}/reviews`, { review: review.data, origin: origin(call) }));
         const round = state.rounds.at(-1);
         const mine = round?.submissions.find((submission) => submission.role === review.data.role);
@@ -451,7 +457,7 @@ export const TOOLS: readonly ToolDefinition[] = [
     handler: (args) =>
       withCore(async () => {
         const taskId = typeof args['taskId'] === 'string' ? args['taskId'].trim().toUpperCase() : '';
-        if (taskId === '') return { content: [{ type: 'text', text: 'Which task? Pass its taskId (JRY-…).' }], isError: true };
+        if (taskId === '') return failure('Which task? Pass its taskId (JRY-…).');
         return ok(reviewDigest(reviewStateSchema.parse(await core('GET', `/api/v1/tasks/${encodeURIComponent(taskId)}/review`))));
       }),
   },
@@ -465,7 +471,7 @@ export const TOOLS: readonly ToolDefinition[] = [
     handler: (args) =>
       withCore(async () => {
         const taskId = typeof args['taskId'] === 'string' ? args['taskId'].trim().toUpperCase() : '';
-        if (taskId === '') return { content: [{ type: 'text', text: 'Which task? Pass its taskId (JRY-…).' }], isError: true };
+        if (taskId === '') return failure('Which task? Pass its taskId (JRY-…).');
         return ok(reviewDigest(reviewStateSchema.parse(await core('POST', `/api/v1/tasks/${encodeURIComponent(taskId)}/reviews/finish`, {}))));
       }),
   },
@@ -485,7 +491,7 @@ export const TOOLS: readonly ToolDefinition[] = [
       withCore(async () => {
         const taskId = typeof args['taskId'] === 'string' ? args['taskId'].trim().toUpperCase() : '';
         const plan = fixPlanSchema.safeParse(args['plan']);
-        if (taskId === '' || !plan.success) return { content: [{ type: 'text', text: `The fix plan needs the taskId and a complete plan.${plan.success ? '' : `\n${z.prettifyError(plan.error)}`}` }], isError: true };
+        if (taskId === '' || !plan.success) return failure(`The fix plan needs the taskId and a complete plan.${plan.success ? '' : `\n${z.prettifyError(plan.error)}`}`);
         const state = reviewStateSchema.parse(await core('POST', `/api/v1/tasks/${encodeURIComponent(taskId)}/fix-plan`, { plan: plan.data, origin: origin(call) }));
         const round = state.rounds.at(-1)!;
         return ok({
@@ -507,7 +513,7 @@ export const TOOLS: readonly ToolDefinition[] = [
       withCore(async () => {
         const taskId = typeof args['taskId'] === 'string' ? args['taskId'].trim().toUpperCase() : '';
         const summary = typeof args['summary'] === 'string' ? args['summary'].trim() : '';
-        if (taskId === '' || summary === '') return { content: [{ type: 'text', text: 'Pass the taskId and a summary of the fixes.' }], isError: true };
+        if (taskId === '' || summary === '') return failure('Pass the taskId and a summary of the fixes.');
         const state = reviewStateSchema.parse(await core('POST', `/api/v1/tasks/${encodeURIComponent(taskId)}/fixes`, { summary, origin: origin(call) }));
         const round = state.rounds.at(-1)!;
         return ok({ taskId, reviewRound: round.round, filesToReview: round.changedFiles, nextStep: `Start the same three reviewers for round ${round.round} on these files and the findings they reported (jerry_get_review).` });
@@ -546,7 +552,7 @@ export const TOOLS: readonly ToolDefinition[] = [
       withCore(async () => {
         const taskId = typeof args['taskId'] === 'string' ? args['taskId'].trim().toUpperCase() : '';
         const request = assignmentRequestSchema.safeParse({ assignments: args['assignments'] });
-        if (taskId === '' || !request.success) return { content: [{ type: 'text', text: `Pass the taskId and 1–3 assignments with a label and plan steps.${request.success ? '' : `\n${z.prettifyError(request.error)}`}` }], isError: true };
+        if (taskId === '' || !request.success) return failure(`Pass the taskId and 1–3 assignments with a label and plan steps.${request.success ? '' : `\n${z.prettifyError(request.error)}`}`);
         const assignments = z.array(assignmentSchema).parse(await core('POST', `/api/v1/tasks/${encodeURIComponent(taskId)}/assignments`, { ...request.data, origin: origin(call) }));
         const drift = planDriftSchema.parse(await core('GET', `/api/v1/tasks/${encodeURIComponent(taskId)}/drift`));
         return ok({
@@ -583,7 +589,7 @@ export const TOOLS: readonly ToolDefinition[] = [
         if (args['all'] !== true) params.set('status', 'OPEN,ACCEPTED');
         const findings = z.array(findingSchema).parse(await core('GET', `/api/v1/findings?${params.toString()}`));
         const order = { P1: 0, P2: 1, P3: 2, P4: 3 } as const;
-        // The tests that belong to the changes (ADR 0030): the task given, or the one being implemented here.
+        // The tests that belong to the changes: the task given, or the one being implemented here.
         let testTask = taskId;
         if (testTask === null) {
           const state = await repositoryState(args['path']);
@@ -677,9 +683,9 @@ export const TOOLS: readonly ToolDefinition[] = [
     handler: (args, call) =>
       withCore(async () => {
         const taskId = typeof args['taskId'] === 'string' ? args['taskId'].trim().toUpperCase() : '';
-        if (taskId === '') return { content: [{ type: 'text', text: 'The report needs the taskId of the task you analysed.' }], isError: true };
+        if (taskId === '') return failure('The report needs the taskId of the task you analysed.');
         const report = analysisReportSchema.safeParse(args['report']);
-        if (!report.success) return { content: [{ type: 'text', text: `The analysis report is incomplete or malformed; fix it and submit again:\n${z.prettifyError(report.error)}` }], isError: true };
+        if (!report.success) return failure(`The analysis report is incomplete or malformed; fix it and submit again:\n${z.prettifyError(report.error)}`);
         const saved = analysisReportRecordSchema.parse(await core('POST', `/api/v1/tasks/${encodeURIComponent(taskId)}/analyses`, { report: report.data, origin: origin(call) }));
         const { citations } = saved;
         const problems = [
@@ -712,9 +718,9 @@ export const TOOLS: readonly ToolDefinition[] = [
     handler: (args, call) =>
       withCore(async () => {
         const taskId = typeof args['taskId'] === 'string' ? args['taskId'].trim().toUpperCase() : '';
-        if (taskId === '') return { content: [{ type: 'text', text: 'The report needs the taskId of the task in implementation.' }], isError: true };
+        if (taskId === '') return failure('The report needs the taskId of the task in implementation.');
         const report = implementationReportSchema.safeParse(args['report']);
-        if (!report.success) return { content: [{ type: 'text', text: `The report is incomplete or malformed; fix it and submit again:\n${z.prettifyError(report.error)}` }], isError: true };
+        if (!report.success) return failure(`The report is incomplete or malformed; fix it and submit again:\n${z.prettifyError(report.error)}`);
         const saved = implementationReportRecordSchema.parse(await core('POST', `/api/v1/tasks/${encodeURIComponent(taskId)}/reports`, { report: report.data, submittedBy: 'claude', origin: origin(call) }));
         const { evidence } = saved;
         const attention = [
@@ -756,7 +762,7 @@ export const TOOLS: readonly ToolDefinition[] = [
         const taskId = typeof args['taskId'] === 'string' ? args['taskId'].trim().toUpperCase() : '';
         const note = checkpointRequestSchema.safeParse({ summary: args['summary'], nextSteps: args['nextSteps'] ?? [] });
         if (taskId === '' || !note.success) {
-          return { content: [{ type: 'text', text: `A checkpoint needs a taskId and a summary (at most 2000 characters, up to 10 next steps of 300 characters).${note.success ? '' : `\n${z.prettifyError(note.error)}`}` }], isError: true };
+          return failure(`A checkpoint needs a taskId and a summary (at most 2000 characters, up to 10 next steps of 300 characters).${note.success ? '' : `\n${z.prettifyError(note.error)}`}`);
         }
         const saved = checkpointSchema.parse(await core('POST', `/api/v1/tasks/${encodeURIComponent(taskId)}/checkpoints`, { ...note.data, origin: origin(call) }));
         return ok({ saved: true, taskId: saved.taskId, at: saved.at, nextSteps: saved.nextSteps.length });
@@ -764,7 +770,7 @@ export const TOOLS: readonly ToolDefinition[] = [
   },
 ];
 
-/** The review state for Claude's context (ADR 0032–0035): compact, with the next step. */
+/** The review state for Claude's context: compact, with the next step. */
 export function reviewDigest(review: ReviewState): Record<string, unknown> {
   const round = review.rounds.at(-1);
   const reported = new Set(round?.submissions.map((submission) => submission.role) ?? []);
@@ -816,7 +822,7 @@ export function completenessOf(grade: PlanGrade): Record<string, unknown> {
 const DIGEST_ITEMS = 12;
 
 /**
- * The analysis of a task for Claude's context (ADR 0024): every report, compact, and what is
+ * The analysis of a task for Claude's context: every report, compact, and what is
  * missing. An analyst that stopped without a report or timed out is a gap, never a success.
  */
 export function analysisDigest(task: TaskSummary): Record<string, unknown> {
@@ -865,10 +871,10 @@ export function analysisDigest(task: TaskSummary): Record<string, unknown> {
 
 export function nextAction(state: RepositoryState): { action: string; details: string } {
   if (state.repoRoot === null) {
-    return { action: 'none', details: 'Not inside a Git repository: JERRY does not monitor edits here. Hard rules (no Git changes) still apply.' };
+    return { action: 'none', details: decorate(EMOJI.info, 'Not inside a Git repository: JERRY does not monitor edits here. Hard rules (no Git changes) still apply.') };
   }
   if (state.excluded) {
-    return { action: 'none', details: 'The user excluded this repository from JERRY monitoring. Hard rules (no Git changes) still apply.' };
+    return { action: 'none', details: decorate(EMOJI.info, 'The user excluded this repository from JERRY monitoring. Hard rules (no Git changes) still apply.') };
   }
   const open = state.tasks.filter((task) => !isTerminal(task.state));
   const ids = (states: readonly WorkflowState[]): string =>
@@ -882,9 +888,9 @@ export function nextAction(state: RepositoryState): { action: string; details: s
   const sentBack = approved.filter((task) => task.reportDecision?.decision === 'REJECTED');
   if (sentBack.length > 0) {
     const requests = sentBack.map((task) => `${task.taskId} report v${task.lastReport?.version}: ${task.reportDecision?.comment === '' ? 'no comment, ask the user what to change' : `"${task.reportDecision?.comment}"`}`).join('; ');
-    return { action: 'apply-requested-changes', details: `The user requested changes to the implementation (${requests}). Make them within the approved scope, run the checks again, then submit a new report with /jerry:report.` };
+    return { action: 'apply-requested-changes', details: `${EMOJI.implementation} The user requested changes to the implementation (${requests}). Make them within the approved scope, run the checks again, then submit a new report with /jerry:report.` };
   }
-  // Independent review (ADR 0032–0035): reviewers, fix plan, approved fixes, re-review.
+  // Independent review: reviewers, fix plan, approved fixes, re-review.
   const reviewing = open.filter((task) => ['CODE_REVIEW', 'REVERIFICATION', 'REVIEW_REPORT', 'WAIT_REVIEW_FIX_APPROVAL', 'FIX_IMPLEMENTATION'].includes(task.state));
   if (reviewing.length > 0) {
     const task = reviewing[0]!;
@@ -895,25 +901,25 @@ export function nextAction(state: RepositoryState): { action: string; details: s
       WAIT_REVIEW_FIX_APPROVAL: "has a fix plan waiting for the user's approval: do not change code until they decide",
       FIX_IMPLEMENTATION: 'has an approved fix plan: make exactly those fixes within the approved scope, then report them with jerry_report_fixes',
     };
-    return { action: 'review', details: `${task.taskId} ${what[task.state]}. jerry_get_review shows the round, coverage and open findings. Only the user approves fixes or waives the review.` };
+    return { action: 'review', details: `${EMOJI.review} ${task.taskId} ${what[task.state]}. jerry_get_review shows the round, coverage and open findings. Only the user approves fixes or waives the review.` };
   }
   if (approved.length > 0) {
     const plans = approved.map((task) => `${task.taskId} v${task.plan.version} (${task.plan.scope.join(', ')})`).join('; ');
-    // Open serious findings come first (ADR 0029): they are about the code just written.
+    // Open serious findings come first: they are about the code just written.
     const serious = approved.reduce((sum, task) => sum + (task.findings?.bySeverity.P1 ?? 0) + (task.findings?.bySeverity.P2 ?? 0), 0);
     const quality = serious > 0 ? ` JERRY found ${serious} open P1/P2 quality finding(s) in your changes: see jerry_list_findings and fix them first.` : '';
-    return { action: 'work-within-approved-scope', details: `Work within the approved scope of ${plans}. Edits outside it are recorded as deviations.${quality} When the work is done, report it with /jerry:report. Leave all Git operations to the user.` };
+    return { action: 'work-within-approved-scope', details: `${EMOJI.implementation} Work within the approved scope of ${plans}. Edits outside it are recorded as deviations.${quality} When the work is done, report it with /jerry:report. Leave all Git operations to the user.` };
   }
   const waiting = ids(['WAIT_PLAN_APPROVAL']);
   if (waiting !== '') {
-    return { action: 'wait-for-approval', details: `Plan ${waiting} is waiting for the user's approval (jerry approve or the dashboard). Do not treat it as approved; edits now are recorded as deviations.` };
+    return { action: 'wait-for-approval', details: `${EMOJI.waiting} Plan ${waiting} is waiting for the user's approval (jerry approve or the dashboard). Do not treat it as approved; edits now are recorded as deviations.` };
   }
   const accepting = open.filter((task) => task.state === 'WAIT_IMPLEMENTATION_ACCEPTANCE');
   if (accepting.length > 0) {
     const reports = accepting.map((task) => `${task.taskId} report v${task.lastReport?.version ?? '?'}`).join(', ');
     return {
       action: 'wait-for-acceptance',
-      details: `The implementation report ${reports} waits for the user's acceptance (JERRY dashboard, or jerry approve <taskId> --stage implementation --version <n>). Do not accept it yourself; change code only if they ask for changes; edits now are recorded as deviations.`,
+      details: `${EMOJI.waiting} The implementation report ${reports} waits for the user's acceptance (JERRY dashboard, or jerry approve <taskId> --stage implementation --version <n>). Do not accept it yourself; change code only if they ask for changes; edits now are recorded as deviations.`,
     };
   }
   // A task stays in FINAL_REPORT only when Core's final checks refused DONE (passing ones complete it at once).
@@ -927,24 +933,24 @@ export function nextAction(state: RepositoryState): { action: string; details: s
       .join(' | ');
     return {
       action: 'final-checks-failed',
-      details: `JERRY did not complete ${refused.map((task) => task.taskId).join(', ')} (${reasons}). Tell the user; they decide whether to request changes or cancel. Do not change code until then; edits now are recorded as deviations.`,
+      details: `${EMOJI.fail} JERRY did not complete ${refused.map((task) => task.taskId).join(', ')} (${reasons}). Tell the user; they decide whether to request changes or cancel. Do not change code until then; edits now are recorded as deviations.`,
     };
   }
   const paused = ids(['PAUSED']);
   if (paused !== '') {
-    return { action: 'paused', details: `The user paused ${paused}. Do not continue that work until they resume it; edits now are recorded as deviations.` };
+    return { action: 'paused', details: `${EMOJI.paused} The user paused ${paused}. Do not continue that work until they resume it; edits now are recorded as deviations.` };
   }
-  // Analysis first (ADR 0024): read-only analysts, then a plan built on their reports.
+  // Analysis first: read-only analysts, then a plan built on their reports.
   const analysing = open.filter((task) => task.state === 'DISCOVERY' || task.state === 'PARALLEL_ANALYSIS');
   if (analysing.length > 0) {
     const tasks = analysing.map((task) => `${task.taskId} (${task.state === 'DISCOVERY' ? 'no analysis report yet' : `${task.analyses.length} analysis report(s)`})`).join(', ');
     return {
       action: 'analyse-then-plan',
-      details: `${tasks} is being analysed. Run at most three of JERRY's analysts on it (/jerry:analyze), read their reports with jerry_get_analysis, then submit the plan built on them with /jerry:plan and the same taskId. Do not change code before the user approves the plan; edits now are recorded as deviations.`,
+      details: `${EMOJI.analysis} ${tasks} is being analysed. Run at most three of JERRY's analysts on it (/jerry:analyze), read their reports with jerry_get_analysis, then submit the plan built on them with /jerry:plan and the same taskId. Do not change code before the user approves the plan; edits now are recorded as deviations.`,
     };
   }
   if (open.length > 0) {
-    return { action: 'revise-plan', details: `The plan of ${open.map((task) => task.taskId).join(', ')} needs changes (rejected or withdrawn). Revise it with the user before changing code; edits now are recorded as deviations.` };
+    return { action: 'revise-plan', details: `${EMOJI.plan} The plan of ${open.map((task) => task.taskId).join(', ')} needs changes (rejected or withdrawn). Revise it with the user before changing code; edits now are recorded as deviations.` };
   }
-  return { action: 'propose-plan', details: 'No open JERRY task in this repository. For code changes, draft a plan with /jerry:plan for the user to approve; edits without one are recorded as deviations.' };
+  return { action: 'propose-plan', details: decorate(EMOJI.plan, 'No open JERRY task in this repository. For code changes, draft a plan with /jerry:plan for the user to approve; edits without one are recorded as deviations.') };
 }

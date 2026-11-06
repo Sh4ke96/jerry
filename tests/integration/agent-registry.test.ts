@@ -13,7 +13,7 @@ function frontmatter(file: string): Record<string, string> {
 
 const agentsDir = path.join(ROOT, 'claude-plugin', 'agents');
 
-describe('agent registry and plugin subagents (ADR 0022)', () => {
+describe('agent registry and plugin subagents', () => {
   it('ships exactly one subagent definition per registered role', () => {
     const files = fs.readdirSync(agentsDir).filter((file) => file.endsWith('.md')).sort();
     expect(files).toEqual(AGENT_ROLES.map((role) => `${role.id}.md`).sort());
@@ -34,7 +34,7 @@ describe('agent registry and plugin subagents (ADR 0022)', () => {
     }
   });
 
-  it('keeps every phase within the three-subagent cap of ADR 0015', () => {
+  it('keeps every phase within the three-subagent cap', () => {
     expect(MAX_SUBAGENTS).toBe(3);
     for (const phase of ['analysis', 'review'] as const) {
       expect(AGENT_ROLES.filter((role) => role.phase === phase), phase).toHaveLength(MAX_SUBAGENTS);

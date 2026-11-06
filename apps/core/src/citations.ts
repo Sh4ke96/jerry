@@ -4,7 +4,7 @@ import type { AnalysisReport } from '@jerry/contracts';
 import { absolutePath, relativeInside } from '@jerry/policy-engine';
 
 /**
- * Checks an analyst's `path:line` citations against the repository (ADR 0023): the file must exist
+ * Checks an analyst's `path:line` citations against the repository: the file must exist
  * inside it and the line must exist in the file. A model can cite what it never read; this makes
  * such citations visible. Files are read only to count lines, never stored.
  */

@@ -3,7 +3,7 @@ import { globsOverlap, planLayers } from '../src/index.js';
 
 const step = (dependsOn: number[] = []) => ({ step: 's', files: [], dependsOn });
 
-describe('implementation task DAG (ADR 0031)', () => {
+describe('implementation task DAG', () => {
   it('orders steps into layers that may run in parallel', () => {
     expect(planLayers([step(), step(), step([1]), step([1, 2]), step([4])])).toEqual({ layers: [[1, 2], [3, 4], [5]], blocked: [] });
   });

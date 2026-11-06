@@ -1,6 +1,9 @@
+import { EMOJI } from '@jerry/contracts/emoji';
+
 /**
- * Server-rendered pages until the dashboard app arrives (M1 item 7). No scripts, no external
- * resources; the CSP allows nothing beyond this document's own inline styles.
+ * Server-rendered pages for what the dashboard app cannot show: signing in or out, and an
+ * installation without the built dashboard. No scripts, no external resources; the CSP allows
+ * nothing beyond this document's own inline styles.
  */
 
 export const HTML_SECURITY_HEADERS: Readonly<Record<string, string>> = {
@@ -9,7 +12,7 @@ export const HTML_SECURITY_HEADERS: Readonly<Record<string, string>> = {
   'referrer-policy': 'no-referrer',
 };
 
-/** The dashboard app: only its own compiled scripts, styles, images and API (no inline code, no eval). */
+/** The built dashboard app: only its own compiled scripts, styles, images and API (no inline code, no eval). */
 export const DASHBOARD_SECURITY_HEADERS: Readonly<Record<string, string>> = {
   'content-security-policy':
     "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
@@ -32,10 +35,11 @@ function page(title: string, body: string): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${title}</title><style>${STYLE}</style></head><body><main>${body}</main></body></html>`;
 }
 
+/** Shown when Core runs without the built dashboard files (a source checkout before `pnpm build`). */
 export function dashboardPlaceholderPage(version: string): string {
   return page(
     'JERRY',
-    `<h1>JERRY Control Center</h1><p>You are signed in to JERRY Core ${version}. The dashboard itself arrives in a later step of M1.</p><p>Until then, use <code>jerry status</code>, <code>jerry task list</code> and <code>jerry events</code> in a terminal.</p>`,
+    `<h1>${EMOJI.jerry} JERRY Control Center</h1><p>You are signed in to JERRY Core ${version}, but this installation has no built dashboard. Run <code>pnpm build</code> in the JERRY repository (or reinstall JERRY) and restart Core.</p><p>${EMOJI.next} Meanwhile, use <code>jerry status</code>, <code>jerry task list</code> and <code>jerry events</code> in a terminal.</p>`,
   );
 }
 

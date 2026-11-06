@@ -1,7 +1,7 @@
 import { CORE_TOKEN_PATTERN, GATE_VERDICTS, TASK_ID_PATTERN, WORKFLOW_STATES } from './constants.js';
 
 /**
- * Dependency-free validators for the hook bridge's hot path (ADR 0010). Each one accepts exactly
+ * Dependency-free validators for the hook bridge's hot path. Each one accepts exactly
  * what the corresponding Zod schema in index.ts accepts; tests/integration/guards-equivalence.test.ts
  * checks that on valid and invalid fixtures. Types are imported only, so this module loads no Zod.
  */

@@ -1,5 +1,5 @@
 /**
- * The implementation task DAG (ADR 0031): plan steps ordered by their dependencies into layers;
+ * The implementation task DAG: plan steps ordered by their dependencies into layers;
  * steps in one layer do not depend on each other and may run in parallel (at most three at a time).
  */
 

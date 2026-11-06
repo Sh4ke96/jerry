@@ -3,22 +3,23 @@ import readline from 'node:readline/promises';
 import { databaseBackupResultSchema } from '@jerry/contracts';
 import { listBackups, restoreDatabase } from '@jerry/database';
 import { CoreUnavailableError, jerryPaths, readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
+import { mark } from './emoji.js';
 
 /** Online backup taken by the running Core. */
 export async function backupNow(): Promise<void> {
   const info = readCoreRuntimeInfo(resolveJerryHome());
   const result = databaseBackupResultSchema.parse(await requestCore(info, { method: 'POST', path: '/api/v1/database/backups', body: {}, timeoutMs: 30_000 }));
-  console.log(`Backup written to ${result.file}`);
+  console.log(mark('pass', `Backup written to ${result.file}`));
 }
 
 export function showBackups(): void {
   const backups = listBackups(jerryPaths(resolveJerryHome()).backupsDir);
   if (backups.length === 0) {
-    console.log('No backups yet.');
+    console.log(mark('info', 'No backups yet.'));
     return;
   }
   for (const backup of backups) {
-    console.log(`${backup.modifiedAt}  ${(backup.size / 1024).toFixed(0).padStart(6)} KiB  ${backup.file}`);
+    console.log(mark('report', `${backup.modifiedAt}  ${(backup.size / 1024).toFixed(0).padStart(6)} KiB  ${backup.file}`));
   }
 }
 
@@ -44,11 +45,11 @@ export async function restoreFromBackup(backupFile: string): Promise<void> {
   const typed = (await prompt.question(`Replace ${paths.databaseFile}\nwith ${source}?\nThe current database is backed up first. Type "restore" to confirm: `)).trim();
   prompt.close();
   if (typed !== 'restore') {
-    console.log('Confirmation did not match. Nothing changed.');
+    console.log(mark('fail', 'Confirmation did not match. Nothing changed.'));
     process.exitCode = 1;
     return;
   }
   const { safetyBackup } = await restoreDatabase({ file: paths.databaseFile, backupsDir: paths.backupsDir, backupFile: source });
-  console.log(`Restored ${source}.${safetyBackup === null ? '' : ` The previous database was saved as ${safetyBackup}.`}`);
-  console.log('Start Core again with "jerry core start".');
+  console.log(mark('pass', `Restored ${source}.${safetyBackup === null ? '' : ` The previous database was saved as ${safetyBackup}.`}`));
+  console.log(mark('next', 'Start Core again with "jerry core start".'));
 }

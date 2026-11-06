@@ -248,6 +248,18 @@ code {
   flex-wrap: wrap;
 }
 
+/* Emoji next to their text labels (aria-hidden: the label carries the meaning). */
+
+.emoji {
+  display: inline-block;
+  margin-right: 0.35em;
+  font-style: normal;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  line-height: 1;
+}
+
 /* Badges, chips, buttons */
 
 .badge {
@@ -640,7 +652,7 @@ input:focus {
   color: var(--accent);
 }
 
-/* Quality findings (ADR 0027). */
+/* Quality findings. */
 .findings__filters {
   display: flex;
   flex-wrap: wrap;
@@ -674,7 +686,7 @@ input:focus {
   padding: 2px 8px;
 }
 
-/* Plan version diff (ADR 0026). */
+/* Plan version diff. */
 .plan-diff {
   border-top: 1px solid var(--line);
   margin-top: 12px;
@@ -718,7 +730,7 @@ input:focus {
   width: 1px;
 }
 
-/* Evals (ADR 0036–0040). */
+/* Evals. */
 .evals__runs li {
   align-items: center;
   display: flex;

@@ -17,7 +17,7 @@ const TOKEN = 'a'.repeat(64);
 type Payload = NonNullable<InjectOptions['payload']>;
 
 /**
- * ADR 0007: who may call what. Runs the real Fastify app through inject(), without a network.
+ * Who may call what. Runs the real Fastify app through inject(), without a network.
  */
 describe('Core API access control', () => {
   const base = tempDir('api-auth');

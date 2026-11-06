@@ -48,7 +48,7 @@ const analysis = (id: number, severity: 'low' | 'high' = 'low', gaps: string[] =
   citations: { checked: 1, missingFiles: [], outOfRange: [] },
 });
 
-describe('plan completeness grader (ADR 0025)', () => {
+describe('plan completeness grader', () => {
   it('grades a full plan as complete', () => {
     const result = grade(plan());
     expect(failed(result)).toEqual([]);

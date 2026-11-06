@@ -6,7 +6,7 @@ import { api, createFixtureRepo, runBridge, startCore, tempDir, type RunningCore
 import { McpClient } from '../helpers/mcp-client.js';
 import { samplePlan } from '../helpers/plan-fixture.js';
 
-/** ADR 0031: up to three implementers on disjoint files, conflicting writes and plan drift. */
+/** Up to three implementers on disjoint files, conflicting writes and plan drift. */
 describe('implementers (bundled bridge + MCP + Core)', () => {
   const base = tempDir('implementers');
   const repo = createFixtureRepo(path.join(base, 'repo'));

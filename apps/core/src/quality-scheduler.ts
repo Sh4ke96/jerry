@@ -8,7 +8,7 @@ import type { GitReader } from './git-reader.js';
 import type { StateStore } from './state-store.js';
 
 /**
- * The diff collector and quality scheduler (spec §12.3, ADR 0029). Edits reported by PostToolUse
+ * The diff collector and quality scheduler. Edits reported by PostToolUse
  * are queued per session; after a quiet period (debounce) the batch is checked: each file is read
  * (never written), its changed lines come from a read-only `git diff`, and the static rules run
  * within a time budget. JERRY never runs project commands here.
@@ -17,7 +17,7 @@ import type { StateStore } from './state-store.js';
 export interface QualitySchedulerOptions {
   store: StateStore;
   git: GitReader;
-  /** Quiet period after the last edit of a session before its batch runs (spec: 1–3 s). */
+  /** Quiet period after the last edit of a session before its batch runs (1–3 s: soon after the work, not on every keystroke). */
   debounceMs?: number;
   /** Time budget of one batch; files left over are recorded as not checked. */
   budgetMs?: number;
@@ -79,7 +79,7 @@ export class QualityScheduler {
     if (current !== undefined) clearTimeout(current.timer);
     const edits = current?.edits ?? new Map<string, PendingEdit>();
     edits.set(`${edit.repoRoot}\n${edit.file}`, edit);
-    // Later edits within the quiet period join the same batch (spec §12.3).
+    // Later edits within the quiet period join the same batch.
     const timer = setTimeout(() => this.flush(sessionKey), this.debounceMs);
     timer.unref();
     this.pending.set(sessionKey, { timer, edits });
