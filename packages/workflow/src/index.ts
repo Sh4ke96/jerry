@@ -1,4 +1,4 @@
-import type { WorkflowActor, WorkflowEvent, WorkflowState } from '@jerry/contracts';
+import type { ImplementationReportRecord, WorkflowActor, WorkflowEvent, WorkflowState } from '@jerry/contracts';
 
 /**
  * The task workflow (spec §7.1) as a pure transition table. Core applies every state change
@@ -54,7 +54,8 @@ const RULES: Readonly<Record<WorkflowEvent, Rule>> = {
   // Rejecting during implementation withdraws the approval: edits are deviations again.
   'plan.rejected': { from: ['WAIT_PLAN_APPROVAL', 'IMPLEMENTATION'], to: 'PLAN_DRAFT', actors: ['user'] },
   'report.submitted': { from: ['IMPLEMENTATION'], to: 'WAIT_IMPLEMENTATION_ACCEPTANCE', actors: ['claude', 'user'] },
-  'changes.requested': { from: ['WAIT_IMPLEMENTATION_ACCEPTANCE'], to: 'IMPLEMENTATION', actors: ['user'] },
+  // Also from the final checks: when Core refuses DONE, the user sends the work back (ADR 0016).
+  'changes.requested': { from: ['WAIT_IMPLEMENTATION_ACCEPTANCE', 'FINAL_REPORT'], to: 'IMPLEMENTATION', actors: ['user'] },
   // Until independent review exists (M6), an accepted implementation goes straight to the final checks.
   'implementation.accepted': { from: ['WAIT_IMPLEMENTATION_ACCEPTANCE'], to: 'FINAL_REPORT', actors: ['user'] },
   'task.completed': { from: ['FINAL_REPORT'], to: 'DONE', actors: ['core'] },
@@ -93,6 +94,74 @@ export function isTerminal(state: WorkflowState): boolean {
   return TERMINAL_STATES.has(state);
 }
 
+/** One condition of the final checks; blocking ones decide DONE, the others are recorded limitations. */
+export interface CompletionCondition {
+  id: string;
+  blocking: boolean;
+  passed: boolean;
+  detail: string;
+}
+
+export interface CompletionInput {
+  currentPlanVersion: number;
+  /** The user approved exactly the current plan version and hash. */
+  planApproved: boolean;
+  /** The latest implementation report, if any. */
+  report: Pick<ImplementationReportRecord, 'version' | 'planVersion' | 'document' | 'evidence'> | null;
+  /** The user accepted exactly that report version and hash. */
+  reportAccepted: boolean;
+  /** In-scope files edited with the file tools after the report was submitted. */
+  editsSinceReport: readonly string[];
+  /** From the approved plan; the user's acceptance confirms it. */
+  definitionOfDone: readonly string[];
+}
+
+const list = (items: readonly string[], max = 10): string => (items.length <= max ? items.join(', ') : `${items.slice(0, max).join(', ')} and ${items.length - max} more`);
+
+/**
+ * The DONE validator (spec §7.2 Phase 9, ADR 0016). Pure: Core gathers the facts and applies the
+ * result; a model can never set DONE. Every blocking condition must pass.
+ */
+export function evaluateCompletion(input: CompletionInput): { passed: boolean; conditions: CompletionCondition[] } {
+  const { report } = input;
+  const conditions: CompletionCondition[] = [];
+  const add = (id: string, blocking: boolean, passed: boolean, detail: string): void => {
+    conditions.push({ id, blocking, passed, detail });
+  };
+
+  add('plan.approved', true, input.planApproved, input.planApproved ? `plan v${input.currentPlanVersion} is approved by the user` : `plan v${input.currentPlanVersion} is not approved in its current version`);
+  if (report === null) {
+    add('report.accepted', true, false, 'there is no implementation report');
+    return { passed: false, conditions };
+  }
+  const dod = input.definitionOfDone.length === 0 ? 'the plan has no Definition of Done (scope-only plan)' : `confirming the plan's Definition of Done (${input.definitionOfDone.length} item(s))`;
+  add('report.accepted', true, input.reportAccepted, input.reportAccepted ? `report v${report.version} is accepted by the user, ${dod}` : `report v${report.version} is not accepted`);
+  add(
+    'report.matches-plan',
+    true,
+    report.planVersion === input.currentPlanVersion,
+    report.planVersion === input.currentPlanVersion ? `report v${report.version} covers plan v${report.planVersion}` : `report v${report.version} was written for plan v${report.planVersion}, the plan is now v${input.currentPlanVersion}`,
+  );
+  const failed = report.document.checks.filter((check) => check.result === 'FAIL').map((check) => check.command);
+  add('report.no-failed-checks', true, failed.length === 0, failed.length === 0 ? 'no check failed' : `failed: ${list(failed)}`);
+  const critical = report.document.risks.filter((risk) => risk.severity === 'critical').map((risk) => risk.risk);
+  add('report.no-critical-risks', true, critical.length === 0, critical.length === 0 ? 'no critical risk is open' : `critical risk open: ${list(critical)}`);
+  add(
+    'code.unchanged-since-report',
+    true,
+    input.editsSinceReport.length === 0,
+    input.editsSinceReport.length === 0 ? 'no in-scope file was edited after the report' : `edited after report v${report.version} was submitted: ${list(input.editsSinceReport)}`,
+  );
+
+  const ran = report.document.checks.some((check) => check.result === 'PASS');
+  add('checks.ran', false, ran, ran ? 'at least one check ran and passed' : 'no check ran: recorded as a limitation');
+  const { unreportedEdits, deviationCount } = report.evidence;
+  add('report.complete', false, unreportedEdits.length === 0, unreportedEdits.length === 0 ? 'every observed edit is in the report' : `edited but not in the report: ${list(unreportedEdits)}`);
+  add('implementation.deviations', false, deviationCount === 0, deviationCount === 0 ? 'no deviation was recorded' : `${deviationCount} deviation(s) recorded during the implementation`);
+
+  return { passed: conditions.every((condition) => !condition.blocking || condition.passed), conditions };
+}
+
 /** Plain-language label for UIs and CLI output. */
 export const STATE_LABELS: Readonly<Record<WorkflowState, string>> = {
   DISCOVERY: 'Discovery',
@@ -107,7 +176,8 @@ export const STATE_LABELS: Readonly<Record<WorkflowState, string>> = {
   WAIT_REVIEW_FIX_APPROVAL: 'Waiting for fix approval',
   FIX_IMPLEMENTATION: 'Fixing review findings',
   REVERIFICATION: 'Re-verification',
-  FINAL_REPORT: 'Final checks',
+  // A task stays here only when Core's final checks refused DONE (ADR 0016).
+  FINAL_REPORT: 'Final checks failed',
   DONE: 'Done',
   BLOCKED: 'Blocked',
   PAUSED: 'Paused',

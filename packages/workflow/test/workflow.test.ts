@@ -21,6 +21,9 @@ describe('workflow transitions (spec §7.1)', () => {
     expect(go('PLAN_DRAFT', 'plan.approved')).toEqual({ ok: true, to: 'IMPLEMENTATION' });
     expect(go('IMPLEMENTATION', 'plan.rejected')).toEqual({ ok: true, to: 'PLAN_DRAFT' });
     expect(go('IMPLEMENTATION', 'plan.approved')).toMatchObject({ ok: false });
+    // When Core refuses DONE, the user sends the work back from the final checks.
+    expect(go('FINAL_REPORT', 'changes.requested')).toEqual({ ok: true, to: 'IMPLEMENTATION' });
+    expect(go('FINAL_REPORT', 'implementation.accepted')).toMatchObject({ ok: false });
   });
 
   it('keeps every user decision with the user', () => {

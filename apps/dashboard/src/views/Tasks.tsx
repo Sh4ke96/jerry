@@ -80,12 +80,18 @@ export const Tasks = defineComponent({
         case 'cancel':
           return perform(() => api.control(task.taskId, 'task.cancelled', typed), `Cancelled ${task.taskId}.`);
         case 'accept':
+          if (report === null) return Promise.resolve(false);
+          return perform(() => api.decideReport(task, report.version, 'APPROVED', typed, comment), `Accepted ${task.taskId} report v${report.version}.`).then((done) => {
+            // Core ran its final checks in the same step: say how they ended.
+            const after = state.tasks.find((candidate) => candidate.taskId === task.taskId);
+            if (done && after !== undefined) {
+              state.notice = after.state === 'DONE' ? `Accepted ${task.taskId} report v${report.version}. JERRY's final checks passed: the task is done.` : `Accepted ${task.taskId} report v${report.version}, but JERRY's final checks did not pass.`;
+            }
+            return done;
+          });
         case 'request-changes':
           if (report === null) return Promise.resolve(false);
-          return perform(
-            () => api.decideReport(task, report.version, action === 'accept' ? 'APPROVED' : 'REJECTED', typed, comment),
-            `${action === 'accept' ? 'Accepted' : 'Requested changes to'} ${task.taskId} report v${report.version}.`,
-          );
+          return perform(() => api.decideReport(task, report.version, 'REJECTED', typed, comment), `Requested changes to ${task.taskId} report v${report.version}.`);
         default:
           return perform(() => api.decide(task, action === 'approve' ? 'APPROVED' : 'REJECTED', typed), `${action === 'approve' ? 'Approved' : 'Rejected'} ${task.taskId} plan v${task.plan.version}.`);
       }
@@ -287,6 +293,25 @@ export const Tasks = defineComponent({
               <PlanDocumentView plan={task.plan.document} />
             </details>
           ))}
+        {task.finalCheck !== null && (
+          <section class={['final-check', task.finalCheck.passed ? 'final-check--passed' : 'final-check--failed']}>
+            <h3>
+              {task.finalCheck.passed ? 'Completed by JERRY' : 'JERRY did not complete the task'}{' '}
+              <span class="muted small">
+                final checks {formatTime(task.finalCheck.at)}
+                {task.finalCheck.reportVersion !== null && ` · report v${task.finalCheck.reportVersion}`}
+              </span>
+            </h3>
+            <ul class="list">
+              {task.finalCheck.conditions.map((condition) => (
+                <li key={condition.id}>
+                  <Badge tone={condition.passed ? 'pass' : condition.blocking ? 'deny' : 'warn'}>{condition.passed ? 'ok' : condition.blocking ? 'blocks' : 'note'}</Badge> {condition.detail}
+                </li>
+              ))}
+            </ul>
+            {!task.finalCheck.passed && <p class="muted small">Request changes to send the work back to Claude, or cancel the task.</p>}
+          </section>
+        )}
         {actions(task)}
         {history(task.taskId)}
       </article>
@@ -327,6 +352,16 @@ export const Tasks = defineComponent({
             >
               <p>{pending.value.task.title}</p>
               <p class="muted">Scope: {pending.value.task.plan.scope.join(', ')}</p>
+              {pending.value.action === 'accept' && (pending.value.task.plan.document?.definitionOfDone.length ?? 0) > 0 && (
+                <div class="dod">
+                  <p>You confirm the plan's Definition of Done:</p>
+                  <ul class="list">
+                    {pending.value.task.plan.document?.definitionOfDone.map((item, index) => (
+                      <li key={index}>{item}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               <p class="muted small">{DIALOG[pending.value.action].note}</p>
             </ConfirmDialog>
           )}

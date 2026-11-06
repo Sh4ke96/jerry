@@ -103,6 +103,18 @@ export interface ImplementationReportsTable {
   created_at: string;
 }
 
+/** Runs of Core's final checks; DONE follows only a passing one. */
+export interface TaskCompletionChecksTable {
+  id: Generated<number>;
+  task_id: string;
+  report_version: number | null;
+  /** 1 when every blocking condition passed. */
+  passed: number;
+  conditions_json: string;
+  definition_of_done_json: string;
+  created_at: string;
+}
+
 /** Claude's progress notes on a task, for the next session. */
 export interface TaskCheckpointsTable {
   id: Generated<number>;
@@ -167,6 +179,7 @@ export interface JerrySchema {
   session_tasks: SessionTasksTable;
   task_checkpoints: TaskCheckpointsTable;
   implementation_reports: ImplementationReportsTable;
+  task_completion_checks: TaskCompletionChecksTable;
   settings: SettingsTable;
   audit_log: AuditLogTable;
 }

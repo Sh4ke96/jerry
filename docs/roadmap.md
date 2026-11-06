@@ -11,13 +11,7 @@ to three implementers with disjoint scopes.
 
 - M0 Feasibility Spike: [docs/spikes/M0-feasibility.md](spikes/M0-feasibility.md)
 - M1 Core Foundation: [docs/milestones/M1-core-foundation.md](milestones/M1-core-foundation.md)
-- M2 Workflow Control, items 1–4: ADRs [0011](decisions/0011-plans-submitted-by-claude.md),
-  [0012](decisions/0012-workflow-states.md), [0013](decisions/0013-session-task-correlation-and-recovery.md),
-  [0014](decisions/0014-implementation-report-and-acceptance.md)
-
-## M2 — Workflow Control
-
-- [ ] Final DONE validator: Core sets DONE after its checks; never a model.
+- M2 Workflow Control: [docs/milestones/M2-workflow-control.md](milestones/M2-workflow-control.md)
 
 ## M3 — Repository Discovery
 

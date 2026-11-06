@@ -104,19 +104,71 @@ describe('implementation report and acceptance (bundled bridge + MCP + Core)', (
     expect(tool('Write', { file_path: path.join(repo, 'src', 'greeting', 'greet.ts') }, 'toolu_w4')).toMatchObject({ exitCode: 0, stdout: '' });
   });
 
-  it('accepts exactly the latest report version, which moves the task to its final checks', async () => {
+  it('refuses DONE when the code changed after the report, and lets the user send the work back', async () => {
     const client = await connect();
     const second = await client.call('jerry_submit_report', { taskId, report: { ...sampleReport(), summary: 'Added greet(name), its unit test and empty-name handling.' } });
     expect(second.structured).toMatchObject({ reportVersion: 2 });
+    // Claude keeps editing after reporting: recorded as a deviation, and the report no longer describes the code.
+    expect(JSON.parse(tool('Write', { file_path: path.join(repo, 'src', 'greeting', 'greet.ts') }, 'toolu_w5').stdout).systemMessage).toContain('monitor.no-approved-plan');
     expect((await decide(1, 'APPROVED')).status).toBe(409);
     expect((await decide(2, 'APPROVED')).status).toBe(201);
 
     const task = await detail();
     expect(task.state).toBe('FINAL_REPORT');
-    expect(task.reports.map((report) => report.version)).toEqual([2, 1]);
-    expect(task.reportDecision).toMatchObject({ version: 2, decision: 'APPROVED', contentHash: task.lastReport?.contentHash });
+    expect(task.finalCheck).toMatchObject({ reportVersion: 2, passed: false });
+    expect(task.finalCheck?.conditions.filter((condition) => condition.blocking && !condition.passed)).toEqual([
+      { id: 'code.unchanged-since-report', blocking: true, passed: false, detail: 'edited after report v2 was submitted: src/greeting/greet.ts' },
+    ]);
+    const state = (await client.call('jerry_get_state')).structured;
+    expect(state['next']).toMatchObject({ action: 'final-checks-failed', details: expect.stringContaining('edited after report v2') });
+
+    expect((await decide(2, 'REJECTED', 'Report the last edit too.')).status).toBe(201);
+    expect((await detail()).state).toBe('IMPLEMENTATION');
+  });
+
+  it('completes the task only through Core: accepting a clean report sets DONE', async () => {
+    const client = await connect();
+    const third = await client.call('jerry_submit_report', { taskId, report: { ...sampleReport(), summary: 'Added greet(name), its unit test and empty-name handling; reported the last edit.' } });
+    expect(third.structured).toMatchObject({ reportVersion: 3 });
+    expect((await decide(3, 'APPROVED')).status).toBe(201);
+
+    const task = await detail();
+    expect(task.state).toBe('DONE');
+    expect(task.reports.map((report) => report.version)).toEqual([3, 2, 1]);
+    expect(task.reportDecision).toMatchObject({ version: 3, decision: 'APPROVED', contentHash: task.lastReport?.contentHash });
+    expect(task.finalCheck).toMatchObject({ reportVersion: 3, passed: true, definitionOfDone: samplePlan(repo).definitionOfDone });
+    // Limitations are recorded, not hidden: an earlier unreported edit and the recorded deviations.
+    expect(task.finalCheck?.conditions.filter((condition) => !condition.passed).map((condition) => condition.id)).toEqual(['report.complete', 'implementation.deviations']);
+
     const history = (await api(core, 'GET', `/api/v1/tasks/${taskId}/transitions`)).body as WorkflowTransition[];
-    expect(history.map((step) => step.event)).toEqual(['plan.submitted', 'plan.approved', 'report.submitted', 'changes.requested', 'report.submitted', 'implementation.accepted']);
-    expect((await connect().then((again) => again.call('jerry_get_state'))).structured).toMatchObject({ next: { action: 'final-checks' } });
+    expect(history.map((step) => `${step.event}:${step.actor}`)).toEqual([
+      'plan.submitted:claude',
+      'plan.approved:user',
+      'report.submitted:claude',
+      'changes.requested:user',
+      'report.submitted:claude',
+      'implementation.accepted:user',
+      'changes.requested:user',
+      'report.submitted:claude',
+      'implementation.accepted:user',
+      'task.completed:core',
+    ]);
+    // Done is done: no more reports, checkpoints or decisions.
+    expect((await client.call('jerry_submit_report', { taskId, report: sampleReport() })).isError).toBe(true);
+    expect((await decide(3, 'REJECTED')).status).toBe(409);
+    expect((await client.call('jerry_get_state')).structured).toMatchObject({ currentTask: null, next: { action: 'propose-plan' } });
+  });
+
+  it('refuses DONE for a failed check or a critical risk in the accepted report', async () => {
+    const client = await connect();
+    const failing = { ...sampleReport(), checks: [{ kind: 'test', command: 'npm test', result: 'FAIL', details: '1 failed' }], risks: [{ risk: 'Deletes user data on retry', severity: 'critical', mitigation: '' }] };
+    const created = await client.call('jerry_submit_plan', { title: 'Second task', plan: samplePlan(repo) });
+    const second = created.structured['taskId'] as string;
+    await api(core, 'POST', `/api/v1/tasks/${second}/approvals`, { stage: 'PLAN', version: 1, decision: 'APPROVED' });
+    expect((await client.call('jerry_submit_report', { taskId: second, report: failing })).isError).toBe(false);
+    await api(core, 'POST', `/api/v1/tasks/${second}/approvals`, { stage: 'IMPLEMENTATION', version: 1, decision: 'APPROVED' });
+    const task = (await api(core, 'GET', `/api/v1/tasks/${second}`)).body as TaskDetail;
+    expect(task.state).toBe('FINAL_REPORT');
+    expect(task.finalCheck?.conditions.filter((condition) => condition.blocking && !condition.passed).map((condition) => condition.id)).toEqual(['report.no-failed-checks', 'report.no-critical-risks']);
   });
 });

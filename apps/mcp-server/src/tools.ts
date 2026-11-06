@@ -363,9 +363,19 @@ export function nextAction(state: RepositoryState): { action: string; details: s
       details: `The implementation report ${reports} waits for the user's acceptance (JERRY dashboard, or jerry approve <taskId> --stage implementation --version <n>). Do not accept it yourself; change code only if they ask for changes; edits now are recorded as deviations.`,
     };
   }
-  const finishing = ids(['FINAL_REPORT']);
-  if (finishing !== '') {
-    return { action: 'final-checks', details: `The user accepted the implementation of ${finishing}; JERRY completes the task after its final checks. Do not change code for it; edits now are recorded as deviations.` };
+  // A task stays in FINAL_REPORT only when Core's final checks refused DONE (passing ones complete it at once).
+  const refused = open.filter((task) => task.state === 'FINAL_REPORT');
+  if (refused.length > 0) {
+    const reasons = refused
+      .map((task) => {
+        const failed = task.finalCheck?.conditions.filter((condition) => condition.blocking && !condition.passed).map((condition) => condition.detail) ?? [];
+        return `${task.taskId}: ${failed.length > 0 ? failed.join('; ') : 'final checks pending'}`;
+      })
+      .join(' | ');
+    return {
+      action: 'final-checks-failed',
+      details: `JERRY did not complete ${refused.map((task) => task.taskId).join(', ')} (${reasons}). Tell the user; they decide whether to request changes or cancel. Do not change code until then; edits now are recorded as deviations.`,
+    };
   }
   const paused = ids(['PAUSED']);
   if (paused !== '') {

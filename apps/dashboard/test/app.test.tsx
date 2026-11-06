@@ -22,6 +22,7 @@ const waitingTask: TaskSummary = {
   lastCheckpoint: null,
   lastReport: null,
   reportDecision: null,
+  finalCheck: null,
 };
 
 /** Reported, waiting for acceptance; JERRY saw an edit the report does not list. */
@@ -64,6 +65,26 @@ const approvedTask: TaskSummary = {
 
 const cancelledTask: TaskSummary = { ...waitingTask, taskId: 'JRY-0003', title: 'Dropped idea', state: 'CANCELLED' };
 
+/** Accepted, but Core refused DONE: a check failed. */
+const refusedTask: TaskSummary = {
+  ...reportedTask,
+  taskId: 'JRY-0005',
+  title: 'Parser',
+  state: 'FINAL_REPORT',
+  finalCheck: {
+    taskId: 'JRY-0005',
+    reportVersion: 2,
+    at: NOW,
+    passed: false,
+    conditions: [
+      { id: 'report.accepted', blocking: true, passed: true, detail: 'report v2 is accepted by the user' },
+      { id: 'report.no-failed-checks', blocking: true, passed: false, detail: 'failed: npm test' },
+      { id: 'checks.ran', blocking: false, passed: false, detail: 'no check ran: recorded as a limitation' },
+    ],
+    definitionOfDone: ['tests pass'],
+  },
+};
+
 const history: WorkflowTransition[] = [
   { taskId: 'JRY-0001', from: null, to: 'WAIT_PLAN_APPROVAL', event: 'plan.submitted', actor: 'claude', reason: 'plan version 1', at: NOW },
   { taskId: 'JRY-0001', from: 'WAIT_PLAN_APPROVAL', to: 'IMPLEMENTATION', event: 'plan.approved', actor: 'user', reason: 'looks good', at: NOW },
@@ -104,7 +125,7 @@ describe('Dashboard app', () => {
       const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
       if (url === '/api/v1/ui/session') return json({ csrfToken: CSRF, expiresAt: NOW });
       if (url === '/api/v1/status') return json({ status: 'ok', version: '0.0.1', pid: 1, startedAt: NOW, jerryHome: 'C:/J', taskCount: 2, sessionCount: 3, database: { file: 'db', migration: '0002_hook_events' } });
-      if (url === '/api/v1/tasks') return json([approvedTask, waitingTask, cancelledTask, reportedTask]);
+      if (url === '/api/v1/tasks') return json([approvedTask, waitingTask, cancelledTask, reportedTask, refusedTask]);
       if (url === '/api/v1/tasks/JRY-0004/approvals') return json({ ...reportedTask.planDecision, stage: 'IMPLEMENTATION', version: 2 }, 201);
       if (url.startsWith('/api/v1/events')) return json([deviation]);
       if (url === '/api/v1/repositories/exclusions') return json([]);
@@ -128,7 +149,7 @@ describe('Dashboard app', () => {
     const text = wrapper.text();
     expect(text).toContain('GUARDED');
     expect(text).toContain('1 in implementation');
-    expect(text).toContain('2 waiting for your decision');
+    expect(text).toContain('3 waiting for your decision');
     expect(text).toContain('JRY-0002');
     expect(text).toContain('README.md');
     wrapper.unmount();
@@ -221,6 +242,30 @@ describe('Dashboard app', () => {
     await flushPromises();
     const accepted = calls.filter((call) => call.url === '/api/v1/tasks/JRY-0004/approvals').at(-1)!;
     expect(JSON.parse(String(accepted.init?.body))).toMatchObject({ stage: 'IMPLEMENTATION', version: 2, decision: 'APPROVED' });
+    wrapper.unmount();
+  });
+
+  it('shows why JERRY refused DONE and lets the user send the work back', async () => {
+    const wrapper = await mountApp();
+    await openTasks(wrapper);
+    const card = wrapper.findAll('article.task').find((candidate) => candidate.text().includes('JRY-0005'))!;
+    const check = card.get('.final-check');
+    expect(check.classes()).toContain('final-check--failed');
+    expect(check.text()).toContain('JERRY did not complete the task');
+    expect(check.text()).toContain('blocks failed: npm test');
+    expect(check.text()).toContain('note no check ran');
+    expect(button(wrapper, 'Request changes', 'JRY-0005')).toBeDefined();
+    expect(button(wrapper, 'Accept implementation', 'JRY-0005')).toBeUndefined();
+    wrapper.unmount();
+  });
+
+  it('shows the Definition of Done the user confirms when accepting', async () => {
+    const wrapper = await mountApp();
+    await openTasks(wrapper);
+    await button(wrapper, 'Accept implementation', 'JRY-0004')!.trigger('click');
+    const dialog = wrapper.get('form.dialog');
+    expect(dialog.text()).toContain("You confirm the plan's Definition of Done:");
+    for (const item of samplePlan('D:\\Work\\shop', ['src/auth/**']).definitionOfDone) expect(dialog.text()).toContain(item);
     wrapper.unmount();
   });
 

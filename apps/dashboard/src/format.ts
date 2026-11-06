@@ -2,8 +2,8 @@ import type { StoredEvent, TaskWithDecision, WorkflowState } from '@jerry/contra
 import { isTerminal, WORK_STATES } from '@jerry/workflow';
 import type { Tone } from './components/Badge';
 
-/** States in which the next step is the user's. */
-const WAITING_FOR_USER: ReadonlySet<WorkflowState> = new Set(['WAIT_PLAN_APPROVAL', 'WAIT_IMPLEMENTATION_ACCEPTANCE', 'WAIT_REVIEW_FIX_APPROVAL']);
+/** States in which the next step is the user's (FINAL_REPORT remains only when Core refused DONE). */
+const WAITING_FOR_USER: ReadonlySet<WorkflowState> = new Set(['WAIT_PLAN_APPROVAL', 'WAIT_IMPLEMENTATION_ACCEPTANCE', 'WAIT_REVIEW_FIX_APPROVAL', 'FINAL_REPORT']);
 
 export function waitsForUser(task: TaskWithDecision): boolean {
   return WAITING_FOR_USER.has(task.state);

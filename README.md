@@ -6,8 +6,8 @@ A local agent harness and development guardian for Claude Code and VS Code.
 This repository contains the source of JERRY itself. The zero-footprint requirement applies to the user's
 repositories, not to this one.
 
-**Status:** M1 Core Foundation complete ([report](docs/milestones/M1-core-foundation.md)); M2 Workflow Control
-items 1–4 done. What remains: [docs/roadmap.md](docs/roadmap.md). M0 spike:
+**Status:** M2 Workflow Control complete ([report](docs/milestones/M2-workflow-control.md)); M1 Core Foundation
+([report](docs/milestones/M1-core-foundation.md)). What remains: [docs/roadmap.md](docs/roadmap.md). M0 spike:
 [docs/spikes/M0-feasibility.md](docs/spikes/M0-feasibility.md).
 
 ## What works
@@ -49,6 +49,9 @@ items 1–4 done. What remains: [docs/roadmap.md](docs/roadmap.md). M0 spike:
   You accept exactly that report version, or send it back with a comment, in the dashboard or with
   `jerry approve|reject <id> --stage implementation`. `/jerry:commit-message` proposes commit messages in the
   repository's convention; you commit ([ADR 0014](docs/decisions/0014-implementation-report-and-acceptance.md)).
+- DONE is set only by Core, in the step where you accept the report, after its final checks. A failed check, a
+  critical risk, or code changed after the report keeps the task open with the reasons; you send it back or
+  cancel it ([ADR 0016](docs/decisions/0016-done-validator.md)).
 - JERRY Control Center at `http://127.0.0.1:47823` (open it with `jerry ui`): overview, tasks with their state,
   plan, history and the decisions their state allows, session timeline, repositories; installable as an app
   ([ADR 0009](docs/decisions/0009-dashboard.md)).

@@ -8,9 +8,12 @@ import {
   type CallOrigin,
   type Checkpoint,
   type CoreState,
+  type CompletionCheck,
   type ImplementationReport,
   type ImplementationReportRecord,
   type ReportEvidence,
+  approvalRecordSchema,
+  completionCheckSchema,
   implementationReportRecordSchema,
   type TaskActivity,
   type TaskSession,
@@ -28,8 +31,8 @@ import {
   workflowTransitionSchema,
 } from '@jerry/contracts';
 import { backupDatabase, openJerryDatabase, type JerryDatabase, type JerrySchema } from '@jerry/database';
-import { absolutePath, comparablePath, computePlanHash, computeReportHash, currentPlanDecision, decisionFor, relativeInside } from '@jerry/policy-engine';
-import { applyEvent, isTerminal } from '@jerry/workflow';
+import { absolutePath, comparablePath, computePlanHash, computeReportHash, currentPlanDecision, decisionFor, matchesAnyGlob, relativeInside } from '@jerry/policy-engine';
+import { applyEvent, evaluateCompletion, isTerminal } from '@jerry/workflow';
 import { sql, type Kysely, type Selectable, type Transaction } from 'kysely';
 import { z } from 'zod';
 
@@ -200,10 +203,57 @@ export class StateStore {
         })
         .execute();
       await audit(trx, at, `approval.${record.decision.toLowerCase()}`, taskId, { stage: record.stage, version: record.version, contentHash: record.contentHash, channel });
+      // Accepting the implementation hands the task to Core's final checks, in the same transaction.
+      if (event === 'implementation.accepted') await this.runFinalChecks(trx, task, at);
       return record;
     });
     await this.reload();
     return record;
+  }
+
+  /**
+   * The DONE validator (ADR 0016): Core gathers the facts, records the result, and sets DONE only
+   * when every blocking condition passed. No model and no API call can set DONE otherwise.
+   */
+  private async runFinalChecks(trx: Transaction<JerrySchema>, task: Task, at: string): Promise<CompletionCheck> {
+    const reportRow = await trx.selectFrom('implementation_reports').selectAll().where('task_id', '=', task.taskId).orderBy('version', 'desc').limit(1).executeTakeFirst();
+    const report = reportRow === undefined ? null : reportFromRow(reportRow);
+    const decisions = await trx.selectFrom('approvals').selectAll().where('task_id', '=', task.taskId).orderBy('approved_at').orderBy(sql`rowid`).execute();
+    const approvals = decisions.map((row) => approvalRecordSchema.parse({ approvalId: row.approval_id, taskId: row.task_id, stage: row.stage, version: row.version, contentHash: row.content_hash, decision: row.decision, approvedBy: row.approved_by, approvedAt: row.approved_at, comment: row.comment }));
+    const result = evaluateCompletion({
+      currentPlanVersion: task.plan.version,
+      planApproved: currentPlanDecision(task, approvals)?.decision === 'APPROVED',
+      report,
+      reportAccepted: report !== null && decisionFor(approvals, { taskId: task.taskId, stage: 'IMPLEMENTATION', version: report.version, contentHash: report.contentHash })?.decision === 'APPROVED',
+      editsSinceReport: report === null ? [] : await editsInScopeBetween(trx, task, report.createdAt, at),
+      definitionOfDone: task.plan.document?.definitionOfDone ?? [],
+    });
+    const check: CompletionCheck = { taskId: task.taskId, reportVersion: report?.version ?? null, at, passed: result.passed, conditions: result.conditions, definitionOfDone: task.plan.document?.definitionOfDone ?? [] };
+    await trx
+      .insertInto('task_completion_checks')
+      .values({ task_id: task.taskId, report_version: check.reportVersion, passed: check.passed ? 1 : 0, conditions_json: JSON.stringify(check.conditions), definition_of_done_json: JSON.stringify(check.definitionOfDone), created_at: at })
+      .execute();
+    const blocking = check.conditions.filter((condition) => condition.blocking && !condition.passed).map((condition) => condition.id);
+    if (check.passed) {
+      await this.transition(trx, task.taskId, 'task.completed', 'core', `final checks passed (report v${check.reportVersion})`, at);
+    }
+    await audit(trx, at, check.passed ? 'task.complete' : 'task.final-checks-failed', task.taskId, { reportVersion: check.reportVersion, blocking }, 'jerry-core');
+    return check;
+  }
+
+  /** The latest final checks of every task that had any. */
+  async latestCompletionChecks(): Promise<Map<string, CompletionCheck>> {
+    const rows = await this.database.db
+      .selectFrom('task_completion_checks as c')
+      .selectAll()
+      .where('c.id', '=', (eb) => eb.selectFrom('task_completion_checks as latest').select((inner) => inner.fn.max('latest.id').as('id')).whereRef('latest.task_id', '=', 'c.task_id'))
+      .execute();
+    return new Map(
+      rows.map((row) => [
+        row.task_id,
+        completionCheckSchema.parse({ taskId: row.task_id, reportVersion: row.report_version, at: row.created_at, passed: row.passed === 1, conditions: JSON.parse(row.conditions_json), definitionOfDone: JSON.parse(row.definition_of_done_json) }),
+      ]),
+    );
   }
 
   /**
@@ -787,7 +837,29 @@ async function collectEvidence(trx: Transaction<JerrySchema>, task: Task, docume
   };
 }
 
-function checkpointFromRow(row:{ task_id: string; session_id: string | null; summary: string; next_steps_json: string; created_at: string }): Checkpoint {
+/** Files in the plan's scope edited with the file tools in the repository during (from, until]. */
+async function editsInScopeBetween(trx: Transaction<JerrySchema>, task: Task, from: string, until: string): Promise<string[]> {
+  const platform = process.platform;
+  let query = trx
+    .selectFrom('hook_events')
+    .select(['tool_name', 'verdict', 'payload_json', 'cwd'])
+    .where('event_type', '=', 'PreToolUse')
+    .where('occurred_at', '>', from)
+    .where('occurred_at', '<=', until)
+    .where('tool_name', 'in', [...FILE_TOOLS]);
+  query = platform === 'win32' ? query.where(sql`lower(repo_root)`, '=', task.repoRoot.toLowerCase()) : query.where('repo_root', '=', task.repoRoot);
+  const edited = new Set<string>();
+  for (const event of await query.execute()) {
+    if (event.verdict === 'DENY') continue;
+    const input = ((JSON.parse(event.payload_json) as Record<string, unknown>)['input'] ?? {}) as Record<string, unknown>;
+    if (typeof input['path'] !== 'string') continue;
+    const relative = relativeInside(absolutePath(input['path'], event.cwd ?? task.repoRoot, platform), task.repoRoot, platform);
+    if (relative !== null && relative !== '' && matchesAnyGlob(relative, task.plan.scope, platform === 'win32')) edited.add(relative);
+  }
+  return [...edited].sort();
+}
+
+function checkpointFromRow(row: { task_id: string; session_id: string | null; summary: string; next_steps_json: string; created_at: string }): Checkpoint {
   return { taskId: row.task_id, sessionId: row.session_id, summary: row.summary, nextSteps: JSON.parse(row.next_steps_json) as string[], at: row.created_at };
 }
 

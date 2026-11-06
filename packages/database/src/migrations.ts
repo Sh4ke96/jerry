@@ -220,4 +220,21 @@ export const MIGRATIONS: Readonly<Record<string, Migration>> = {
         .execute();
     },
   },
+
+  '0007_completion_checks': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Every run of Core's final checks (ADR 0016): DONE is set only when one passed.
+      await db.schema
+        .createTable('task_completion_checks')
+        .addColumn('id', 'integer', (column) => column.primaryKey().autoIncrement())
+        .addColumn('task_id', 'text', (column) => column.notNull().references('tasks.task_id'))
+        .addColumn('report_version', 'integer')
+        .addColumn('passed', 'integer', (column) => column.notNull())
+        .addColumn('conditions_json', 'text', (column) => column.notNull())
+        .addColumn('definition_of_done_json', 'text', (column) => column.notNull())
+        .addColumn('created_at', 'text', (column) => column.notNull())
+        .execute();
+      await db.schema.createIndex('task_completion_checks_task').on('task_completion_checks').columns(['task_id', 'id']).execute();
+    },
+  },
 };

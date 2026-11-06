@@ -444,12 +444,13 @@ function sameRepo(a: string, b: string): boolean {
 const NO_ACTIVITY = { activity: { sessionCount: 0, lastSessionId: null, lastActivityAt: null, lastSessionEndedAt: null }, lastCheckpoint: null };
 
 async function summarize(store: StateStore, tasks: readonly Task[]): Promise<TaskSummary[]> {
-  const [activity, reports] = await Promise.all([store.taskActivity(), store.latestReports()]);
+  const [activity, reports, checks] = await Promise.all([store.taskActivity(), store.latestReports(), store.latestCompletionChecks()]);
   return tasks.map((task) => {
     const report = reports.get(task.taskId) ?? null;
     return {
       ...task,
       planDecision: store.planDecision(task.taskId),
+      finalCheck: checks.get(task.taskId) ?? null,
       ...(activity.get(task.taskId) ?? NO_ACTIVITY),
       lastReport: report,
       reportDecision: report === null ? null : store.reportDecision(report),

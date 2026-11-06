@@ -517,8 +517,22 @@ export const taskActivitySchema = z.object({
 });
 export type TaskActivity = z.infer<typeof taskActivitySchema>;
 
+/** Core's final checks when the user accepted a report (ADR 0016); DONE follows only if they pass. */
+export const completionCheckSchema = z.object({
+  taskId: taskIdSchema,
+  reportVersion: z.number().int().positive().nullable(),
+  at: z.iso.datetime(),
+  passed: z.boolean(),
+  conditions: z.array(z.object({ id: z.string(), blocking: z.boolean(), passed: z.boolean(), detail: z.string() })),
+  /** The plan's Definition of Done, confirmed by the user's acceptance. */
+  definitionOfDone: z.array(z.string()),
+});
+export type CompletionCheck = z.infer<typeof completionCheckSchema>;
+
 /** A task as lists show it: decisions, session activity, the latest checkpoint and report. */
 export const taskSummarySchema = taskWithDecisionSchema.extend({
+  /** The latest final checks, if any were run. */
+  finalCheck: completionCheckSchema.nullable(),
   activity: taskActivitySchema,
   lastCheckpoint: checkpointSchema.nullable(),
   lastReport: implementationReportRecordSchema.nullable(),

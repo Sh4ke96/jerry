@@ -37,7 +37,7 @@ export async function showStatus(): Promise<void> {
     requestCore(info, { method: 'GET', path: `/api/v1/events?verdict=WARN,DENY&since=${encodeURIComponent(startOfDay.toISOString())}&limit=500`, timeoutMs: 5000 }).then((body) => z.array(storedEventSchema).parse(body)),
   ]);
   const working = tasks.filter((candidate) => WORK_STATES.has(candidate.state)).length;
-  const waiting = tasks.filter((candidate) => candidate.state === 'WAIT_PLAN_APPROVAL' || candidate.state === 'WAIT_IMPLEMENTATION_ACCEPTANCE').length;
+  const waiting = tasks.filter((candidate) => candidate.state === 'WAIT_PLAN_APPROVAL' || candidate.state === 'WAIT_IMPLEMENTATION_ACCEPTANCE' || candidate.state === 'FINAL_REPORT').length;
   const paused = tasks.filter((candidate) => candidate.state === 'PAUSED').length;
   const uptimeMinutes = Math.round((Date.now() - Date.parse(core.status.startedAt)) / 60_000);
 

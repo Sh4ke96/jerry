@@ -1,6 +1,6 @@
 import path from 'node:path';
 import readline from 'node:readline/promises';
-import { approvalRecordSchema, taskDetailSchema, taskSchema, taskWithDecisionSchema, workflowTransitionSchema, type ApprovalRecord, type ImplementationReportRecord, type Task } from '@jerry/contracts';
+import { approvalRecordSchema, taskDetailSchema, taskSchema, taskWithDecisionSchema, workflowTransitionSchema, type ApprovalRecord, type ImplementationReportRecord, type Task, type TaskDetail } from '@jerry/contracts';
 import { readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
 import { isTerminal, STATE_LABELS } from '@jerry/workflow';
 import { z } from 'zod';
@@ -69,6 +69,8 @@ export async function showTask(taskId: string): Promise<void> {
     printReport(task.lastReport);
   }
 
+  printFinalCheck(task);
+
   const [checkpoint] = task.checkpoints;
   if (checkpoint !== undefined) {
     console.log(`\nLast checkpoint (${checkpoint.at}, written by Claude${task.checkpoints.length > 1 ? `; ${task.checkpoints.length - 1} earlier` : ''}):`);
@@ -136,6 +138,11 @@ export async function decide(options: { taskId: string; stage: 'PLAN' | 'IMPLEME
     }
     printReport(report);
     label = `implementation report v${report.version}`;
+    const definitionOfDone = task.plan.document?.definitionOfDone ?? [];
+    if (options.decision === 'APPROVED' && definitionOfDone.length > 0) {
+      console.log("\nBy accepting you confirm the plan's Definition of Done:");
+      definitionOfDone.forEach((item) => console.log(`  - ${item}`));
+    }
   }
 
   const verb = options.decision === 'APPROVED' ? (options.stage === 'PLAN' ? 'approve' : 'accept') : options.stage === 'PLAN' ? 'reject' : 'request changes to';
@@ -157,6 +164,21 @@ export async function decide(options: { taskId: string; stage: 'PLAN' | 'IMPLEME
     }),
   );
   console.log(`${record.decision}: ${record.taskId} ${label} (${record.contentHash}) as ${record.approvalId}`);
+  if (options.stage === 'IMPLEMENTATION' && options.decision === 'APPROVED') {
+    const after = taskDetailSchema.parse(await callCore('GET', `/api/v1/tasks/${encodeURIComponent(task.taskId)}`));
+    printFinalCheck(after);
+  }
+}
+
+/** Core's final checks: DONE, or what keeps the task from it. */
+function printFinalCheck(task: TaskDetail): void {
+  const check = task.finalCheck;
+  if (check === null) return;
+  console.log(check.passed ? `\nJERRY final checks passed: ${task.taskId} is DONE.` : `\nJERRY final checks did not pass: ${task.taskId} stays in final checks. Request changes or cancel the task.`);
+  for (const condition of check.conditions) {
+    const mark = condition.passed ? 'ok  ' : condition.blocking ? 'FAIL' : 'note';
+    console.log(`  ${mark} ${condition.detail}`);
+  }
 }
 
 /** The report as the user reviews it in a terminal: claims next to what JERRY recorded. */

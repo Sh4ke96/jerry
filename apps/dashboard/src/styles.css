@@ -389,6 +389,29 @@ code {
   color: var(--muted);
 }
 
+.final-check {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+}
+
+.final-check--passed {
+  background: var(--pass-bg);
+}
+
+.final-check--failed {
+  background: var(--deny-bg);
+}
+
+.final-check h3 {
+  margin: 0 0 6px;
+  font-size: 1rem;
+}
+
+.dod p {
+  margin: 0 0 4px;
+}
+
 .report h3 {
   margin: 12px 0 6px;
   font-size: 1rem;

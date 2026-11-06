@@ -242,7 +242,13 @@ const k2 = runClaude('K2: /jerry:commit-message', '/jerry:commit-message', ['Rea
 expect('K2: Claude proposed a commit message and left Git alone', /```/.test(k2.text) && gitUntouched(), k2.text.slice(0, 200));
 const accepted = await coreApi(info, 'POST', `/api/v1/tasks/${task.taskId}/approvals`, { stage: 'IMPLEMENTATION', version: 1, decision: 'APPROVED', comment: 'live check' });
 const final = await coreApi(info, 'GET', `/api/v1/tasks/${task.taskId}`);
-expect('K: the user accepted exactly report v1; the task moved to its final checks', accepted.version === 1 && final.state === 'FINAL_REPORT', `${accepted.decision ?? accepted.error} → ${final.state}`);
+expect(
+  'K: the user accepted exactly report v1; Core ran its final checks and set DONE',
+  accepted.version === 1 && final.state === 'DONE' && final.finalCheck?.passed === true,
+  `${accepted.decision ?? accepted.error} → ${final.state}; ${(final.finalCheck?.conditions ?? []).filter((condition) => !condition.passed).map((condition) => condition.detail).join('; ')}`,
+);
+const doneHistory = await coreApi(info, 'GET', `/api/v1/tasks/${task.taskId}/transitions`);
+expect('K: DONE was set by Core, not by a model or the user', doneHistory.at(-1)?.event === 'task.completed' && doneHistory.at(-1)?.actor === 'core', JSON.stringify(doneHistory.at(-1)));
 
 // H — /jerry:plan: the model studies the repository, drafts a full plan and submits it; nothing is approved.
 const h = runClaude(
