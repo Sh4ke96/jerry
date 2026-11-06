@@ -1,0 +1,98 @@
+import { randomBytes, timingSafeEqual } from 'node:crypto';
+
+/**
+ * Browser access to Core (ADR 0007). The dashboard never sees the CLI/hook token. Instead:
+ *   1. the user runs `jerry ui`; the CLI (token-authenticated) asks Core for a one-time login code;
+ *   2. the browser opens /ui/login?code=…; Core redeems the code (single use, 60 s) and sets an
+ *      HttpOnly, SameSite=Strict session cookie;
+ *   3. every state-changing browser request must carry the session's CSRF token and a same-origin
+ *      Origin header.
+ * Sessions live in memory: restarting Core signs the dashboard out.
+ */
+
+export const SESSION_COOKIE = 'jerry_session';
+export const CSRF_HEADER = 'x-jerry-csrf';
+export const LOGIN_CODE_TTL_MS = 60_000;
+export const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
+
+export interface BrowserSession {
+  id: string;
+  csrfToken: string;
+  createdAt: number;
+  expiresAt: number;
+}
+
+export class BrowserSessions {
+  private readonly codes = new Map<string, number>();
+  private readonly sessions = new Map<string, BrowserSession>();
+
+  constructor(private readonly now: () => number = Date.now) {}
+
+  issueLoginCode(): { code: string; expiresAt: number } {
+    this.sweep();
+    const code = randomBytes(32).toString('hex');
+    const expiresAt = this.now() + LOGIN_CODE_TTL_MS;
+    this.codes.set(code, expiresAt);
+    return { code, expiresAt };
+  }
+
+  /** Single use: a code is deleted on the first attempt, valid or not. */
+  redeemLoginCode(code: string): BrowserSession | null {
+    const expiresAt = this.codes.get(code);
+    this.codes.delete(code);
+    if (expiresAt === undefined || expiresAt < this.now()) return null;
+    const createdAt = this.now();
+    const session: BrowserSession = {
+      id: randomBytes(32).toString('hex'),
+      csrfToken: randomBytes(32).toString('hex'),
+      createdAt,
+      expiresAt: createdAt + SESSION_TTL_MS,
+    };
+    this.sessions.set(session.id, session);
+    return session;
+  }
+
+  get(id: string): BrowserSession | null {
+    const session = this.sessions.get(id);
+    if (session === undefined) return null;
+    if (session.expiresAt < this.now()) {
+      this.sessions.delete(id);
+      return null;
+    }
+    return session;
+  }
+
+  revoke(id: string): void {
+    this.sessions.delete(id);
+  }
+
+  private sweep(): void {
+    const now = this.now();
+    for (const [code, expiresAt] of this.codes) if (expiresAt < now) this.codes.delete(code);
+    for (const [id, session] of this.sessions) if (session.expiresAt < now) this.sessions.delete(id);
+  }
+}
+
+export function safeEqual(a: string, b: string): boolean {
+  const left = Buffer.from(a, 'utf8');
+  const right = Buffer.from(b, 'utf8');
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
+export function readCookie(header: string | undefined, name: string): string | null {
+  if (header === undefined) return null;
+  for (const part of header.split(';')) {
+    const [key, ...value] = part.trim().split('=');
+    if (key === name) return value.join('=');
+  }
+  return null;
+}
+
+export function sessionCookie(session: BrowserSession): string {
+  const maxAge = Math.max(0, Math.floor((session.expiresAt - Date.now()) / 1000));
+  return `${SESSION_COOKIE}=${session.id}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}`;
+}
+
+export function clearedSessionCookie(): string {
+  return `${SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`;
+}

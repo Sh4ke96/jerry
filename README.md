@@ -28,7 +28,9 @@ repositories, not to this one.
   automatic restore when a migration fails, and full plan history ([ADR 0005](docs/decisions/0005-sqlite-node-builtin-kysely.md)).
 - Session events (prompts by size only, tool calls and results, subagents, stop, session end) with redaction,
   a spool while Core is down, and 90-day retention ([ADR 0006](docs/decisions/0006-session-events-spool-retention.md)).
-- `jerry` CLI: `install`, `uninstall`, `doctor`, `core start|stop|status`, `task`, `plan revise`,
+- Local API on Fastify: bearer token for the CLI and hooks; `jerry ui` signs the browser in with a one-time link,
+  with CSRF and Origin checks for the dashboard ([ADR 0007](docs/decisions/0007-local-api-fastify-browser-sessions.md)).
+- `jerry` CLI: `install`, `uninstall`, `doctor`, `ui`, `core start|stop|status`, `task`, `plan revise`,
   `approve`/`reject`, `repo exclude|include|list`, `events`, `db backup|backups|restore` (approve, reject,
   exclude and restore require an interactive terminal).
 

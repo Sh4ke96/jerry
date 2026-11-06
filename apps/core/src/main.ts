@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
-import type http from 'node:http';
 import { JERRY_VERSION, type CoreRuntimeInfo } from '@jerry/contracts';
+import type { FastifyInstance } from 'fastify';
 import {
   acquireSingleInstanceLock,
   assertJerryHomeOutsideRepositories,
@@ -11,8 +11,9 @@ import {
   resolveJerryHome,
   writeFileAtomic,
 } from '@jerry/platform';
+import { buildCoreApp, gateEvaluator } from './app.js';
+import { BrowserSessions } from './auth.js';
 import { drainSpool, importLegacyGateLog } from './events.js';
-import { createCoreServer, gateEvaluator } from './server.js';
 import { StateStore } from './state-store.js';
 
 const SPOOL_DRAIN_INTERVAL_MS = 15_000;
@@ -55,14 +56,20 @@ async function main(): Promise<void> {
   const configuredPort = resolveCorePort();
 
   const guardedRoots = protectedRoots();
-  const server = createCoreServer({
-    token,
-    store,
-    jerryHome: home,
-    protectedRoots: guardedRoots,
-    startedAt,
-    onShutdownRequested: () => shutdown('shutdown requested via API'),
-  });
+  let boundPort = configuredPort;
+  const sessions = new BrowserSessions();
+  const createApp = (): FastifyInstance =>
+    buildCoreApp({
+      token,
+      store,
+      jerryHome: home,
+      protectedRoots: guardedRoots,
+      startedAt,
+      port: () => boundPort,
+      sessions,
+      onShutdownRequested: () => shutdown('shutdown requested via API'),
+    });
+  let app = createApp();
 
   // Background upkeep: events spooled while Core was down, the pre-database gate log, retention.
   const evaluate = gateEvaluator(store, guardedRoots);
@@ -96,13 +103,16 @@ async function main(): Promise<void> {
 
   let port: number;
   try {
-    port = await listen(server, configuredPort);
+    port = await listen(app, configuredPort);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE' || configuredPort === 0) throw error;
     // Another program holds the port: keep guarding on a random port; doctor reports the fallback.
     process.stdout.write(`Port ${configuredPort} is in use by another program; falling back to a random port.\n`);
-    port = await listen(server, 0);
+    await app.close();
+    app = createApp();
+    port = await listen(app, 0);
   }
+  boundPort = port;
 
   const info: CoreRuntimeInfo = {
     pid: process.pid,
@@ -125,12 +135,11 @@ async function main(): Promise<void> {
     stopping = true;
     process.stdout.write(`JERRY Core stopping: ${reason}\n`);
     cleanUp();
-    server.close(() => {
-      store
-        .close()
-        .catch((error: unknown) => process.stderr.write(`Closing the database failed: ${String(error)}\n`))
-        .finally(() => process.exit(0));
-    });
+    app
+      .close()
+      .then(() => store.close())
+      .catch((error: unknown) => process.stderr.write(`Closing Core failed: ${String(error)}\n`))
+      .finally(() => process.exit(0));
     setTimeout(() => process.exit(0), 3000).unref();
   }
   process.on('SIGINT', () => shutdown('SIGINT'));
@@ -138,20 +147,12 @@ async function main(): Promise<void> {
   process.on('exit', cleanUp);
 }
 
-function listen(server: http.Server, port: number): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const onError = (error: Error): void => reject(error);
-    server.once('error', onError);
-    server.listen(port, '127.0.0.1', () => {
-      server.off('error', onError);
-      const address = server.address();
-      if (typeof address !== 'object' || address === null) {
-        reject(new Error('Core server did not bind to a TCP port'));
-        return;
-      }
-      resolve(address.port);
-    });
-  });
+/** Loopback only, never 0.0.0.0 (spec §18.1). */
+async function listen(app: FastifyInstance, port: number): Promise<number> {
+  await app.listen({ host: '127.0.0.1', port });
+  const address = app.server.address();
+  if (typeof address !== 'object' || address === null) throw new Error('Core server did not bind to a TCP port');
+  return address.port;
 }
 
 /** Only the owning process removes core.json, so a second Core never deletes the first one's file. */

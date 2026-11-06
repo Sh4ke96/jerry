@@ -3,6 +3,7 @@ import { JERRY_VERSION } from '@jerry/contracts';
 import { getCoreStatus, startCore, stopCore } from './core-commands.js';
 import { backupNow, restoreFromBackup, showBackups } from './db-commands.js';
 import { showEvents } from './events-command.js';
+import { openDashboard } from './ui-command.js';
 import { doctor } from './doctor.js';
 import { install, uninstall } from './install-commands.js';
 import { excludeRepository, includeRepository, listExcludedRepositories } from './repo-commands.js';
@@ -14,6 +15,7 @@ Usage:
   jerry install                       Install the JERRY plugin in Claude Code (user scope)
   jerry uninstall [--purge-data]      Remove the plugin and marketplace; keep data unless --purge-data
   jerry doctor                        Check plugin, hooks, Core and project footprint
+  jerry ui [--print-url]              Open the dashboard in the browser (one-time login link)
   jerry core start|stop|status        Manage the local JERRY Core process
   jerry task create --repo <path> --title <text> --scope <glob> [--scope <glob>...]
   jerry task list
@@ -55,6 +57,10 @@ async function run(argv: string[]): Promise<void> {
       if (positionals[0] !== 'revise' || positionals[1] === undefined || values.scope === undefined) throw new UsageError();
       await revisePlan(positionals[1], values.scope);
       return;
+    }
+    case 'ui': {
+      const { values } = parseArgs({ args: rest, options: { 'print-url': { type: 'boolean', default: false } } });
+      return openDashboard({ printOnly: values['print-url'] });
     }
     case 'events': {
       const { values } = parseArgs({

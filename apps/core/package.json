@@ -10,6 +10,7 @@
     "@jerry/platform": "workspace:*",
     "@jerry/policy-engine": "workspace:*",
     "@jerry/trace-engine": "workspace:*",
+    "fastify": "5.12.8",
     "kysely": "0.29.8",
     "zod": "4.6.7"
   }

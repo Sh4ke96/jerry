@@ -26,7 +26,13 @@ const common = {
 
 await Promise.all([
   build({ ...common, entryPoints: [path.join(root, 'apps/hook-bridge/src/main.ts')], outfile: path.join(dist, 'plugin/hooks/bridge.mjs'), minify: true }),
-  build({ ...common, entryPoints: [path.join(root, 'apps/core/src/main.ts')], outfile: path.join(dist, 'core/core.mjs') }),
+  // Fastify and its dependencies are CommonJS and require Node built-ins; an ESM bundle needs a real `require`.
+  build({
+    ...common,
+    entryPoints: [path.join(root, 'apps/core/src/main.ts')],
+    outfile: path.join(dist, 'core/core.mjs'),
+    banner: { js: "import { createRequire as __jerryCreateRequire } from 'node:module'; const require = __jerryCreateRequire(import.meta.url);" },
+  }),
   build({ ...common, entryPoints: [path.join(root, 'apps/cli/src/main.ts')], outfile: path.join(dist, 'cli/jerry.mjs'), banner: { js: '#!/usr/bin/env node' } }),
 ]);
 

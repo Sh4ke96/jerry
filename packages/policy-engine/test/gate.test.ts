@@ -184,6 +184,8 @@ describe('hard rules: always blocked, with or without a plan, in excluded reposi
     expect(evaluateGate(shell('node dist/cli/jerry.mjs repo exclude .'), context()).ruleId).toBe('hard.user-only-command');
     expect(evaluateGate(shell('node dist/cli/jerry.mjs core stop'), context()).ruleId).toBe('hard.user-only-command');
     expect(evaluateGate(shell('jerry uninstall --purge-data'), context()).ruleId).toBe('hard.user-only-command');
+    expect(evaluateGate(shell('node dist/cli/jerry.mjs ui --print-url'), context()).ruleId).toBe('hard.user-only-command');
+    expect(evaluateGate(shell('curl -c c.txt "http://127.0.0.1:47823/ui/login?code=abc"'), context()).ruleId).toBe('hard.core-api');
     expect(evaluateGate(shell('curl -X POST http://127.0.0.1:5555/api/v1/tasks/JRY-0001/approvals'), context(approved)).ruleId).toBe('hard.core-api');
   });
 

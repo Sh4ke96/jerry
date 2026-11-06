@@ -120,6 +120,9 @@ describe.skipIf(claude === null)('jerry install / doctor / uninstall (isolated C
     expect(healthy.output).toContain('Guard status: GUARDED');
     expect(healthy.output).toMatch(/PASS\s+core-autostart/);
     expect(healthy.output).toMatch(/PASS\s+disk-usage\s+[\d.]+ MiB/);
+    const login = jerry(['ui', '--print-url']);
+    expect(login.exitCode, login.output).toBe(0);
+    expect(login.output.trim()).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/ui\/login\?code=[0-9a-f]{64}$/);
     expect(jerry(['core', 'stop']).exitCode).toBe(0);
   });
 

@@ -195,6 +195,8 @@ export const approvalRequestSchema = z.object({
   version: z.number().int().positive(),
   decision: approvalDecisionSchema,
   comment: z.string().default(''),
+  /** Required from the dashboard: the task ID typed by the user, like the CLI's confirmation prompt. */
+  confirmTaskId: z.string().optional(),
 });
 export type ApprovalRequest = z.infer<typeof approvalRequestSchema>;
 
@@ -241,6 +243,8 @@ export type RepositoryExclusion = z.infer<typeof repositoryExclusionSchema>;
 export const repositoryExclusionRequestSchema = z.object({
   repoPath: z.string().min(1),
   excluded: z.boolean(),
+  /** Required from the dashboard when excluding: the word "exclude" typed by the user. */
+  confirmation: z.string().optional(),
 });
 export type RepositoryExclusionRequest = z.infer<typeof repositoryExclusionRequestSchema>;
 
@@ -283,6 +287,17 @@ export const coreStatusSchema = z.object({
 export type CoreStatus = z.infer<typeof coreStatusSchema>;
 
 export const databaseBackupResultSchema = z.object({ file: z.string().min(1) });
+
+/** One-time dashboard login link, created for the CLI's `jerry ui`. */
+export const loginCodeResponseSchema = z.object({
+  url: z.string().url(),
+  expiresAt: z.iso.datetime(),
+});
+
+export const browserSessionInfoSchema = z.object({
+  csrfToken: z.string().min(32),
+  expiresAt: z.iso.datetime(),
+});
 
 export const apiErrorSchema = z.object({
   error: z.string(),

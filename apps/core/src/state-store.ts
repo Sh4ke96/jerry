@@ -19,6 +19,9 @@ import { sql, type Kysely, type Transaction } from 'kysely';
 const SNAPSHOT_SESSIONS = 200;
 const NEXT_TASK_NUMBER = 'next_task_number';
 
+/** Where a user decision came from; recorded in the audit log. */
+export type Channel = 'cli' | 'dashboard';
+
 export class StateError extends Error {
   constructor(
     readonly statusCode: 400 | 404 | 409,
@@ -115,7 +118,7 @@ export class StateStore {
     return this.requireTask(taskId);
   }
 
-  async recordApproval(taskId: string, request: ApprovalRequest, now: Date): Promise<ApprovalRecord> {
+  async recordApproval(taskId: string, request: ApprovalRequest, now: Date, channel: Channel = 'cli'): Promise<ApprovalRecord> {
     const task = this.requireTask(taskId);
     if (request.version !== task.plan.version) {
       throw new StateError(409, `${taskId} plan is at version ${task.plan.version}; refusing a decision for version ${request.version}`);
@@ -148,7 +151,7 @@ export class StateStore {
           created_at: at,
         })
         .execute();
-      await audit(trx, at, `approval.${record.decision.toLowerCase()}`, taskId, { stage: record.stage, version: record.version, contentHash: record.contentHash });
+      await audit(trx, at, `approval.${record.decision.toLowerCase()}`, taskId, { stage: record.stage, version: record.version, contentHash: record.contentHash, channel });
     });
     await this.reload();
     return record;
@@ -165,12 +168,12 @@ export class StateStore {
   }
 
   /** Excluding stops monitoring for the repository; hard rules keep applying there. */
-  async setExcluded(repoRoot: string, excluded: boolean, now: Date): Promise<void> {
+  async setExcluded(repoRoot: string, excluded: boolean, now: Date, channel: Channel = 'cli'): Promise<void> {
     const at = now.toISOString();
     await this.database.db.transaction().execute(async (trx) => {
       const repoId = await upsertRepository(trx, repoRoot, at);
       await trx.updateTable('repositories').set({ excluded_at: excluded ? at : null, updated_at: at }).where('repo_id', '=', repoId).execute();
-      await audit(trx, at, excluded ? 'repository.exclude' : 'repository.include', repoRoot, {});
+      await audit(trx, at, excluded ? 'repository.exclude' : 'repository.include', repoRoot, { channel });
     });
     await this.reload();
   }
