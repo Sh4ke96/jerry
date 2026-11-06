@@ -7,7 +7,7 @@ import { showEvents } from './events-command.js';
 import { install, uninstall } from './install-commands.js';
 import { excludeRepository, includeRepository, listExcludedRepositories } from './repo-commands.js';
 import { showStatus } from './status-command.js';
-import { createTask, decidePlan, listTasks, revisePlan } from './task-commands.js';
+import { controlTask, createTask, decidePlan, listTasks, revisePlan, showTask } from './task-commands.js';
 import { openDashboard } from './ui-command.js';
 
 /** Repeatable option without a default, so a required one is really required. */
@@ -65,7 +65,24 @@ task
   .requiredOption('--title <text>', 'what the task is about')
   .requiredOption('--scope <glob>', 'repo-relative glob the plan covers (repeatable)', collect)
   .action((options: { repo: string; title: string; scope: string[] }) => createTask(options));
-task.command('list').description('List tasks and their approval state').action(() => listTasks());
+task
+  .command('list')
+  .description('List open tasks and their workflow state')
+  .option('--all', 'include finished and cancelled tasks', false)
+  .action((options: { all: boolean }) => listTasks(options));
+task.command('show <taskId>').description('Show a task: state, plan, decision and history').action((taskId: string) => showTask(taskId));
+const controls = [
+  ['pause', 'task.paused', 'Pause a task: its plan stops covering edits until you resume it (interactive)'],
+  ['resume', 'task.resumed', 'Resume a paused task in the state it was paused in (interactive)'],
+  ['cancel', 'task.cancelled', 'Cancel a task for good (interactive: you type the task ID)'],
+] as const;
+for (const [verb, event, description] of controls) {
+  task
+    .command(`${verb} <taskId>`)
+    .description(description)
+    .option('--reason <text>', 'note stored in the task history', '')
+    .action((taskId: string, options: { reason: string }) => controlTask(taskId, event, options.reason));
+}
 
 program
   .command('plan')

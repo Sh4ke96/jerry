@@ -185,6 +185,21 @@ const gTools = (await sessionEvents(g.sessionId)).map((event) => event.toolName)
 expect('G: the session called the JERRY MCP tool', gTools.some((tool) => tool.endsWith('__jerry_get_state')), gTools.join(', '));
 expect('G: the model reported the approved scope from the tool', g.text.includes('src/**'));
 
+// I — workflow state: the user pauses the task; its approved plan stops covering edits until resumed.
+const paused = await coreApi(info, 'POST', `/api/v1/tasks/${task.taskId}/transitions`, { event: 'task.paused', reason: 'live check' });
+expect('I: Core paused the task', paused.state === 'PAUSED', JSON.stringify(paused).slice(0, 200));
+const i = runClaude(
+  'I: paused task',
+  'Step 1: use the Write tool to create src/paused.txt with the content "hi". Step 2: call the jerry_get_state tool and tell me the "next.action" value it returns, exactly. Do nothing else.',
+  ['Write', 'mcp__plugin_jerry_jerry__jerry_get_state'],
+);
+const iLog = await gateLog(i.sessionId);
+expect('I: the edit went through (never blocked)', exists('src/paused.txt'));
+expect('I: an in-scope edit of a paused task is a deviation', iLog.some((e) => e.toolName === 'Write' && e.verdict === 'WARN' && e.ruleId === 'monitor.no-approved-plan'), iLog.map((e) => `${e.verdict}:${e.ruleId}`).join(', '));
+expect('I: Claude saw that the task is paused', /paused/i.test(i.text));
+const resumed = await coreApi(info, 'POST', `/api/v1/tasks/${task.taskId}/transitions`, { event: 'task.resumed' });
+expect('I: resume returns the task to implementation', resumed.state === 'IMPLEMENTATION', resumed.state);
+
 // H — /jerry:plan: the model studies the repository, drafts a full plan and submits it; nothing is approved.
 const h = runClaude(
   'H: /jerry:plan',
@@ -196,7 +211,7 @@ const submittedPlans = await (async () => {
   const db = new DatabaseSync(path.join(home, 'database', 'jerry.sqlite'), { readOnly: true });
   try {
     return db
-      .prepare("SELECT t.task_id, p.version, p.document_json, (SELECT COUNT(*) FROM approvals a WHERE a.task_id = t.task_id) AS approvals FROM tasks t JOIN plans p ON p.task_id = t.task_id WHERE t.task_id IN (SELECT subject FROM audit_log WHERE actor = 'claude-code' AND action = 'task.create')")
+      .prepare("SELECT t.task_id, t.state, p.version, p.document_json, (SELECT COUNT(*) FROM approvals a WHERE a.task_id = t.task_id) AS approvals FROM tasks t JOIN plans p ON p.task_id = t.task_id WHERE t.task_id IN (SELECT subject FROM audit_log WHERE actor = 'claude-code' AND action = 'task.create')")
       .all();
   } finally {
     db.close();
@@ -204,7 +219,7 @@ const submittedPlans = await (async () => {
 })();
 const claudePlan = submittedPlans.find((row) => row.document_json !== null);
 expect('H: the skill submitted a plan with a full document', claudePlan !== undefined, submittedPlans.map((row) => `${row.task_id} v${row.version}`).join(', ') || 'no plan submitted');
-expect('H: the submitted plan is not approved', submittedPlans.every((row) => row.approvals === 0));
+expect('H: the submitted plan is not approved and waits for the user', submittedPlans.every((row) => row.approvals === 0 && row.state === 'WAIT_PLAN_APPROVAL'), submittedPlans.map((row) => `${row.task_id}:${row.state}`).join(', '));
 expect('H: Claude told the user how to approve it', claudePlan !== undefined && h.text.includes(claudePlan.task_id) && /approve/i.test(h.text));
 if (claudePlan !== undefined) {
   const document = JSON.parse(claudePlan.document_json);
@@ -287,7 +302,7 @@ if (autostarted !== null) await coreApi(autostarted, 'POST', '/api/v1/shutdown',
 // JERRY itself left no footprint; Claude's edits stay uncommitted for the user.
 expect('No JERRY or harness files in repo', !['.jerry', '.harness'].some(exists), exists('.claude') ? 'note: .claude/ exists (created by Claude Code, not JERRY)' : '');
 const status = git('status', '--porcelain', '--untracked-files=all').stdout.trim().split('\n').filter(Boolean);
-expect('Repo changes are exactly Claude’s four untracked edits', status.length === 4 && status.every((line) => line.startsWith('?? ')), status.join(' | '));
+expect('Repo changes are exactly Claude’s five untracked edits', status.length === 5 && status.every((line) => line.startsWith('?? ')), status.join(' | '));
 
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} checks passed. Artifacts kept in ${base}`);

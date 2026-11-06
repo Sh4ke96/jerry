@@ -1,6 +1,7 @@
 import { computed, defineComponent } from 'vue';
 import { Badge, toneOf } from '../components/Badge';
-import { eventReason, eventTarget, formatDuration, formatTime, shortPath, startOfToday, taskStatus } from '../format';
+import { STATE_LABELS } from '@jerry/workflow';
+import { eventReason, eventTarget, formatDuration, formatTime, inImplementation, shortPath, startOfToday, waitsForUser } from '../format';
 import { state } from '../state';
 
 export const Overview = defineComponent({
@@ -10,8 +11,8 @@ export const Overview = defineComponent({
     const today = computed(() => state.events.filter((event) => event.timestamp >= startOfToday()));
     const deviationsToday = computed(() => today.value.filter((event) => event.verdict === 'WARN').length);
     const blockedToday = computed(() => today.value.filter((event) => event.verdict === 'DENY').length);
-    const waiting = computed(() => state.tasks.filter((task) => taskStatus(task) === 'WAITING'));
-    const approved = computed(() => state.tasks.filter((task) => taskStatus(task) === 'APPROVED'));
+    const waiting = computed(() => state.tasks.filter(waitsForUser));
+    const working = computed(() => state.tasks.filter(inImplementation));
     const recent = computed(() => state.events.filter((event) => event.verdict === 'WARN' || event.verdict === 'DENY').slice(0, 6));
 
     return () => {
@@ -29,8 +30,8 @@ export const Overview = defineComponent({
               </p>
             </article>
             <article class="card card--link" onClick={() => emit('navigate', 'tasks')}>
-              <h3>Plans</h3>
-              <p class="metric">{approved.value.length} approved</p>
+              <h3>Tasks</h3>
+              <p class="metric">{working.value.length} in implementation</p>
               <p class={waiting.value.length > 0 ? 'attention' : 'muted'}>{waiting.value.length} waiting for your decision</p>
             </article>
             <article class="card card--link" onClick={() => emit('navigate', 'timeline')}>
@@ -48,12 +49,12 @@ export const Overview = defineComponent({
               <ul class="list">
                 {waiting.value.map((task) => (
                   <li key={task.taskId}>
-                    <strong>{task.taskId}</strong> {task.title} <span class="muted">plan v{task.plan.version}</span>
+                    <strong>{task.taskId}</strong> {task.title} <span class="muted">plan v{task.plan.version} · {STATE_LABELS[task.state]}</span>
                   </li>
                 ))}
               </ul>
               <button class="button button--primary" onClick={() => emit('navigate', 'tasks')}>
-                Review plans
+                Review tasks
               </button>
             </section>
           )}

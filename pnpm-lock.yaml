@@ -23,6 +23,9 @@ importers:
       '@jerry/trace-engine':
         specifier: workspace:*
         version: link:packages/trace-engine
+      '@jerry/workflow':
+        specifier: workspace:*
+        version: link:packages/workflow
       '@types/node':
         specifier: 22.20.5
         version: 22.20.5
@@ -68,6 +71,9 @@ importers:
       '@jerry/platform':
         specifier: workspace:*
         version: link:../../packages/platform
+      '@jerry/workflow':
+        specifier: workspace:*
+        version: link:../../packages/workflow
       commander:
         specifier: 15.0.0
         version: 15.0.0
@@ -92,6 +98,9 @@ importers:
       '@jerry/trace-engine':
         specifier: workspace:*
         version: link:../../packages/trace-engine
+      '@jerry/workflow':
+        specifier: workspace:*
+        version: link:../../packages/workflow
       fastify:
         specifier: 5.12.8
         version: 5.12.8
@@ -107,6 +116,9 @@ importers:
       '@jerry/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@jerry/workflow':
+        specifier: workspace:*
+        version: link:../../packages/workflow
       vue:
         specifier: 3.5.45
         version: 3.5.45(typescript@7.0.2)
@@ -134,6 +146,9 @@ importers:
       '@jerry/platform':
         specifier: workspace:*
         version: link:../../packages/platform
+      '@jerry/workflow':
+        specifier: workspace:*
+        version: link:../../packages/workflow
       zod:
         specifier: 4.6.7
         version: 4.6.7
@@ -164,8 +179,17 @@ importers:
       '@jerry/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@jerry/workflow':
+        specifier: workspace:*
+        version: link:../workflow
 
   packages/trace-engine:
+    dependencies:
+      '@jerry/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
+  packages/workflow:
     dependencies:
       '@jerry/contracts':
         specifier: workspace:*

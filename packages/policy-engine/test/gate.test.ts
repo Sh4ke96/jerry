@@ -1,4 +1,4 @@
-import type { CoreState, GateCheckRequest, Task } from '@jerry/contracts';
+import type { CoreState, GateCheckRequest, Task, WorkflowState } from '@jerry/contracts';
 import { describe, expect, it } from 'vitest';
 import { approvedPlansForRepo, computePlanHash, isRepoExcluded } from '../src/approvals.js';
 import { evaluateGate, type GateContext } from '../src/gate.js';
@@ -6,13 +6,14 @@ import { evaluateGate, type GateContext } from '../src/gate.js';
 const REPO = 'D:/Work/Repo';
 const JERRY_HOME = 'C:/Users/u/AppData/Local/JERRY';
 
-function task(scope: string[], version = 1, repoRoot = REPO): Task {
+function task(scope: string[], version = 1, repoRoot = REPO, state: WorkflowState = 'IMPLEMENTATION'): Task {
   const taskId = 'JRY-0001';
   return {
     taskId,
     title: 'Add feature',
     repoRoot,
     createdAt: '2026-11-06T10:00:00.000Z',
+    state,
     plan: { version, scope, contentHash: computePlanHash({ taskId, title: 'Add feature', repoRoot, version, scope }), createdAt: '2026-11-06T10:00:00.000Z' },
   };
 }
@@ -89,6 +90,13 @@ describe('monitoring: file writes are never blocked, deviations are warned', () 
     const v2 = task(['src/**', 'test/**'], 2);
     expect(evaluateGate(write('src/a.ts'), context(approvedState(v2, v1.plan.version, v1.plan.contentHash))).ruleId).toBe('monitor.no-approved-plan');
     expect(evaluateGate(write('src/a.ts'), context(approvedState(v1, 1, `sha256:${'0'.repeat(64)}`))).verdict).toBe('WARN');
+  });
+
+  it('covers edits only while the task is being implemented', () => {
+    for (const state of ['WAIT_IMPLEMENTATION_ACCEPTANCE', 'PAUSED', 'FINAL_REPORT', 'DONE', 'CANCELLED', 'WAIT_PLAN_APPROVAL'] as const) {
+      expect(evaluateGate(write('src/a.ts'), context(approvedState(task(['src/**'], 1, REPO, state)))).ruleId, state).toBe('monitor.no-approved-plan');
+    }
+    expect(evaluateGate(write('src/a.ts'), context(approvedState(task(['src/**'], 1, REPO, 'FIX_IMPLEMENTATION')))).verdict).toBe('PASS');
   });
 
   it('judges a write through a link by its real target', () => {
@@ -185,6 +193,12 @@ describe('hard rules: always blocked, with or without a plan, in excluded reposi
     expect(evaluateGate(shell('node dist/cli/jerry.mjs core stop'), context()).ruleId).toBe('hard.user-only-command');
     expect(evaluateGate(shell('jerry uninstall --purge-data'), context()).ruleId).toBe('hard.user-only-command');
     expect(evaluateGate(shell('node dist/cli/jerry.mjs ui --print-url'), context()).ruleId).toBe('hard.user-only-command');
+    for (const action of ['pause', 'resume', 'cancel']) {
+      expect(evaluateGate(shell(`jerry task ${action} JRY-0001`), context()).ruleId, action).toBe('hard.user-only-command');
+    }
+    expect(evaluateGate(shell('jerry task show JRY-0001'), context()).verdict).toBe('PASS');
+    expect(evaluateGate(shell('jerry task list'), context()).verdict).toBe('PASS');
+    expect(evaluateGate(shell('node dist/cli/jerry.mjs task list --all'), context()).verdict).toBe('PASS');
     expect(evaluateGate(shell('curl -c c.txt "http://127.0.0.1:47823/ui/login?code=abc"'), context()).ruleId).toBe('hard.core-api');
     expect(evaluateGate(shell('curl -X POST http://127.0.0.1:5555/api/v1/tasks/JRY-0001/approvals'), context(approved)).ruleId).toBe('hard.core-api');
   });

@@ -10,6 +10,7 @@ import {
   sessionRegistrationSchema,
   taskCreateRequestSchema,
   taskIdSchema,
+  taskTransitionRequestSchema,
   type CoreState,
   type CoreStatus,
   type GateCheckRequest,
@@ -350,6 +351,22 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
       throw new HttpError(400, `Approving from the dashboard needs the task ID typed as confirmation (${taskId})`);
     }
     return reply.code(201).send(await store.recordApproval(taskId, body, new Date(), fromDashboard ? 'dashboard' : 'cli'));
+  });
+
+  app.get('/api/v1/tasks/:taskId/transitions', { config: TOKEN_OR_SESSION }, async (request) => {
+    const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId);
+    return store.listTransitions(taskId);
+  });
+
+  /** Pause, resume or cancel: user decisions, like approvals (the CLI asks in a terminal, the dashboard asks for the typed ID). */
+  app.post('/api/v1/tasks/:taskId/transitions', { config: TOKEN_OR_SESSION }, async (request, reply) => {
+    const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId);
+    const body = parse(taskTransitionRequestSchema, request.body);
+    const fromDashboard = request.client?.kind === 'session';
+    if (fromDashboard && body.event === 'task.cancelled' && body.confirmTaskId !== taskId) {
+      throw new HttpError(400, `Cancelling from the dashboard needs the task ID typed as confirmation (${taskId})`);
+    }
+    return reply.code(201).send(await store.controlTask(taskId, body.event, body.reason, new Date(), fromDashboard ? 'dashboard' : 'cli'));
   });
 
   app.post('/api/v1/database/backups', { config: TOKEN_OR_SESSION }, async (_request, reply) => reply.code(201).send({ file: await store.backup('manual') }));

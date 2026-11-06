@@ -1,10 +1,9 @@
 import path from 'node:path';
 import readline from 'node:readline/promises';
-import { approvalRecordSchema, taskSchema, type ApprovalRecord, type Task } from '@jerry/contracts';
+import { approvalRecordSchema, taskSchema, taskWithDecisionSchema, workflowTransitionSchema, type ApprovalRecord, type Task } from '@jerry/contracts';
 import { readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
+import { isTerminal, STATE_LABELS } from '@jerry/workflow';
 import { z } from 'zod';
-
-const taskWithDecisionSchema = taskSchema.extend({ planDecision: approvalRecordSchema.nullable() });
 
 async function callCore(method: 'GET' | 'POST', apiPath: string, body?: unknown): Promise<unknown> {
   const info = readCoreRuntimeInfo(resolveJerryHome());
@@ -26,16 +25,65 @@ export async function revisePlan(taskId: string, scope: string[]): Promise<void>
   printPlan(task);
 }
 
-export async function listTasks(): Promise<void> {
+export async function listTasks(options: { all: boolean }): Promise<void> {
   const tasks = z.array(taskWithDecisionSchema).parse(await callCore('GET', '/api/v1/tasks'));
-  if (tasks.length === 0) {
-    console.log('No tasks.');
+  const shown = options.all ? tasks : tasks.filter((task) => !isTerminal(task.state));
+  if (shown.length === 0) {
+    console.log(tasks.length === 0 ? 'No tasks.' : 'No open tasks (jerry task list --all shows finished and cancelled ones).');
     return;
   }
-  for (const task of tasks) {
-    const decision = task.planDecision?.decision ?? 'WAITING_FOR_APPROVAL';
-    console.log(`${task.taskId}  plan v${task.plan.version}  ${decision.padEnd(20)}  ${task.repoRoot}  ${task.title}`);
+  for (const task of shown) {
+    console.log(`${task.taskId}  plan v${task.plan.version}  ${STATE_LABELS[task.state].padEnd(26)}  ${task.repoRoot}  ${task.title}`);
   }
+  const hidden = tasks.length - shown.length;
+  if (hidden > 0) console.log(`(${hidden} finished or cancelled; --all shows them)`);
+}
+
+export async function showTask(taskId: string): Promise<void> {
+  const task = await fetchTask(taskId);
+  const history = z.array(workflowTransitionSchema).parse(await callCore('GET', `/api/v1/tasks/${encodeURIComponent(task.taskId)}/transitions`));
+  console.log(`${task.taskId}  ${STATE_LABELS[task.state]} (${task.state})`);
+  printPlan(task);
+  const decision = task.planDecision;
+  console.log(`  decision: ${decision === null ? 'none for this plan version' : `${decision.decision} ${decision.approvedAt}${decision.comment === '' ? '' : ` "${decision.comment}"`}`}`);
+  console.log('\nHistory:');
+  if (history.length === 0) console.log('  (none recorded; the task predates workflow states)');
+  for (const step of history) {
+    console.log(`  ${step.at}  ${(step.from ?? 'new').padEnd(30)} -> ${step.to.padEnd(30)} ${step.event} by ${step.actor}${step.reason === '' ? '' : `: ${step.reason}`}`);
+  }
+}
+
+const CONTROL_VERBS = { 'task.paused': 'pause', 'task.resumed': 'resume', 'task.cancelled': 'cancel' } as const;
+
+/**
+ * Pause, resume and cancel are user decisions: they need an interactive terminal (agents' shell
+ * tools have none), and cancelling, which cannot be undone, needs the task ID typed.
+ */
+export async function controlTask(taskId: string, event: keyof typeof CONTROL_VERBS, reason: string): Promise<void> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error(`"jerry task ${CONTROL_VERBS[event]}" requires an interactive terminal (PowerShell or the VS Code terminal). In Git Bash/mintty run it via "winpty".`);
+  }
+  const task = await fetchTask(taskId);
+  if (event === 'task.cancelled') {
+    console.log(`${task.taskId}  ${STATE_LABELS[task.state]}  ${task.title}`);
+    const prompt = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const typed = (await prompt.question(`\nCancelling cannot be undone. Type ${task.taskId} to cancel it: `)).trim();
+    prompt.close();
+    if (typed !== task.taskId) {
+      console.log('Confirmation did not match. Nothing was changed.');
+      process.exitCode = 1;
+      return;
+    }
+  }
+  const updated = taskSchema.parse(await callCore('POST', `/api/v1/tasks/${encodeURIComponent(task.taskId)}/transitions`, { event, reason }));
+  console.log(`${updated.taskId}: ${STATE_LABELS[task.state]} -> ${STATE_LABELS[updated.state]}`);
+}
+
+async function fetchTask(taskId: string): Promise<z.infer<typeof taskWithDecisionSchema>> {
+  const tasks = z.array(taskWithDecisionSchema).parse(await callCore('GET', '/api/v1/tasks'));
+  const task = tasks.find((candidate) => candidate.taskId === taskId.toUpperCase());
+  if (task === undefined) throw new Error(`Unknown task ${taskId}`);
+  return task;
 }
 
 /**
@@ -80,6 +128,7 @@ export async function decidePlan(options: { taskId: string; stage: string; versi
 }
 
 function printPlan(task: Task): void {
+  console.log(`  state:   ${STATE_LABELS[task.state]}`);
   console.log(`  title:   ${task.title}`);
   console.log(`  repo:    ${task.repoRoot}`);
   console.log(`  plan:    v${task.plan.version}  ${task.plan.contentHash}`);

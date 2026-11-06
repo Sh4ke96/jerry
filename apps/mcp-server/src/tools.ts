@@ -8,8 +8,10 @@ import {
   type RepositoryState,
   type Task,
   type TaskWithDecision,
+  type WorkflowState,
 } from '@jerry/contracts';
 import { autostartCore, CoreUnavailableError, readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
+import { isTerminal, WORK_STATES } from '@jerry/workflow';
 import { z } from 'zod';
 import type { ToolDefinition, ToolResult } from './protocol.js';
 
@@ -69,12 +71,13 @@ async function repositoryState(path: unknown): Promise<RepositoryState> {
   return repositoryStateSchema.parse(await core('GET', `/api/v1/repositories/state?path=${encodeURIComponent(target)}`));
 }
 
-function taskStatus(task: TaskWithDecision): 'APPROVED' | 'REJECTED' | 'WAITING_FOR_APPROVAL' {
-  return task.planDecision?.decision ?? 'WAITING_FOR_APPROVAL';
+/** Being implemented under its approved plan: the plans that cover edits right now. */
+function coversEdits(task: TaskWithDecision): boolean {
+  return WORK_STATES.has(task.state) && task.planDecision?.decision === 'APPROVED';
 }
 
 function summarizeTask(task: TaskWithDecision): Record<string, unknown> {
-  return { taskId: task.taskId, title: task.title, planVersion: task.plan.version, scope: task.plan.scope, status: taskStatus(task) };
+  return { taskId: task.taskId, title: task.title, state: task.state, planVersion: task.plan.version, scope: task.plan.scope };
 }
 
 const pathArgument = {
@@ -91,21 +94,23 @@ export const TOOLS: readonly ToolDefinition[] = [
   {
     name: 'jerry_get_state',
     title: 'JERRY state',
-    description: 'Live JERRY state for a repository: approved and pending plans with scope, current task, and the next expected action.',
+    description: 'Live JERRY state for a repository: unfinished tasks with workflow state and scope, the plans that cover edits now, and the next expected action.',
     inputSchema: pathArgument,
     readOnly: true,
     handler: (args) =>
       withCore(async () => {
         const status = coreStatusSchema.parse(await core('GET', '/api/v1/status'));
         const state = await repositoryState(args['path']);
-        const latest = [...state.tasks].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+        // Finished and cancelled tasks are history; leaving them out keeps the answer short.
+        const open = state.tasks.filter((task) => !isTerminal(task.state));
+        const latest = [...open].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
         return ok({
           guard: 'GUARDED',
           jerryVersion: status.version,
           repository: state.repoRoot,
           monitored: state.repoRoot !== null && !state.excluded,
-          approved: state.tasks.filter((task) => taskStatus(task) === 'APPROVED').map(summarizeTask),
-          notApproved: state.tasks.filter((task) => taskStatus(task) !== 'APPROVED').map(summarizeTask),
+          approved: open.filter(coversEdits).map(summarizeTask),
+          open: open.filter((task) => !coversEdits(task)).map(summarizeTask),
           currentTask: latest === undefined ? null : { ...summarizeTask(latest), contentHash: latest.plan.contentHash, createdAt: latest.createdAt },
           next: nextAction(state),
           hardRules: 'No Git command or Git-server MCP tool that changes anything; no writes inside .git; no changes to JERRY data or the settings that enable it; no user-only jerry commands.',
@@ -210,7 +215,7 @@ export const TOOLS: readonly ToolDefinition[] = [
           taskId: task.taskId,
           planVersion: task.plan.version,
           contentHash: task.plan.contentHash,
-          status: 'WAITING_FOR_APPROVAL',
+          state: task.state,
           nextStep: `Tell the user that ${task.taskId} plan v${task.plan.version} waits for their decision in the JERRY dashboard (Plans) or with "jerry approve ${task.taskId} --stage plan --version ${task.plan.version}". Do not approve it yourself. Edits before approval are recorded as deviations.`,
         });
       }),
@@ -224,18 +229,32 @@ export function nextAction(state: RepositoryState): { action: string; details: s
   if (state.excluded) {
     return { action: 'none', details: 'The user excluded this repository from JERRY monitoring. Hard rules (no Git changes) still apply.' };
   }
-  const approved = state.tasks.filter((task) => taskStatus(task) === 'APPROVED');
+  const open = state.tasks.filter((task) => !isTerminal(task.state));
+  const ids = (states: readonly WorkflowState[]): string =>
+    open
+      .filter((task) => states.includes(task.state))
+      .map((task) => `${task.taskId} v${task.plan.version}`)
+      .join(', ');
+
+  const approved = open.filter(coversEdits);
   if (approved.length > 0) {
     const plans = approved.map((task) => `${task.taskId} v${task.plan.version} (${task.plan.scope.join(', ')})`).join('; ');
     return { action: 'work-within-approved-scope', details: `Work within the approved scope of ${plans}. Edits outside it are recorded as deviations. Leave all Git operations to the user.` };
   }
-  const waiting = state.tasks.filter((task) => taskStatus(task) === 'WAITING_FOR_APPROVAL');
-  if (waiting.length > 0) {
-    const plans = waiting.map((task) => `${task.taskId} v${task.plan.version}`).join(', ');
-    return { action: 'wait-for-approval', details: `Plan ${plans} is waiting for the user's approval (jerry approve or the dashboard). Do not treat it as approved; edits now are recorded as deviations.` };
+  const waiting = ids(['WAIT_PLAN_APPROVAL']);
+  if (waiting !== '') {
+    return { action: 'wait-for-approval', details: `Plan ${waiting} is waiting for the user's approval (jerry approve or the dashboard). Do not treat it as approved; edits now are recorded as deviations.` };
   }
-  if (state.tasks.length > 0) {
-    return { action: 'revise-plan', details: 'The latest plan was rejected. Revise it with the user before changing code; edits now are recorded as deviations.' };
+  const accepting = ids(['WAIT_IMPLEMENTATION_ACCEPTANCE', 'FINAL_REPORT']);
+  if (accepting !== '') {
+    return { action: 'wait-for-acceptance', details: `The implementation of ${accepting} is with the user for acceptance. Change code only if they ask for changes; edits now are recorded as deviations.` };
   }
-  return { action: 'propose-plan', details: 'No JERRY plan exists for this repository. For code changes, describe a plan and ask the user to create and approve it in JERRY; edits without one are recorded as deviations.' };
+  const paused = ids(['PAUSED']);
+  if (paused !== '') {
+    return { action: 'paused', details: `The user paused ${paused}. Do not continue that work until they resume it; edits now are recorded as deviations.` };
+  }
+  if (open.length > 0) {
+    return { action: 'revise-plan', details: `The plan of ${open.map((task) => task.taskId).join(', ')} needs changes (rejected or withdrawn). Revise it with the user before changing code; edits now are recorded as deviations.` };
+  }
+  return { action: 'propose-plan', details: 'No open JERRY task in this repository. For code changes, draft a plan with /jerry:plan for the user to approve; edits without one are recorded as deviations.' };
 }

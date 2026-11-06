@@ -50,8 +50,33 @@ describe('jerry CLI (Commander)', () => {
       fs.writeFileSync(path.join(home, 'config', 'install-manifest.json'), '{}');
       const summary = jerry(['status'], { JERRY_HOME: home });
       expect(summary.stdout).toContain('GUARDED (monitoring on, hard rules enforced)');
-      expect(summary.stdout).toMatch(/Plans:\s+0 approved, 0 waiting/);
+      expect(summary.stdout).toMatch(/Tasks:\s+0 in implementation, 0 waiting/);
       expect(summary.stdout).toContain(`127.0.0.1:${core.info.port}`);
+    } finally {
+      await core.stop();
+    }
+  });
+
+  it('jerry task: lists open tasks with their state, shows history, and keeps pause/resume/cancel for a terminal', async () => {
+    const home = path.join(base, 'task-home');
+    const repo = path.join(base, 'task-repo');
+    fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+    const core = await startCore(home);
+    try {
+      const created = jerry(['task', 'create', '--repo', repo, '--title', 'CLI flow', '--scope', 'src/**'], { JERRY_HOME: home });
+      expect(created.stdout).toContain('Created JRY-0001');
+      expect(jerry(['task', 'list'], { JERRY_HOME: home }).stdout).toMatch(/JRY-0001\s+plan v1\s+Waiting for plan approval/);
+
+      const shown = jerry(['task', 'show', 'JRY-0001'], { JERRY_HOME: home });
+      expect(shown.stdout).toContain('JRY-0001  Waiting for plan approval (WAIT_PLAN_APPROVAL)');
+      expect(shown.stdout).toMatch(/new\s+-> WAIT_PLAN_APPROVAL\s+plan\.submitted by user/);
+
+      for (const verb of ['pause', 'resume', 'cancel']) {
+        const refused = jerry(['task', verb, 'JRY-0001'], { JERRY_HOME: home });
+        expect(refused.exitCode, verb).toBe(1);
+        expect(refused.stderr, verb).toContain('interactive terminal');
+      }
+      expect(jerry(['task', 'show', 'JRY-0001'], { JERRY_HOME: home }).stdout).toContain('(WAIT_PLAN_APPROVAL)');
     } finally {
       await core.stop();
     }

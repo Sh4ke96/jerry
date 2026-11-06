@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { storedEventSchema, taskWithDecisionSchema } from '@jerry/contracts';
 import { CoreUnavailableError, jerryPaths, readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
+import { WORK_STATES } from '@jerry/workflow';
 import { z } from 'zod';
 import { getCoreStatus } from './core-commands.js';
 
@@ -35,12 +36,13 @@ export async function showStatus(): Promise<void> {
     requestCore(info, { method: 'GET', path: '/api/v1/tasks', timeoutMs: 5000 }).then((body) => z.array(taskWithDecisionSchema).parse(body)),
     requestCore(info, { method: 'GET', path: `/api/v1/events?verdict=WARN,DENY&since=${encodeURIComponent(startOfDay.toISOString())}&limit=500`, timeoutMs: 5000 }).then((body) => z.array(storedEventSchema).parse(body)),
   ]);
-  const approved = tasks.filter((candidate) => candidate.planDecision?.decision === 'APPROVED').length;
-  const waiting = tasks.filter((candidate) => candidate.planDecision === null).length;
+  const working = tasks.filter((candidate) => WORK_STATES.has(candidate.state)).length;
+  const waiting = tasks.filter((candidate) => candidate.state === 'WAIT_PLAN_APPROVAL' || candidate.state === 'WAIT_IMPLEMENTATION_ACCEPTANCE').length;
+  const paused = tasks.filter((candidate) => candidate.state === 'PAUSED').length;
   const uptimeMinutes = Math.round((Date.now() - Date.parse(core.status.startedAt)) / 60_000);
 
   console.log(`Core:      ${core.status.version}, pid ${core.info.pid}, up ${uptimeMinutes < 120 ? `${uptimeMinutes} min` : `${Math.round(uptimeMinutes / 60)} h`}, ${core.status.sessionCount} session(s)`);
-  console.log(`Plans:     ${approved} approved, ${waiting} waiting for your decision`);
+  console.log(`Tasks:     ${working} in implementation, ${waiting} waiting for your decision${paused > 0 ? `, ${paused} paused` : ''}`);
   console.log(`Today:     ${flagged.filter((event) => event.verdict === 'WARN').length} deviation(s), ${flagged.filter((event) => event.verdict === 'DENY').length} blocked`);
   console.log(`Dashboard: http://127.0.0.1:${core.info.port} (open with "jerry ui")`);
 }

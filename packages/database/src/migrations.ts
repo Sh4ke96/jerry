@@ -125,4 +125,45 @@ export const MIGRATIONS: Readonly<Record<string, Migration>> = {
       await db.schema.alterTable('plans').addColumn('document_json', 'text').execute();
     },
   },
+
+  '0004_workflow': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Task state (spec §7.1); Core changes it only through the workflow transition table.
+      await db.schema
+        .alterTable('tasks')
+        .addColumn('state', 'text', (column) => column.notNull().defaultTo('WAIT_PLAN_APPROVAL'))
+        .execute();
+
+      await db.schema
+        .createTable('workflow_transitions')
+        .addColumn('id', 'integer', (column) => column.primaryKey().autoIncrement())
+        .addColumn('task_id', 'text', (column) => column.notNull().references('tasks.task_id'))
+        .addColumn('from_state', 'text')
+        .addColumn('to_state', 'text', (column) => column.notNull())
+        .addColumn('event', 'text', (column) => column.notNull())
+        .addColumn('actor', 'text', (column) => column.notNull())
+        .addColumn('reason', 'text', (column) => column.notNull().defaultTo(''))
+        .addColumn('at', 'text', (column) => column.notNull())
+        .addColumn('created_at', 'text', (column) => column.notNull())
+        .execute();
+      await db.schema.createIndex('workflow_transitions_task').on('workflow_transitions').columns(['task_id', 'id']).execute();
+
+      // Existing tasks: the latest decision on the current plan version and hash decides the state,
+      // the same rule the gate used before states existed.
+      await sql`
+        UPDATE tasks SET state = CASE (
+          SELECT approvals.decision
+          FROM approvals
+          JOIN plans ON plans.task_id = approvals.task_id AND plans.version = approvals.version AND plans.content_hash = approvals.content_hash
+          WHERE approvals.task_id = tasks.task_id AND approvals.version = tasks.current_plan_version AND approvals.stage = 'PLAN'
+          ORDER BY approvals.approved_at DESC, approvals.rowid DESC
+          LIMIT 1
+        )
+          WHEN 'APPROVED' THEN 'IMPLEMENTATION'
+          WHEN 'REJECTED' THEN 'PLAN_DRAFT'
+          ELSE 'WAIT_PLAN_APPROVAL'
+        END
+      `.execute(db);
+    },
+  },
 };

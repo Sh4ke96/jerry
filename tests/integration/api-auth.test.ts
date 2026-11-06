@@ -165,6 +165,22 @@ describe('Core API access control', () => {
     expect(store.planDecision(taskId)?.decision).toBe('APPROVED');
   });
 
+  it('pauses and resumes from the dashboard, cancels only with the typed task ID, and refuses steps the workflow does not allow', async () => {
+    const auth = await signIn();
+    const control = (payload: Record<string, unknown>) => asBrowser(auth, 'POST', `/api/v1/tasks/${taskId}/transitions`, { payload });
+    expect(status(await asBrowser({ cookie: auth.cookie }, 'POST', `/api/v1/tasks/${taskId}/transitions`, { payload: { event: 'task.paused' } }))).toBe(403);
+    expect(JSON.parse((await control({ event: 'task.paused' })).body)).toMatchObject({ taskId, state: 'PAUSED' });
+    expect(status(await control({ event: 'task.paused' }))).toBe(409);
+    expect(JSON.parse((await control({ event: 'task.resumed' })).body)).toMatchObject({ state: 'IMPLEMENTATION' });
+    // Only user decisions go through this endpoint; Claude's steps have their own.
+    expect(status(await control({ event: 'plan.approved' }))).toBe(400);
+
+    expect(status(await control({ event: 'task.cancelled' }))).toBe(400);
+    expect(JSON.parse((await control({ event: 'task.cancelled', confirmTaskId: taskId })).body)).toMatchObject({ state: 'CANCELLED' });
+    const history = JSON.parse((await asBrowser(auth, 'GET', `/api/v1/tasks/${taskId}/transitions`, { origin: null })).body) as Array<{ event: string }>;
+    expect(history.map((step) => step.event)).toEqual(['plan.submitted', 'plan.approved', 'task.paused', 'task.resumed', 'task.cancelled']);
+  });
+
   it('keeps hook and lifecycle endpoints away from the browser', async () => {
     const auth = await signIn();
     for (const url of ['/api/v1/gate/check', '/api/v1/events', '/api/v1/sessions', '/api/v1/shutdown', '/api/v1/ui/login-codes', '/api/v1/tasks']) {

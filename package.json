@@ -23,6 +23,7 @@
     "@jerry/platform": "workspace:*",
     "@jerry/policy-engine": "workspace:*",
     "@jerry/trace-engine": "workspace:*",
+    "@jerry/workflow": "workspace:*",
     "@types/node": "22.20.5",
     "@vitejs/plugin-vue-jsx": "5.1.6",
     "@vue/test-utils": "2.5.1",

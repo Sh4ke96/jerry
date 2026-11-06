@@ -1,10 +1,29 @@
-import type { StoredEvent, TaskWithDecision } from '@jerry/contracts';
+import type { StoredEvent, TaskWithDecision, WorkflowState } from '@jerry/contracts';
+import { isTerminal, WORK_STATES } from '@jerry/workflow';
+import type { Tone } from './components/Badge';
 
-export type TaskStatus = 'APPROVED' | 'REJECTED' | 'WAITING';
+/** States in which the next step is the user's. */
+const WAITING_FOR_USER: ReadonlySet<WorkflowState> = new Set(['WAIT_PLAN_APPROVAL', 'WAIT_IMPLEMENTATION_ACCEPTANCE', 'WAIT_REVIEW_FIX_APPROVAL']);
 
-export function taskStatus(task: TaskWithDecision): TaskStatus {
-  if (task.planDecision === null) return 'WAITING';
-  return task.planDecision.decision;
+export function waitsForUser(task: TaskWithDecision): boolean {
+  return WAITING_FOR_USER.has(task.state);
+}
+
+/** Being implemented under its approved plan, so edits in its scope pass. */
+export function inImplementation(task: TaskWithDecision): boolean {
+  return WORK_STATES.has(task.state) && task.planDecision?.decision === 'APPROVED';
+}
+
+export function isOpen(task: TaskWithDecision): boolean {
+  return !isTerminal(task.state);
+}
+
+export function stateTone(state: WorkflowState): Tone {
+  if (WORK_STATES.has(state)) return 'pass';
+  if (WAITING_FOR_USER.has(state)) return 'warn';
+  if (state === 'PLAN_DRAFT' || state === 'BLOCKED') return 'deny';
+  if (state === 'DONE') return 'accent';
+  return 'neutral';
 }
 
 export function formatTime(iso: string): string {

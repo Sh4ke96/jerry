@@ -102,11 +102,51 @@ describe('StateStore on SQLite', () => {
     await store.close();
   });
 
+  it('moves tasks only through valid workflow transitions and keeps their history', async () => {
+    const where = options();
+    const store = await StateStore.open(where);
+    const task = await store.createTask({ repoRoot: REPO, title: 'Flow', scope: ['src/**'], submittedBy: 'claude' }, now(0));
+    expect(task.state).toBe('WAIT_PLAN_APPROVAL');
+
+    await store.recordApproval(task.taskId, { stage: 'PLAN', version: 1, decision: 'REJECTED', comment: 'too broad' }, now(1));
+    await store.revisePlan(task.taskId, ['src/a/**'], now(2), undefined, 'claude');
+    await store.recordApproval(task.taskId, { stage: 'PLAN', version: 2, decision: 'APPROVED', comment: '' }, now(3));
+    // Approving again while it is being implemented is not a workflow step.
+    await expect(store.recordApproval(task.taskId, { stage: 'PLAN', version: 2, decision: 'APPROVED', comment: '' }, now(4))).rejects.toMatchObject({ statusCode: 409 });
+
+    expect((await store.controlTask(task.taskId, 'task.paused', 'lunch', now(5))).state).toBe('PAUSED');
+    await expect(store.revisePlan(task.taskId, ['x/**'], now(6), undefined, 'claude')).rejects.toMatchObject({ statusCode: 409 });
+    await expect(store.controlTask(task.taskId, 'task.paused', '', now(6))).rejects.toMatchObject({ statusCode: 409 });
+    expect((await store.controlTask(task.taskId, 'task.resumed', '', now(7))).state).toBe('IMPLEMENTATION');
+    expect((await store.controlTask(task.taskId, 'task.cancelled', 'not needed', now(8))).state).toBe('CANCELLED');
+    await expect(store.controlTask(task.taskId, 'task.resumed', '', now(9))).rejects.toMatchObject({ statusCode: 409, message: expect.stringContaining('CANCELLED') });
+    await store.close();
+
+    const reopened = await StateStore.open(where);
+    expect(reopened.snapshot().tasks[0]?.state).toBe('CANCELLED');
+    const history = await reopened.listTransitions(task.taskId);
+    expect(history.map((step) => `${step.from ?? '-'}>${step.to} ${step.event} ${step.actor}`)).toEqual([
+      '->WAIT_PLAN_APPROVAL plan.submitted claude',
+      'WAIT_PLAN_APPROVAL>PLAN_DRAFT plan.rejected user',
+      'PLAN_DRAFT>WAIT_PLAN_APPROVAL plan.revised claude',
+      'WAIT_PLAN_APPROVAL>IMPLEMENTATION plan.approved user',
+      'IMPLEMENTATION>PAUSED task.paused user',
+      'PAUSED>IMPLEMENTATION task.resumed user',
+      'IMPLEMENTATION>CANCELLED task.cancelled user',
+    ]);
+    expect(history[1]?.reason).toBe('too broad');
+    // Refused steps leave no trace: no transition, no approval, no plan version.
+    expect(reopened.snapshot().approvals).toHaveLength(2);
+    expect(reopened.snapshot().tasks[0]?.plan.version).toBe(2);
+    await reopened.close();
+  });
+
   it('imports the M0 JSON state once and keeps the file, renamed', async () => {
     const where = options();
     const scope = ['apps/**'];
     const contentHash = computePlanHash({ taskId: 'JRY-0001', title: 'M1 Core Foundation', repoRoot: REPO, version: 1, scope });
-    const legacy: CoreState = {
+    // M0 tasks had no workflow state; the import derives it from the approvals.
+    const legacy: Omit<CoreState, 'tasks'> & { tasks: Array<Omit<CoreState['tasks'][number], 'state'>> } = {
       schemaVersion: 1,
       nextTaskNumber: 2,
       tasks: [{ taskId: 'JRY-0001', title: 'M1 Core Foundation', repoRoot: REPO, createdAt: now(0).toISOString(), plan: { version: 1, contentHash, scope, createdAt: now(0).toISOString() } }],
@@ -120,7 +160,7 @@ describe('StateStore on SQLite', () => {
     fs.writeFileSync(where.legacyStateFile, JSON.stringify(legacy));
 
     const store = await StateStore.open(where);
-    expect(store.snapshot()).toMatchObject({ nextTaskNumber: 2, tasks: [{ taskId: 'JRY-0001' }], approvals: [{ approvalId: 'apr_1' }], sessions: [{ sessionId: 'old' }] });
+    expect(store.snapshot()).toMatchObject({ nextTaskNumber: 2, tasks: [{ taskId: 'JRY-0001', state: 'IMPLEMENTATION' }], approvals: [{ approvalId: 'apr_1' }], sessions: [{ sessionId: 'old' }] });
     expect(store.planDecision('JRY-0001')?.decision).toBe('APPROVED');
     expect(fs.existsSync(where.legacyStateFile)).toBe(false);
     expect(fs.readdirSync(path.dirname(where.legacyStateFile)).some((name) => name.startsWith('core-state.json.imported-'))).toBe(true);

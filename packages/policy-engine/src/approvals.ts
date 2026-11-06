@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { ApprovalRecord, CoreState, Task } from '@jerry/contracts';
+import { WORK_STATES } from '@jerry/workflow';
 import { comparablePath } from './paths.js';
 
 export interface ApprovedPlan {
@@ -56,10 +57,15 @@ export function isRepoExcluded(state: CoreState, repoRoot: string, platform: Nod
   return state.excludedRepos.some((exclusion) => comparablePath(exclusion.repoRoot, exclusion.repoRoot, platform) === repoKey);
 }
 
+/**
+ * Plans that cover edits right now: the task is being implemented (ADR 0012) and the user approved
+ * exactly its current plan. A paused task, or one waiting for acceptance, covers nothing.
+ */
 export function approvedPlansForRepo(state: CoreState, repoRoot: string, platform: NodeJS.Platform): ApprovedPlan[] {
   const repoKey = comparablePath(repoRoot, repoRoot, platform);
   return state.tasks
     .filter((task) => comparablePath(task.repoRoot, task.repoRoot, platform) === repoKey)
+    .filter((task) => WORK_STATES.has(task.state))
     .filter((task) => currentPlanDecision(task, state.approvals)?.decision === 'APPROVED')
     .map((task) => ({ taskId: task.taskId, planVersion: task.plan.version, scope: task.plan.scope }));
 }

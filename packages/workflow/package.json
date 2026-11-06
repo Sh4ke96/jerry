@@ -1,0 +1,11 @@
+{
+  "name": "@jerry/workflow",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "sideEffects": false,
+  "dependencies": {
+    "@jerry/contracts": "workspace:*"
+  }
+}

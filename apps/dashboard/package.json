@@ -5,6 +5,7 @@
   "type": "module",
   "dependencies": {
     "@jerry/contracts": "workspace:*",
+    "@jerry/workflow": "workspace:*",
     "vue": "3.5.45"
   }
 }

@@ -1,5 +1,5 @@
 import { computed, defineComponent, ref } from 'vue';
-import { taskStatus } from './format';
+import { waitsForUser } from './format';
 import { signOut, state } from './state';
 import { Overview } from './views/Overview';
 import { Repositories } from './views/Repositories';
@@ -10,7 +10,7 @@ type Tab = 'overview' | 'tasks' | 'timeline' | 'repositories';
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: 'overview', label: 'Overview' },
-  { id: 'tasks', label: 'Plans' },
+  { id: 'tasks', label: 'Tasks' },
   { id: 'timeline', label: 'Timeline' },
   { id: 'repositories', label: 'Repositories' },
 ];
@@ -19,7 +19,7 @@ export const App = defineComponent({
   name: 'App',
   setup() {
     const tab = ref<Tab>('overview');
-    const waiting = computed(() => state.tasks.filter((task) => taskStatus(task) === 'WAITING').length);
+    const waiting = computed(() => state.tasks.filter(waitsForUser).length);
 
     const view = () => {
       switch (tab.value) {

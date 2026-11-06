@@ -120,6 +120,8 @@ function assessJerry(args: string[]): ShellAssessment {
     (args.length === 1 && command !== undefined && JERRY_READ_ONLY_COMMANDS.has(command)) ||
     (command === 'events' && args.slice(1).every((arg) => /^--(session|verdict|limit)(=.*)?$|^[\w.-]+$/.test(arg))) ||
     (args.length === 2 && (command === 'task' || command === 'repo') && subcommand === 'list') ||
+    (args.length === 3 && command === 'task' && subcommand === 'list' && args[2] === '--all') ||
+    (args.length === 3 && command === 'task' && subcommand === 'show' && /^JRY-\d{4,}$/i.test(args[2] ?? '')) ||
     (args.length === 2 && command === 'db' && subcommand === 'backups') ||
     (args.length === 2 && command === 'core' && subcommand === 'status');
   return readOnly ? { readOnly: true, reason: `jerry ${args.join(' ')} only reads JERRY state` } : writeCapable(`jerry ${args.join(' ')} changes JERRY state`);

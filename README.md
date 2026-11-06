@@ -34,15 +34,21 @@ repositories, not to this one.
 - `/jerry:plan`: Claude studies the repository, drafts the full plan (spec §7.2) and submits it with
   `jerry_submit_plan`; you approve the exact document in the dashboard or CLI
   ([ADR 0011](docs/decisions/0011-plans-submitted-by-claude.md)).
-- JERRY Control Center at `http://127.0.0.1:47823` (open it with `jerry ui`): overview, plans with approve and
-  reject, session timeline, repositories; installable as an app ([ADR 0009](docs/decisions/0009-dashboard.md)).
+- Task workflow states (spec §7.1), changed only through Core's transition validator, with full history. An
+  approved plan covers edits only while its task is in implementation. Pause, resume and cancel are your
+  decisions (dashboard or `jerry task pause|resume|cancel`)
+  ([ADR 0012](docs/decisions/0012-workflow-states.md)).
+- JERRY Control Center at `http://127.0.0.1:47823` (open it with `jerry ui`): overview, tasks with their state,
+  plan, history and the decisions their state allows, session timeline, repositories; installable as an app
+  ([ADR 0009](docs/decisions/0009-dashboard.md)).
 - MCP server in the plugin with read-only tools that give Claude the live plan state, path checks and recorded
   deviations; nothing in it can approve ([ADR 0008](docs/decisions/0008-local-mcp-server.md)).
 - `jerry status` (quick summary) and `jerry doctor` (full diagnostics); the hook bridge loads no heavy
   dependencies, about 30 ms per guarded call ([ADR 0010](docs/decisions/0010-fast-bridge-cli-doctor.md)).
-- `jerry` CLI (Commander, `jerry --help`): `install`, `uninstall`, `doctor`, `ui`, `core start|stop|status`, `task`, `plan revise`,
-  `approve`/`reject`, `repo exclude|include|list`, `events`, `db backup|backups|restore` (approve, reject,
-  exclude and restore require an interactive terminal).
+- `jerry` CLI (Commander, `jerry --help`): `install`, `uninstall`, `doctor`, `ui`, `core start|stop|status`,
+  `task create|list|show|pause|resume|cancel`, `plan revise`, `approve`/`reject`, `repo exclude|include|list`,
+  `events`, `db backup|backups|restore` (approve, reject, pause, resume, cancel, exclude and restore require an
+  interactive terminal).
 
 ## Layout
 
@@ -57,6 +63,7 @@ packages/database       SQLite (node:sqlite + Kysely): schema, migrations, backu
 packages/platform       JERRY_HOME, Core client, claude.exe discovery, atomic writes, home safety
 packages/policy-engine  pure gate logic: paths, shell classification, approvals
 packages/trace-engine   event envelopes, data minimization and redaction
+packages/workflow       task workflow: the transition table Core validates every state change with
 claude-plugin/          static plugin files (manifest, hooks.json)
 tests/                  integration (bridge + Core) and install E2E
 scripts/                build, hook benchmark, live Claude Code check

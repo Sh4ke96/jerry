@@ -11,10 +11,19 @@ import {
   type StoredEvent,
   type PlanDocument,
   type Task,
+  type WorkflowActor,
+  type WorkflowEvent,
+  type WorkflowState,
+  type WorkflowTransition,
+  taskSchema,
+  workflowStateSchema,
+  workflowTransitionSchema,
 } from '@jerry/contracts';
 import { backupDatabase, openJerryDatabase, type JerryDatabase, type JerrySchema } from '@jerry/database';
 import { comparablePath, computePlanHash, currentPlanDecision } from '@jerry/policy-engine';
+import { applyEvent } from '@jerry/workflow';
 import { sql, type Kysely, type Transaction } from 'kysely';
+import { z } from 'zod';
 
 /** Sessions kept in the in-memory snapshot; older ones stay in the database. */
 const SNAPSHOT_SESSIONS = 200;
@@ -22,6 +31,12 @@ const NEXT_TASK_NUMBER = 'next_task_number';
 
 /** Where a user decision came from; recorded in the audit log. */
 export type Channel = 'cli' | 'dashboard';
+
+/** User decisions about a whole task (approvals and plans have their own methods). */
+export type TaskControlEvent = Extract<WorkflowEvent, 'task.paused' | 'task.resumed' | 'task.cancelled'>;
+
+/** The M0 JSON state predates workflow states; its tasks get theirs from their approvals on import. */
+const legacyStateSchema = coreStateSchema.extend({ tasks: z.array(taskSchema.omit({ state: true })) });
 
 export class StateError extends Error {
   constructor(
@@ -91,8 +106,11 @@ export class StateStore {
       const setting = await trx.selectFrom('settings').select('value_json').where('key', '=', NEXT_TASK_NUMBER).executeTakeFirst();
       const number = setting === undefined ? 1 : Number(JSON.parse(setting.value_json));
       const id = `JRY-${String(number).padStart(4, '0')}`;
-      await trx.insertInto('tasks').values({ task_id: id, title: input.title, repo_id: repoId, current_plan_version: 1, created_at: at, updated_at: at }).execute();
+      const actor = input.submittedBy ?? 'user';
+      const state = validTransition(id, null, 'plan.submitted', actor);
+      await trx.insertInto('tasks').values({ task_id: id, title: input.title, repo_id: repoId, current_plan_version: 1, state, created_at: at, updated_at: at }).execute();
       await insertPlan(trx, { taskId: id, title: input.title, repoRoot: input.repoRoot, version: 1, scope: input.scope, document: input.document, at });
+      await recordTransition(trx, { taskId: id, from: null, to: state, event: 'plan.submitted', actor, reason: 'plan version 1', at });
       await trx
         .insertInto('settings')
         .values({ key: NEXT_TASK_NUMBER, value_json: JSON.stringify(number + 1), created_at: at, updated_at: at })
@@ -111,6 +129,7 @@ export class StateStore {
     const at = now.toISOString();
     const version = task.plan.version + 1;
     await this.database.db.transaction().execute(async (trx) => {
+      await this.transition(trx, taskId, 'plan.revised', submittedBy, `plan version ${version}`, at);
       await insertPlan(trx, { taskId, title: task.title, repoRoot: task.repoRoot, version, scope, document, at });
       await trx.updateTable('tasks').set({ current_plan_version: version, updated_at: at }).where('task_id', '=', taskId).execute();
       await audit(trx, at, 'plan.revise', taskId, { version, scope, withDocument: document !== undefined }, actorOf(submittedBy));
@@ -137,6 +156,8 @@ export class StateStore {
       comment: request.comment,
     };
     await this.database.db.transaction().execute(async (trx) => {
+      const event = record.decision === 'APPROVED' ? 'plan.approved' : 'plan.rejected';
+      await this.transition(trx, taskId, event, 'user', record.comment === '' ? `plan version ${record.version}` : record.comment, at);
       await trx
         .insertInto('approvals')
         .values({
@@ -156,6 +177,25 @@ export class StateStore {
     });
     await this.reload();
     return record;
+  }
+
+  /** Pause, resume or cancel a task; only the user does this (CLI or dashboard). */
+  async controlTask(taskId: string, event: TaskControlEvent, reason: string, now: Date, channel: Channel = 'cli'): Promise<Task> {
+    this.requireTask(taskId);
+    const at = now.toISOString();
+    await this.database.db.transaction().execute(async (trx) => {
+      const to = await this.transition(trx, taskId, event, 'user', reason, at);
+      await audit(trx, at, event, taskId, { to, reason, channel });
+    });
+    await this.reload();
+    return this.requireTask(taskId);
+  }
+
+  /** The task's history, oldest first. */
+  async listTransitions(taskId: string): Promise<WorkflowTransition[]> {
+    this.requireTask(taskId);
+    const rows = await this.database.db.selectFrom('workflow_transitions').selectAll().where('task_id', '=', taskId).orderBy('id').execute();
+    return rows.map((row) => workflowTransitionSchema.parse({ taskId: row.task_id, from: row.from_state, to: row.to_state, event: row.event, actor: row.actor, reason: row.reason, at: row.at }));
   }
 
   async registerSession(registration: SessionRegistration, now: Date): Promise<void> {
@@ -290,13 +330,32 @@ export class StateStore {
     return task;
   }
 
+  /**
+   * Validates and applies one workflow transition inside the caller's transaction. The current state
+   * is read from the database, not the snapshot, so two concurrent requests cannot both pass the check.
+   */
+  private async transition(trx: Transaction<JerrySchema>, taskId: string, event: WorkflowEvent, actor: WorkflowActor, reason: string, at: string): Promise<WorkflowState> {
+    const row = await trx.selectFrom('tasks').select('state').where('task_id', '=', taskId).executeTakeFirst();
+    if (row === undefined) throw new StateError(404, `Unknown task ${taskId}`);
+    const from = workflowStateSchema.parse(row.state);
+    let pausedFrom: WorkflowState | null = null;
+    if (event === 'task.resumed') {
+      const paused = await trx.selectFrom('workflow_transitions').select('from_state').where('task_id', '=', taskId).where('to_state', '=', 'PAUSED').orderBy('id', 'desc').limit(1).executeTakeFirst();
+      pausedFrom = paused === undefined || paused.from_state === null ? null : workflowStateSchema.parse(paused.from_state);
+    }
+    const to = validTransition(taskId, from, event, actor, pausedFrom);
+    await trx.updateTable('tasks').set({ state: to, updated_at: at }).where('task_id', '=', taskId).execute();
+    await recordTransition(trx, { taskId, from, to, event, actor, reason, at });
+    return to;
+  }
+
   private async reload(): Promise<void> {
     const { db } = this.database;
     const tasks = await db
       .selectFrom('tasks')
       .innerJoin('repositories', 'repositories.repo_id', 'tasks.repo_id')
       .innerJoin('plans', (join) => join.onRef('plans.task_id', '=', 'tasks.task_id').onRef('plans.version', '=', 'tasks.current_plan_version'))
-      .select(['tasks.task_id', 'tasks.title', 'tasks.created_at', 'repositories.root_path', 'plans.version', 'plans.content_hash', 'plans.scope_json', 'plans.document_json', 'plans.created_at as plan_created_at'])
+      .select(['tasks.task_id', 'tasks.title', 'tasks.state', 'tasks.created_at', 'repositories.root_path', 'plans.version', 'plans.content_hash', 'plans.scope_json', 'plans.document_json', 'plans.created_at as plan_created_at'])
       .orderBy('tasks.task_id')
       .execute();
     const approvals = await db.selectFrom('approvals').selectAll().orderBy('approved_at').orderBy(sql`rowid`).execute();
@@ -313,6 +372,7 @@ export class StateStore {
         title: row.title,
         repoRoot: row.root_path,
         createdAt: row.created_at,
+        state: row.state,
         plan: { version: row.version, contentHash: row.content_hash, scope: JSON.parse(row.scope_json), createdAt: row.plan_created_at, ...(row.document_json === null ? {} : { document: JSON.parse(row.document_json) }) },
       })),
       approvals: approvals.map((row) => ({
@@ -339,7 +399,7 @@ export class StateStore {
     const existing = await db.selectFrom('tasks').select('task_id').limit(1).executeTakeFirst();
     if (existing !== undefined) return;
 
-    const parsed = coreStateSchema.safeParse(JSON.parse(fs.readFileSync(legacyStateFile, 'utf8')));
+    const parsed = legacyStateSchema.safeParse(JSON.parse(fs.readFileSync(legacyStateFile, 'utf8')));
     if (!parsed.success) {
       throw new Error(`Legacy state file ${legacyStateFile} is invalid; refusing to start with unknown state: ${parsed.error.message}`);
     }
@@ -348,7 +408,9 @@ export class StateStore {
     await db.transaction().execute(async (trx) => {
       for (const task of legacy.tasks) {
         const repoId = await upsertRepository(trx, task.repoRoot, task.createdAt);
-        await trx.insertInto('tasks').values({ task_id: task.taskId, title: task.title, repo_id: repoId, current_plan_version: task.plan.version, created_at: task.createdAt, updated_at: at }).execute();
+        const decision = currentPlanDecision({ ...task, state: 'WAIT_PLAN_APPROVAL' }, legacy.approvals)?.decision;
+        const state: WorkflowState = decision === 'APPROVED' ? 'IMPLEMENTATION' : decision === 'REJECTED' ? 'PLAN_DRAFT' : 'WAIT_PLAN_APPROVAL';
+        await trx.insertInto('tasks').values({ task_id: task.taskId, title: task.title, repo_id: repoId, current_plan_version: task.plan.version, state, created_at: task.createdAt, updated_at: at }).execute();
         await trx.insertInto('plans').values({ task_id: task.taskId, version: task.plan.version, content_hash: task.plan.contentHash, scope_json: JSON.stringify(task.plan.scope), created_at: task.plan.createdAt }).execute();
       }
       for (const approval of legacy.approvals) {
@@ -423,6 +485,23 @@ async function insertPlan(trx: Transaction<JerrySchema>, plan: { taskId: string;
       document_json: plan.document === undefined ? null : JSON.stringify(plan.document),
       created_at: plan.at,
     })
+    .execute();
+}
+
+/** The target state, or a 409 explaining why the workflow does not allow the step. */
+function validTransition(taskId: string, from: WorkflowState | null, event: WorkflowEvent, actor: WorkflowActor, pausedFrom: WorkflowState | null = null): WorkflowState {
+  const result = applyEvent(from, event, actor, pausedFrom);
+  if (!result.ok) throw new StateError(409, `${taskId}: ${result.reason}`);
+  return result.to;
+}
+
+async function recordTransition(
+  trx: Transaction<JerrySchema>,
+  transition: { taskId: string; from: WorkflowState | null; to: WorkflowState; event: WorkflowEvent; actor: WorkflowActor; reason: string; at: string },
+): Promise<void> {
+  await trx
+    .insertInto('workflow_transitions')
+    .values({ task_id: transition.taskId, from_state: transition.from, to_state: transition.to, event: transition.event, actor: transition.actor, reason: transition.reason, at: transition.at, created_at: transition.at })
     .execute();
 }
 

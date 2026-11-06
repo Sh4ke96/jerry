@@ -35,7 +35,7 @@ describe('openJerryDatabase', () => {
     expect(database.migration).toBe(LATEST);
     const tables = await sql<{ name: string }>`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`.execute(database.db);
     expect(tables.rows.map((row) => row.name)).toEqual(
-      expect.arrayContaining(['approvals', 'audit_log', 'hook_events', 'plans', 'repositories', 'schema_migrations', 'sessions', 'settings', 'tasks']),
+      expect.arrayContaining(['approvals', 'audit_log', 'hook_events', 'plans', 'repositories', 'schema_migrations', 'sessions', 'settings', 'tasks', 'workflow_transitions']),
     );
     await database.close();
     expect(listBackups(where.backupsDir)).toHaveLength(0);
@@ -74,6 +74,38 @@ describe('openJerryDatabase', () => {
     const leftovers = await sql<{ name: string }>`SELECT name FROM sqlite_master WHERE name = 'half_done'`.execute(again.db);
     expect(leftovers.rows).toHaveLength(0);
     await again.close();
+  });
+
+  it('derives the workflow state of existing tasks from their latest plan decision (0004)', async () => {
+    const where = location();
+    const before = Object.fromEntries(Object.entries(MIGRATIONS).filter(([name]) => name < '0004'));
+    const old = await openJerryDatabase({ ...where, migrations: before });
+    const at = '2026-01-01T00:00:00.000Z';
+    await sql`INSERT INTO repositories (repo_id, root_path, created_at, updated_at) VALUES ('repo_1', 'D:/repo', ${at}, ${at})`.execute(old.db);
+    const tasks: Array<[string, number]> = [['JRY-0001', 1], ['JRY-0002', 1], ['JRY-0003', 2], ['JRY-0004', 1]];
+    for (const [taskId, version] of tasks) {
+      await sql`INSERT INTO tasks (task_id, title, repo_id, current_plan_version, created_at, updated_at) VALUES (${taskId}, 't', 'repo_1', ${version}, ${at}, ${at})`.execute(old.db);
+      for (let v = 1; v <= version; v += 1) {
+        await sql`INSERT INTO plans (task_id, version, content_hash, scope_json, created_at) VALUES (${taskId}, ${v}, ${`sha256:${taskId}-${v}`}, '[]', ${at})`.execute(old.db);
+      }
+    }
+    const decide = (id: string, taskId: string, version: number, decision: string, when: string) =>
+      sql`INSERT INTO approvals (approval_id, task_id, stage, version, content_hash, decision, approved_by, approved_at, comment, created_at) VALUES (${id}, ${taskId}, 'PLAN', ${version}, ${`sha256:${taskId}-${version}`}, ${decision}, 'local-user', ${when}, '', ${when})`.execute(old.db);
+    await decide('a1', 'JRY-0001', 1, 'APPROVED', '2026-01-02T00:00:00.000Z'); // approved
+    await decide('a2', 'JRY-0002', 1, 'APPROVED', '2026-01-02T00:00:00.000Z');
+    await decide('a3', 'JRY-0002', 1, 'REJECTED', '2026-01-03T00:00:00.000Z'); // approval withdrawn
+    await decide('a4', 'JRY-0003', 1, 'APPROVED', '2026-01-02T00:00:00.000Z'); // approved v1, revised to v2
+    await old.close();
+
+    const upgraded = await openJerryDatabase(where);
+    const states = await upgraded.db.selectFrom('tasks').select(['task_id', 'state']).orderBy('task_id').execute();
+    expect(states).toEqual([
+      { task_id: 'JRY-0001', state: 'IMPLEMENTATION' },
+      { task_id: 'JRY-0002', state: 'PLAN_DRAFT' },
+      { task_id: 'JRY-0003', state: 'WAIT_PLAN_APPROVAL' },
+      { task_id: 'JRY-0004', state: 'WAIT_PLAN_APPROVAL' },
+    ]);
+    await upgraded.close();
   });
 
   it('distinguishes reading and writing statements through the node:sqlite adapter', async () => {

@@ -93,7 +93,7 @@ describe('JERRY MCP server (bundled)', () => {
     // A second repository keeps these tasks out of the plan-state test, which expects none in `repo`.
     const submitted = await mcp.call('jerry_submit_plan', { title: 'Greeting helper', repoPath: otherRepo, plan: samplePlan(otherRepo) });
     expect(submitted.isError).toBe(false);
-    expect(submitted.structured).toMatchObject({ planVersion: 1, status: 'WAITING_FOR_APPROVAL' });
+    expect(submitted.structured).toMatchObject({ planVersion: 1, state: 'WAIT_PLAN_APPROVAL' });
     expect(submitted.text).toContain('Do not approve it yourself');
     const taskId = submitted.structured['taskId'] as string;
 
@@ -104,7 +104,7 @@ describe('JERRY MCP server (bundled)', () => {
 
     await api(core, 'POST', `/api/v1/tasks/${taskId}/approvals`, { stage: 'PLAN', version: 1, decision: 'APPROVED' });
     const revised = await mcp.call('jerry_submit_plan', { taskId, plan: { ...samplePlan(otherRepo), goal: 'Add a localised greeting helper.' } });
-    expect(revised.structured).toMatchObject({ taskId, planVersion: 2, status: 'WAITING_FOR_APPROVAL' });
+    expect(revised.structured).toMatchObject({ taskId, planVersion: 2, state: 'WAIT_PLAN_APPROVAL' });
     const after = ((await api(core, 'GET', '/api/v1/tasks')).body as Array<{ taskId: string; planDecision: unknown }>).find((task) => task.taskId === taskId)!;
     expect(after.planDecision).toBeNull();
   });
@@ -118,21 +118,31 @@ describe('JERRY MCP server (bundled)', () => {
     expect((await mcp.call('jerry_submit_plan', { plan: samplePlan(repo) })).text).toContain('needs a short title');
   });
 
-  it('reports the live plan state: none, waiting, approved', async () => {
+  it('reports the live workflow state: none, waiting, in implementation, paused, cancelled', async () => {
     const mcp = await connect();
     expect((await mcp.call('jerry_get_state')).structured).toMatchObject({ guard: 'GUARDED', monitored: true, currentTask: null, next: { action: 'propose-plan' } });
 
     const created = (await api(core, 'POST', '/api/v1/tasks', { repoPath: repo, title: 'Live state', scope: ['src/**'] })).body as { taskId: string };
     expect((await mcp.call('jerry_get_state')).structured).toMatchObject({
-      currentTask: { taskId: created.taskId, status: 'WAITING_FOR_APPROVAL' },
+      currentTask: { taskId: created.taskId, state: 'WAIT_PLAN_APPROVAL' },
       next: { action: 'wait-for-approval' },
     });
 
     // Approved while the session is running: the tool sees it immediately.
     await api(core, 'POST', `/api/v1/tasks/${created.taskId}/approvals`, { stage: 'PLAN', version: 1, decision: 'APPROVED' });
     const state = (await mcp.call('jerry_get_state')).structured;
-    expect(state).toMatchObject({ approved: [{ taskId: created.taskId, scope: ['src/**'], status: 'APPROVED' }], notApproved: [], next: { action: 'work-within-approved-scope' } });
+    expect(state).toMatchObject({ approved: [{ taskId: created.taskId, scope: ['src/**'], state: 'IMPLEMENTATION' }], open: [], next: { action: 'work-within-approved-scope' } });
     expect(String(state['hardRules'])).toContain('No Git command');
+
+    await api(core, 'POST', `/api/v1/tasks/${created.taskId}/transitions`, { event: 'task.paused' });
+    expect((await mcp.call('jerry_get_state')).structured).toMatchObject({ approved: [], open: [{ taskId: created.taskId, state: 'PAUSED' }], next: { action: 'paused' } });
+
+    await api(core, 'POST', `/api/v1/tasks/${created.taskId}/transitions`, { event: 'task.cancelled' });
+    expect((await mcp.call('jerry_get_state')).structured).toMatchObject({ approved: [], open: [], currentTask: null, next: { action: 'propose-plan' } });
+
+    // Later tests preview edits against an approved plan in this repository.
+    const next = (await api(core, 'POST', '/api/v1/tasks', { repoPath: repo, title: 'Live state again', scope: ['src/**'] })).body as { taskId: string };
+    await api(core, 'POST', `/api/v1/tasks/${next.taskId}/approvals`, { stage: 'PLAN', version: 1, decision: 'APPROVED' });
   });
 
   it('previews gate decisions without recording them', async () => {

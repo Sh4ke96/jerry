@@ -389,6 +389,22 @@ code {
   color: var(--muted);
 }
 
+.history {
+  margin: 12px 0 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 4px;
+}
+
+details.panel > summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+details.panel[open] > summary {
+  margin-bottom: 12px;
+}
+
 /* Timeline */
 
 .table-wrap {

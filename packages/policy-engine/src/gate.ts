@@ -30,8 +30,11 @@ export interface GateContext {
   isExcluded(repoRoot: string): boolean;
 }
 
-/** Commands only the user may run. Read-only ones (status, doctor, task/repo list, core status) stay available. */
-const USER_ONLY_JERRY_COMMAND = /\bjerry(?:\.mjs|\.cmd|\.ps1)?\s+(?:approve|reject|install|uninstall|ui|repo\s+(?:exclude|include)|core\s+(?:start|stop)|db\s+restore)\b/i;
+/**
+ * Commands only the user may run. Read-only ones (status, doctor, task list/show, repo list, core
+ * status) stay available. Pausing, resuming and cancelling a task are user decisions (ADR 0012).
+ */
+const USER_ONLY_JERRY_COMMAND = /\bjerry(?:\.mjs|\.cmd|\.ps1)?\s+(?:approve|reject|install|uninstall|ui|repo\s+(?:exclude|include)|task\s+(?:pause|resume|cancel)|core\s+(?:start|stop)|db\s+restore)\b/i;
 /** The Core API and the dashboard login: an agent holding a session could approve its own plan. */
 const CORE_API_PATTERN = /\/api\/v1\/|\/ui\/(?:login|logout)\b/i;
 /**

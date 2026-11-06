@@ -20,8 +20,24 @@ export interface TasksTable {
   title: string;
   repo_id: string;
   current_plan_version: number;
+  /** Workflow state (spec §7.1); changed only through validated transitions. */
+  state: string;
   created_at: string;
   updated_at: string;
+}
+
+/** Every change of a task's state, in order; the history the dashboard and resume rely on. */
+export interface WorkflowTransitionsTable {
+  id: Generated<number>;
+  task_id: string;
+  /** Null for the transition that created the task. */
+  from_state: string | null;
+  to_state: string;
+  event: string;
+  actor: string;
+  reason: string;
+  at: string;
+  created_at: string;
 }
 
 /** Every plan version is kept; approvals bind to (task_id, version, content_hash). */
@@ -105,6 +121,7 @@ export interface JerrySchema {
   hook_events: HookEventsTable;
   repositories: RepositoriesTable;
   tasks: TasksTable;
+  workflow_transitions: WorkflowTransitionsTable;
   plans: PlansTable;
   approvals: ApprovalsTable;
   sessions: SessionsTable;

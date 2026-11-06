@@ -1,4 +1,6 @@
-import type { ApprovalRecord, CoreStatus, RepositoryExclusion, StoredEvent, TaskWithDecision } from '@jerry/contracts';
+import type { ApprovalRecord, CoreStatus, RepositoryExclusion, StoredEvent, TaskWithDecision, WorkflowTransition } from '@jerry/contracts';
+
+export type TaskControlEvent = 'task.paused' | 'task.resumed' | 'task.cancelled';
 
 /**
  * The dashboard's only way to Core: same-origin fetches with the session cookie. Every
@@ -57,6 +59,13 @@ export const api = {
       version: task.plan.version,
       decision,
       confirmTaskId,
+    }),
+  transitions: (taskId: string) => request<WorkflowTransition[]>('GET', `/api/v1/tasks/${encodeURIComponent(taskId)}/transitions`),
+  /** Pause, resume or cancel; cancelling needs the typed task ID. */
+  control: (taskId: string, event: TaskControlEvent, confirmTaskId?: string) =>
+    request<TaskWithDecision>('POST', `/api/v1/tasks/${encodeURIComponent(taskId)}/transitions`, {
+      event,
+      ...(confirmTaskId === undefined ? {} : { confirmTaskId }),
     }),
   setExcluded: (repoPath: string, excluded: boolean, confirmation?: string) =>
     request<{ repoRoot: string; excluded: boolean }>('POST', '/api/v1/repositories/exclusions', {

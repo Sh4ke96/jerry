@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { CORE_TOKEN_PATTERN, EVENT_SCHEMA_VERSION, GATE_VERDICTS, HOOK_EVENT_TYPES, TASK_ID_PATTERN } from './constants.js';
+import { CORE_TOKEN_PATTERN, EVENT_SCHEMA_VERSION, GATE_VERDICTS, HOOK_EVENT_TYPES, TASK_ID_PATTERN, WORKFLOW_ACTORS, WORKFLOW_EVENTS, WORKFLOW_STATES } from './constants.js';
 
 /**
  * Shared, versioned contracts between the Claude Code hook bridge, JERRY Core and the CLI.
@@ -209,14 +209,43 @@ export const approvalRecordSchema = z.object({
 });
 export type ApprovalRecord = z.infer<typeof approvalRecordSchema>;
 
+export const workflowStateSchema = z.enum(WORKFLOW_STATES);
+export type WorkflowState = z.infer<typeof workflowStateSchema>;
+export const workflowEventSchema = z.enum(WORKFLOW_EVENTS);
+export type WorkflowEvent = z.infer<typeof workflowEventSchema>;
+export const workflowActorSchema = z.enum(WORKFLOW_ACTORS);
+export type WorkflowActor = z.infer<typeof workflowActorSchema>;
+
 export const taskSchema = z.object({
   taskId: taskIdSchema,
   title: z.string().min(1),
   repoRoot: z.string().min(1),
   createdAt: z.iso.datetime(),
+  /** Where the task is in the workflow (spec §7.1); changed only by Core's transition validator. */
+  state: workflowStateSchema,
   plan: planSchema,
 });
 export type Task = z.infer<typeof taskSchema>;
+
+/** One step in a task's history. */
+export const workflowTransitionSchema = z.object({
+  taskId: taskIdSchema,
+  from: workflowStateSchema.nullable(),
+  to: workflowStateSchema,
+  event: workflowEventSchema,
+  actor: workflowActorSchema,
+  reason: z.string(),
+  at: z.iso.datetime(),
+});
+export type WorkflowTransition = z.infer<typeof workflowTransitionSchema>;
+
+/** User decisions about a whole task (approvals have their own endpoint). */
+export const taskTransitionRequestSchema = z.object({
+  event: z.enum(['task.paused', 'task.resumed', 'task.cancelled']),
+  reason: z.string().default(''),
+  /** Required from the dashboard when cancelling: the task ID typed by the user. */
+  confirmTaskId: z.string().optional(),
+});
 
 export const taskCreateRequestSchema = z.object({
   repoPath: z.string().min(1),
