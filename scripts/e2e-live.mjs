@@ -230,7 +230,9 @@ expect('J2: the new session knew the task and the next step', j2.text.includes(t
 // K — /jerry:report and /jerry:commit-message: Claude reports, JERRY adds its own record, the user decides.
 const k1 = runClaude(
   'K1: /jerry:report',
-  `/jerry:report The work on ${task.taskId} is finished. This fixture repository has no test, build or lint tooling.`,
+  // J's checkpoint leaves "Create src/progress2.txt" open on purpose; without saying so, a careful model
+  // (rightly) refuses to report the work as finished.
+  `/jerry:report The work on ${task.taskId} is finished for this check. The open checkpoint step "Create src/progress2.txt" is deliberately left out: record it as a plan deviation. This fixture repository has no test, build or lint tooling.`,
   ['Read', 'Glob', 'Grep', 'Bash(git status:*)', 'Bash(git diff:*)', 'Bash(git log:*)', 'mcp__plugin_jerry_jerry__jerry_get_state', 'mcp__plugin_jerry_jerry__jerry_list_deviations', 'mcp__plugin_jerry_jerry__jerry_submit_report'],
 );
 const reported = await coreApi(info, 'GET', `/api/v1/tasks/${task.taskId}`);
