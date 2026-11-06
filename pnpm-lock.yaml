@@ -14,6 +14,9 @@ importers:
       '@jerry/database':
         specifier: workspace:*
         version: link:packages/database
+      '@jerry/discovery':
+        specifier: workspace:*
+        version: link:packages/discovery
       '@jerry/platform':
         specifier: workspace:*
         version: link:packages/platform
@@ -68,6 +71,9 @@ importers:
       '@jerry/database':
         specifier: workspace:*
         version: link:../../packages/database
+      '@jerry/discovery':
+        specifier: workspace:*
+        version: link:../../packages/discovery
       '@jerry/platform':
         specifier: workspace:*
         version: link:../../packages/platform
@@ -89,6 +95,9 @@ importers:
       '@jerry/database':
         specifier: workspace:*
         version: link:../../packages/database
+      '@jerry/discovery':
+        specifier: workspace:*
+        version: link:../../packages/discovery
       '@jerry/platform':
         specifier: workspace:*
         version: link:../../packages/platform
@@ -170,6 +179,8 @@ importers:
       kysely:
         specifier: 0.29.8
         version: 0.29.8
+
+  packages/discovery: {}
 
   packages/platform:
     dependencies:

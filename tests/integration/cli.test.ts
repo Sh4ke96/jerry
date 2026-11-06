@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { JERRY_VERSION } from '@jerry/contracts';
 import { afterAll, describe, expect, it } from 'vitest';
-import { ROOT, startCore, tempDir, TEST_CORE_ENV } from '../helpers/harness.js';
+import { createFixtureRepo, ROOT, snapshotRepo, startCore, tempDir, TEST_CORE_ENV } from '../helpers/harness.js';
 
 const CLI = path.join(ROOT, 'dist', 'cli', 'jerry.mjs');
 const base = tempDir('cli');
@@ -55,6 +55,20 @@ describe('jerry CLI (Commander)', () => {
     } finally {
       await core.stop();
     }
+  });
+
+  it('jerry repo scan: reports what the scanner detects and leaves the repository untouched', () => {
+    const repo = createFixtureRepo(path.join(base, 'scan-repo'));
+    fs.writeFileSync(path.join(repo, 'package.json'), JSON.stringify({ scripts: { test: 'vitest run', lint: 'eslint .' }, devDependencies: { vitest: '5' } }));
+    const before = snapshotRepo(repo);
+    const result = jerry(['repo', 'scan', repo, '--json']);
+    expect(result.exitCode, result.stderr).toBe(0);
+    const scan = JSON.parse(result.stdout) as { root: string; commands: Array<{ command: string }>; frameworks: Array<{ name: string }> };
+    expect(path.resolve(scan.root)).toBe(path.resolve(repo));
+    expect(scan.commands.map((command) => command.command)).toEqual(['npm run test', 'npm run lint']);
+    expect(scan.frameworks.map((framework) => framework.name)).toEqual(['Vitest']);
+    expect(jerry(['repo', 'scan', path.join(repo, 'src')]).stdout).toContain('test      npm run test');
+    expect(snapshotRepo(repo)).toEqual(before);
   });
 
   it('jerry task: lists open tasks with their state, shows history, and keeps pause/resume/cancel for a terminal', async () => {

@@ -20,6 +20,7 @@
   "devDependencies": {
     "@jerry/contracts": "workspace:*",
     "@jerry/database": "workspace:*",
+    "@jerry/discovery": "workspace:*",
     "@jerry/platform": "workspace:*",
     "@jerry/policy-engine": "workspace:*",
     "@jerry/trace-engine": "workspace:*",

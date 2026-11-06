@@ -208,6 +208,8 @@ describe('hard rules: always blocked, with or without a plan, in excluded reposi
     expect(evaluateGate(shell('jerry task show JRY-0001'), context()).verdict).toBe('PASS');
     expect(evaluateGate(shell('jerry task list'), context()).verdict).toBe('PASS');
     expect(evaluateGate(shell('node dist/cli/jerry.mjs task list --all'), context()).verdict).toBe('PASS');
+    expect(evaluateGate(shell('jerry repo scan . --json'), context()).verdict).toBe('PASS');
+    expect(evaluateGate(shell('jerry repo scan; rm -rf src'), context()).verdict).not.toBe('PASS');
     expect(evaluateGate(shell('curl -c c.txt "http://127.0.0.1:47823/ui/login?code=abc"'), context()).ruleId).toBe('hard.core-api');
     expect(evaluateGate(shell('curl -X POST http://127.0.0.1:5555/api/v1/tasks/JRY-0001/approvals'), context(approved)).ruleId).toBe('hard.core-api');
   });

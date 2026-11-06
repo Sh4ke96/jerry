@@ -6,6 +6,7 @@ import { doctor } from './doctor.js';
 import { showEvents } from './events-command.js';
 import { install, uninstall } from './install-commands.js';
 import { excludeRepository, includeRepository, listExcludedRepositories } from './repo-commands.js';
+import { scanCommand } from './scan-command.js';
 import { showStatus } from './status-command.js';
 import { controlTask, createTask, decide, listTasks, revisePlan, showTask } from './task-commands.js';
 import { openDashboard } from './ui-command.js';
@@ -114,6 +115,11 @@ const repo = program.command('repo').description('Repositories JERRY monitors');
 repo.command('exclude <path>').description('Stop monitoring a repository (interactive; hard rules still apply)').action((target: string) => excludeRepository(target));
 repo.command('include <path>').description('Monitor an excluded repository again').action((target: string) => includeRepository(target));
 repo.command('list').description('List excluded repositories').action(() => listExcludedRepositories());
+repo
+  .command('scan [path]')
+  .description('Show what JERRY detects in a repository: languages, manifests, commands, CI, API schemas, migrations (read-only)')
+  .option('--json', 'print the full scan as JSON', false)
+  .action((target: string | undefined, options: { json: boolean }) => scanCommand(target ?? '.', options));
 
 program
   .command('events')

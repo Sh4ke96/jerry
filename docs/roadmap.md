@@ -18,13 +18,13 @@ to three implementers with disjoint scopes.
 - [x] Git root resolver.
 - [x] Git baseline snapshot ([ADR 0017](decisions/0017-git-baseline.md)).
 - [x] Uncommitted changes inventory ([ADR 0017](decisions/0017-git-baseline.md)).
-- [ ] Language/framework detectors.
-- [ ] Manifest/lockfile detection.
+- [x] Language/framework detectors ([ADR 0018](decisions/0018-repository-scanner.md)).
+- [x] Manifest/lockfile detection ([ADR 0018](decisions/0018-repository-scanner.md)).
 - [ ] Documentation indexer.
 - [ ] Project instructions inventory.
-- [ ] Existing tests/build/lint detection.
-- [ ] API schema detection.
-- [ ] Database migration detection.
+- [x] Existing tests/build/lint detection ([ADR 0018](decisions/0018-repository-scanner.md)).
+- [x] API schema detection ([ADR 0018](decisions/0018-repository-scanner.md)).
+- [x] Database migration detection ([ADR 0018](decisions/0018-repository-scanner.md)).
 - [ ] Multi-repo workspace graph.
 - [ ] Project profile storage outside project.
 - [ ] Profile freshness invalidation.
