@@ -1,10 +1,11 @@
 import { EMOJI } from '@jerry/contracts/emoji';
-import { Activity, Database, FlaskConical, FolderGit2, LayoutDashboard, ListTodo, LogOut, X } from '@lucide/vue';
-import { computed, defineComponent, ref, type PropType } from 'vue';
+import { Activity, ChevronRight, Database, FlaskConical, FolderGit2, LayoutDashboard, ListTodo, LogOut, Settings as SettingsIcon, Sparkles, X } from '@lucide/vue';
+import { computed, defineComponent, onMounted, onUnmounted, type PropType } from 'vue';
 import { Emoji } from './components/Emoji';
 import { Logo } from './components/Logo';
 import { StatusBadge } from './components/StatusBadge';
 import { ThemeToggle } from './components/ThemeToggle';
+import { UsageBar } from './components/UsageBar';
 import { Alert, AlertDescription } from './components/ui/alert';
 import { Button } from './components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from './components/ui/card';
@@ -29,21 +30,27 @@ import {
 } from './components/ui/sidebar';
 import { Skeleton } from './components/ui/skeleton';
 import { waitsForUser } from './format';
+import { projectName } from './lib/tasks';
+import { linkTo, route, startRouter, type Section } from './router';
 import { signOut, state } from './state';
 import { Data } from './views/Data';
 import { Evals } from './views/Evals';
 import { Overview } from './views/Overview';
-import { Repositories } from './views/Repositories';
+import { ProjectPage } from './views/ProjectPage';
+import { Projects } from './views/Projects';
+import { Settings } from './views/Settings';
+import { SkillPage } from './views/SkillPage';
+import { Skills } from './views/Skills';
+import { TaskPage } from './views/TaskPage';
 import { Tasks } from './views/Tasks';
 import { Timeline } from './views/Timeline';
 
-type View = 'overview' | 'tasks' | 'timeline' | 'repositories' | 'data' | 'evals';
-
-const VIEWS: Array<{ id: View; label: string; icon: typeof LayoutDashboard }> = [
+const VIEWS: Array<{ id: Section; label: string; icon: typeof LayoutDashboard }> = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
   { id: 'tasks', label: 'Tasks', icon: ListTodo },
+  { id: 'projects', label: 'Projects', icon: FolderGit2 },
+  { id: 'skills', label: 'Skills', icon: Sparkles },
   { id: 'timeline', label: 'Timeline', icon: Activity },
-  { id: 'repositories', label: 'Repositories', icon: FolderGit2 },
   { id: 'data', label: 'Data', icon: Database },
   { id: 'evals', label: 'Evals', icon: FlaskConical },
 ];
@@ -68,28 +75,56 @@ const Standalone = defineComponent({
   },
 });
 
-/** The sidebar's view list; on a narrow window, choosing a view also closes the sidebar sheet. */
+/**
+ * A sidebar link to a section: a real link (it opens in a new tab with Ctrl), highlighted while the
+ * section or one of its pages is shown. On a narrow window, choosing it also closes the sidebar sheet.
+ */
+const SectionLink = defineComponent({
+  name: 'SectionLink',
+  props: {
+    section: { type: String as PropType<Section>, required: true },
+    label: { type: String, required: true },
+    icon: { type: [Object, Function] as PropType<typeof LayoutDashboard>, required: true },
+    current: { type: String as PropType<Section>, required: true },
+  },
+  setup(props) {
+    const { setOpenMobile } = useSidebar();
+    return () => {
+      const link = linkTo({ section: props.section });
+      const active = props.current === props.section;
+      return (
+        <SidebarMenuButton
+          as="a"
+          {...{ href: link.href }}
+          isActive={active}
+          tooltip={props.label}
+          aria-current={active ? 'page' : undefined}
+          onClick={(event: MouseEvent) => {
+            link.onClick(event);
+            setOpenMobile(false);
+          }}
+        >
+          <props.icon />
+          <span>{props.label}</span>
+        </SidebarMenuButton>
+      );
+    };
+  },
+});
+
+/** The sidebar's section list. */
 const Sections = defineComponent({
   name: 'Sections',
   props: {
-    current: { type: String as PropType<View>, required: true },
+    current: { type: String as PropType<Section>, required: true },
     waiting: { type: Number, required: true },
   },
-  emits: { select: (view: View) => typeof view === 'string' },
-  setup(props, { emit }) {
-    const { setOpenMobile } = useSidebar();
-    const select = (view: View): void => {
-      emit('select', view);
-      setOpenMobile(false);
-    };
+  setup(props) {
     return () => (
       <SidebarMenu aria-label="Sections">
         {VIEWS.map((item) => (
           <SidebarMenuItem key={item.id}>
-            <SidebarMenuButton isActive={props.current === item.id} tooltip={item.label} aria-current={props.current === item.id ? 'page' : undefined} onClick={() => select(item.id)}>
-              <item.icon />
-              <span>{item.label}</span>
-            </SidebarMenuButton>
+            <SectionLink section={item.id} label={item.label} icon={item.icon} current={props.current} />
             {item.id === 'tasks' && props.waiting > 0 && (
               <SidebarMenuBadge class="bg-primary text-primary-foreground peer-data-[active=true]/menu-button:text-primary-foreground peer-hover/menu-button:text-primary-foreground" title={`${props.waiting} waiting for your decision`}>
                 {props.waiting}
@@ -105,24 +140,42 @@ const Sections = defineComponent({
 export const App = defineComponent({
   name: 'App',
   setup() {
-    const view = ref<View>('overview');
+    // The address bar decides the view: back and forward work, and a reload stays where it was.
+    let stopRouter: (() => void) | null = null;
+    onMounted(() => (stopRouter = startRouter()));
+    onUnmounted(() => stopRouter?.());
+
+    const view = computed(() => route.value.section);
     const waiting = computed(() => state.tasks.filter(waitsForUser).length);
-    const title = computed(() => VIEWS.find((item) => item.id === view.value)?.label ?? '');
+    const title = computed(() => (view.value === 'settings' ? 'Settings' : (VIEWS.find((item) => item.id === view.value)?.label ?? '')));
+    /** The page inside a section (a task, a project), shown after the section's name. */
+    const page = computed(() => {
+      const current = route.value;
+      if (current.section === 'tasks' && current.taskId !== undefined) return current.taskId;
+      if (current.section === 'projects' && current.repoRoot !== undefined) return projectName(current.repoRoot);
+      if (current.section === 'skills' && current.name !== undefined) return current.name;
+      return null;
+    });
 
     const content = () => {
-      switch (view.value) {
+      const current = route.value;
+      switch (current.section) {
         case 'overview':
-          return <Overview onNavigate={(target: View) => (view.value = target)} />;
+          return <Overview />;
         case 'tasks':
-          return <Tasks />;
+          return current.taskId === undefined ? <Tasks /> : <TaskPage key={current.taskId} taskId={current.taskId} />;
+        case 'projects':
+          return current.repoRoot === undefined ? <Projects /> : <ProjectPage key={current.repoRoot} repoRoot={current.repoRoot} />;
+        case 'skills':
+          return current.name === undefined ? <Skills /> : <SkillPage key={current.name} name={current.name} />;
         case 'timeline':
           return <Timeline />;
-        case 'repositories':
-          return <Repositories />;
         case 'data':
           return <Data />;
         case 'evals':
           return <Evals />;
+        case 'settings':
+          return <Settings />;
       }
     };
 
@@ -148,7 +201,7 @@ export const App = defineComponent({
           <SidebarGroup>
             <SidebarGroupLabel>Sections</SidebarGroupLabel>
             <SidebarGroupContent>
-              <Sections current={view.value} waiting={waiting.value} onSelect={(target: View) => (view.value = target)} />
+              <Sections current={view.value} waiting={waiting.value} />
             </SidebarGroupContent>
           </SidebarGroup>
         </SidebarContent>
@@ -161,6 +214,9 @@ export const App = defineComponent({
                 </StatusBadge>
                 <span class="text-muted-foreground">Core {state.status?.version}</span>
               </div>
+            </SidebarMenuItem>
+            <SidebarMenuItem data-settings>
+              <SectionLink section="settings" label="Settings" icon={SettingsIcon} current={view.value} />
             </SidebarMenuItem>
             <SidebarMenuItem>
               <SidebarMenuButton tooltip="Sign out" onClick={() => void signOut()}>
@@ -227,8 +283,21 @@ export const App = defineComponent({
               <div class="flex w-full items-center gap-1 px-4 lg:gap-2 lg:px-6">
                 <SidebarTrigger class="-ml-1" />
                 <Separator orientation="vertical" class="mx-2 data-[orientation=vertical]:h-4" />
-                <h1 class="text-base font-medium">{title.value}</h1>
+                {page.value === null ? (
+                  <h1 class="text-base font-medium">{title.value}</h1>
+                ) : (
+                  <nav aria-label="Breadcrumb" class="flex min-w-0 items-center gap-1.5 text-base">
+                    <a class="text-muted-foreground hover:text-foreground font-medium" {...linkTo(`#/${view.value}`)}>
+                      {title.value}
+                    </a>
+                    <ChevronRight class="text-muted-foreground size-4 shrink-0" />
+                    <h1 class="truncate font-medium" aria-current="page">
+                      {page.value}
+                    </h1>
+                  </nav>
+                )}
                 <div class="ml-auto flex items-center gap-2">
+                  <UsageBar />
                   <ThemeToggle />
                 </div>
               </div>

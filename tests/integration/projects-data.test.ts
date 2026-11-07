@@ -180,7 +180,7 @@ describe('only projects are monitored', () => {
     await addProject(core, added);
     const created = (await api(core, 'POST', '/api/v1/tasks', { repoPath: added, title: 'Open work', scope: ['src/**'] })).body as { taskId: string };
     const listed = (await api(core, 'GET', '/api/v1/projects')).body as Array<Record<string, unknown>>;
-    expect(listed).toEqual([{ repoRoot: added, addedAt: expect.any(String), addedBy: 'cli', note: null, tasks: 1, openTasks: 1, lastActivityAt: expect.any(String), exists: true }]);
+    expect(listed).toEqual([{ repoRoot: added, addedAt: expect.any(String), addedBy: 'cli', note: null, reviewMode: null, effectiveReviewMode: 'optional', tasks: 1, openTasks: 1, lastActivityAt: expect.any(String), exists: true }]);
 
     // Removing a project keeps its open tasks, and says so.
     const removed = await api(core, 'POST', '/api/v1/projects/remove', { path: added });

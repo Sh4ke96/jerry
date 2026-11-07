@@ -57,7 +57,7 @@ describe('independent code review (bundled bridge + MCP + Core)', () => {
     expect(report.structured).toMatchObject({
       taskId,
       status: 'final',
-      review: { outcome: 'passed', rounds: 2, findings: { total: 1, fixed: 1, open: [] } },
+      review: { requested: true, outcome: 'passed', rounds: 2, findings: { total: 1, fixed: 1, open: [] } },
       commitSubjects: ['feat(greeting): add greet helper'],
       artifact: { decision: 'not-asked' },
       definitionOfDone: { passed: true, items: ['greet implemented', 'unit tests pass'] },
@@ -81,7 +81,7 @@ describe('independent code review (bundled bridge + MCP + Core)', () => {
     const id = ((await api(core, 'POST', '/api/v1/tasks', { repoPath: repo, title: 'Stubborn finding', scope: plan.scope.include, document: plan })).body as { taskId: string }).taskId;
     await api(core, 'POST', `/api/v1/tasks/${id}/approvals`, { stage: 'PLAN', version: 1, decision: 'APPROVED' });
     await api(core, 'POST', `/api/v1/tasks/${id}/reports`, { report: sampleReport(['src/greeting/greet.ts']), submittedBy: 'user' });
-    await api(core, 'POST', `/api/v1/tasks/${id}/approvals`, { stage: 'IMPLEMENTATION', version: 1, decision: 'APPROVED' });
+    await api(core, 'POST', `/api/v1/tasks/${id}/approvals`, { stage: 'IMPLEMENTATION', version: 1, decision: 'APPROVED', review: true });
     const reviewAll = async () => {
       for (const role of ['jerry-correctness-reviewer', 'jerry-security-reviewer', 'jerry-design-reviewer'] as const) {
         expect((await api(core, 'POST', `/api/v1/tasks/${id}/reviews`, { review: submission(role, role === 'jerry-correctness-reviewer' ? [blankNames] : []) })).status).toBe(201);
@@ -108,7 +108,7 @@ describe('independent code review (bundled bridge + MCP + Core)', () => {
     expect(finished.finalCheck?.conditions.find((condition) => condition.id === 'review.open-findings')).toMatchObject({ passed: false, blocking: false });
   };
 
-  it('starts the review when the user accepts the implementation, with every changed file to cover', async () => {
+  it('starts the review when the user accepts the implementation with review, with every changed file to cover', async () => {
     const plan = samplePlan(repo, ['src/**']);
     taskId = ((await api(core, 'POST', '/api/v1/tasks', { repoPath: repo, title: 'Greeting', scope: plan.scope.include, document: plan })).body as { taskId: string }).taskId;
     await api(core, 'POST', `/api/v1/tasks/${taskId}/approvals`, { stage: 'PLAN', version: 1, decision: 'APPROVED' });
@@ -116,9 +116,10 @@ describe('independent code review (bundled bridge + MCP + Core)', () => {
     fs.writeFileSync(greet, 'export const greet = (name: string) => `Hello, ${name}!`;\n');
     hook({ hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: greet }, tool_use_id: 'toolu_impl' });
     expect((await api(core, 'POST', `/api/v1/tasks/${taskId}/reports`, { report: sampleReport(['src/greeting/greet.ts']), submittedBy: 'user' })).status).toBe(201);
-    expect((await api(core, 'POST', `/api/v1/tasks/${taskId}/approvals`, { stage: 'IMPLEMENTATION', version: 1, decision: 'APPROVED' })).status).toBe(201);
+    expect((await api(core, 'POST', `/api/v1/tasks/${taskId}/approvals`, { stage: 'IMPLEMENTATION', version: 1, decision: 'APPROVED', review: true })).status).toBe(201);
 
     expect((await detail()).state).toBe('CODE_REVIEW');
+    expect(await detail()).toMatchObject({ reviewRequested: true, effectiveReviewMode: 'optional' });
     const state = await review();
     expect(state.rounds).toHaveLength(1);
     expect(state.rounds[0]!.changedFiles).toContain('src/greeting/greet.ts');

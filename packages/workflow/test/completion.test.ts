@@ -21,7 +21,7 @@ const report = (overrides: { checks?: Report['document']['checks']; risks?: Repo
   evidence: { since: '2026-11-06T10:00:00.000Z', deviations: [], deviationCount: overrides.deviationCount ?? 0, blockedCount: 0, observedEdits: [], unreportedEdits: overrides.unreportedEdits ?? [], failedOrNotRunChecks: 0, git: null },
 });
 
-const ready: CompletionInput = { currentPlanVersion: 1, planApproved: true, report: report(), reportAccepted: true, editsSinceReport: [], definitionOfDone: ['tests pass', 'README updated'] };
+const ready: CompletionInput = { currentPlanVersion: 1, planApproved: true, report: report(), reportAccepted: true, editsSinceReport: [], laterWork: [], definitionOfDone: ['tests pass', 'README updated'] };
 const failedIds = (input: CompletionInput) => evaluateCompletion(input).conditions.filter((condition) => condition.blocking && !condition.passed).map((condition) => condition.id);
 
 describe('DONE validator', () => {
@@ -59,6 +59,30 @@ describe('DONE validator', () => {
   });
 });
 
+describe('DONE validator: later approved work', () => {
+  const laterWork = [{ taskId: 'JRY-0002', files: ['src/a.ts', 'src/b.ts'] }];
+
+  it('records the later work of other tasks without refusing DONE', () => {
+    const result = evaluateCompletion({ ...ready, laterWork });
+    expect(result.passed).toBe(true);
+    const later = result.conditions.find((condition) => condition.id === 'code.later-work');
+    expect(later).toMatchObject({ blocking: false, passed: true, laterWork });
+    expect(later?.detail).toBe('changed later by other tasks under their approved plans: JRY-0002 (src/a.ts, src/b.ts)');
+    expect(result.conditions.find((condition) => condition.id === 'code.unchanged-since-report')).toMatchObject({ passed: true, detail: expect.stringContaining('other than by later approved tasks') });
+  });
+
+  it('still blocks on the remaining edits', () => {
+    const result = evaluateCompletion({ ...ready, laterWork, editsSinceReport: ['src/c.ts'] });
+    expect(result.passed).toBe(false);
+    expect(failedIds({ ...ready, laterWork, editsSinceReport: ['src/c.ts'] })).toEqual(['code.unchanged-since-report']);
+    expect(result.conditions.find((condition) => condition.id === 'code.unchanged-since-report')?.detail).toBe('edited after report v2 was submitted: src/c.ts');
+  });
+
+  it('adds no later-work condition when there is none', () => {
+    expect(evaluateCompletion(ready).conditions.some((condition) => condition.id === 'code.later-work')).toBe(false);
+  });
+});
+
 describe('DONE validator: continuous quality', () => {
   it('records open serious findings and contradicted check claims as limitations, never as blocks', () => {
     const base = report();
@@ -92,5 +116,14 @@ describe('DONE validator: independent review', () => {
     expect(waived.passed).toBe(true);
     expect(waived.conditions.find((condition) => condition.id === 'review.done')?.detail).toBe('the user waived the review: docs only');
     expect(waived.conditions.filter((condition) => !condition.passed).map((condition) => condition.id)).toEqual(['review.coverage', 'review.independent', 'review.open-findings']);
+  });
+
+  it('does not block when the user accepted without review, and says so', () => {
+    const result = evaluateCompletion({ ...ready, review: { requested: false } });
+    expect(result.passed).toBe(true);
+    const done = result.conditions.find((condition) => condition.id === 'review.done');
+    expect(done).toMatchObject({ blocking: false, passed: true });
+    expect(done?.detail).toMatch(/review was not requested/);
+    expect(result.conditions.some((condition) => condition.id === 'review.coverage' || condition.id === 'review.independent')).toBe(false);
   });
 });

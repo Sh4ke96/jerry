@@ -1,8 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import {
+  type WorkflowState,
   approvalRequestSchema,
+  decisionWaitQuerySchema,
   eventIngestRequestSchema,
   gateCheckRequestSchema,
   gatePreviewRequestSchema,
@@ -13,6 +16,15 @@ import {
   projectAddRequestSchema,
   projectRemoveRequestSchema,
   pruneRequestSchema,
+  projectSettingsRequestSchema,
+  settingsUpdateRequestSchema,
+  jerryShareRequestSchema,
+  usageCollectionRequestSchema,
+  usageSnapshotsRequestSchema,
+  type UsageCollectionResult,
+  type UsageSummary,
+  type Project,
+  type Settings,
   type ProjectAddResult,
   type ProjectRemoveResult,
   type ProjectSummary,
@@ -27,6 +39,8 @@ import {
   fixPlanRequestSchema,
   fixesReportRequestSchema,
   reviewSkipRequestSchema,
+  finalChecksRerunRequestSchema,
+  type FinalChecksRerun,
   reviewSubmissionRequestSchema,
   evalBaselineRequestSchema,
   evalLabelRequestSchema,
@@ -38,6 +52,7 @@ import {
   reportSubmitRequestSchema,
   repositoryScanRequestSchema,
   analysisReportRequestSchema,
+  type ApprovalRecord,
   type CoreState,
   type RepositorySummary,
   type CoreStatus,
@@ -55,10 +70,12 @@ import { absolutePath, approvedPlansForRepo, comparablePath, evaluateGate, grade
 import { isTerminal, WORK_STATES } from '@jerry/workflow';
 import { buildEventEnvelope } from '@jerry/trace-engine';
 import type { z } from 'zod';
-import { BrowserSessions, clearedSessionCookie, CSRF_HEADER, readCookie, safeEqual, SESSION_COOKIE, sessionCookie, type BrowserSession } from './auth.js';
+import { disableUsageCollection, enableUsageCollection, jerryPaths, readTelemetryConfig, resolveClaudeConfigDir, resolveCorePort, TELEMETRY_KEY_HEADER, TELEMETRY_METRICS_PATH, usageCollectionStatus, writeTelemetryLast, type UsageCollectionChange } from '@jerry/platform';
+import { BrowserSessions, clearedSessionCookie, CSRF_HEADER, loginNextFromBody, loginRedirectTarget, loginUrl, readCookie, safeEqual, SESSION_COOKIE, sessionCookie, type BrowserSession } from './auth.js';
 import { evaluatePending, isMonitoredEvent, withRepoRoot } from './events.js';
 import { dataUsage, forget, previewForget, previewPrune, prune, type DataContext } from './data-maintenance.js';
 import { checkCitations } from './citations.js';
+import { DecisionWaits } from './decision-wait.js';
 import { ProfileService } from './profiles.js';
 import { QualityScheduler } from './quality-scheduler.js';
 import { EvalStore } from './eval-store.js';
@@ -68,6 +85,11 @@ import { collectTestRun, targetedTestsFor } from './test-runs.js';
 import { findGitRoot, realPathOfNearestExisting } from './repo-fs.js';
 import { StateError, type StateStore } from './state-store.js';
 import { loadDashboard } from './static-files.js';
+import { OtlpError, parseOtlpMetrics } from './otlp.js';
+import { UsageStore } from './usage-store.js';
+import { registerSkillRoutes } from './skill-routes.js';
+import { SkillService } from './skill-service.js';
+import type { GitHubFetchOptions } from '@jerry/skills';
 import { DASHBOARD_SECURITY_HEADERS, dashboardPlaceholderPage, HTML_SECURITY_HEADERS, signedOutPage } from './ui.js';
 
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -107,6 +129,14 @@ export interface CoreAppOptions {
   quality?: QualityScheduler;
   /** Days events and sessions are kept (shown in the data usage). */
   retentionDays?: number;
+  /** Claude Code's user config dir, whose settings.json the usage switch changes (default: CLAUDE_CONFIG_DIR, else ~/.claude). */
+  claudeConfigDir?: string;
+  /** The port Claude Code's telemetry is sent to (default: the configured port, else the one Core listens on). */
+  telemetryPort?: () => number;
+  /** Claude usage; Core's main passes the one its spool drain also uses. */
+  usage?: UsageStore;
+  /** Where skills are downloaded from GitHub; tests pass a local fake. */
+  skillsGitHub?: GitHubFetchOptions;
 }
 
 export const DEFAULT_RETENTION_DAYS = 90;
@@ -122,10 +152,12 @@ export class HttpError extends Error {
 }
 
 /** The gate as Core evaluates it: real filesystem lookups plus the current state snapshot. */
-export function gateEvaluator(store: StateStore, protectedRoots: readonly string[]): (request: GateCheckRequest) => GateDecision {
+export function gateEvaluator(store: StateStore, protectedRoots: readonly string[], skillStates?: (name: string) => readonly WorkflowState[] | null): (request: GateCheckRequest) => GateDecision {
   return (request) => {
     const snapshot: CoreState = store.snapshot();
     return evaluateGate(request, {
+      ...(skillStates === undefined ? {} : { skillStates }),
+      openTasks: (repoRoot) => snapshot.tasks.filter((task) => !isTerminal(task.state) && sameRepo(task.repoRoot, repoRoot)).map((task) => ({ taskId: task.taskId, state: task.state })),
       platform: process.platform,
       protectedRoots,
       realPath: realPathOfNearestExisting,
@@ -148,11 +180,14 @@ const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   const { store } = options;
   const sessions = options.sessions ?? new BrowserSessions();
-  const evaluate = gateEvaluator(store, options.protectedRoots);
+  // The skills service is built further down; the gate reads its states through this reference.
+  let skillService: SkillService | null = null;
+  const evaluate = gateEvaluator(store, options.protectedRoots, (name) => skillService?.triggerStates(name) ?? null);
   const profiles = options.profiles ?? new ProfileService(store);
   // Read once: a running Core serves the dashboard of its own version, even after a new build or install.
   const dashboard = loadDashboard(options.dashboardDir);
   const quality = options.quality ?? new QualityScheduler({ store, git: store.gitReader });
+  const usage = options.usage ?? new UsageStore(store, options.startedAt);
   const app = Fastify({ logger: false, bodyLimit: MAX_BODY_BYTES, return503OnClosing: true });
   const origins = (): string[] => [`http://127.0.0.1:${options.port()}`, `http://localhost:${options.port()}`];
 
@@ -190,6 +225,8 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof HttpError) return reply.code(error.statusCode).send({ error: error.message, details: error.details });
     if (error instanceof StateError) return reply.code(error.statusCode).send({ error: error.message });
+    // A gzip body that does not unpack (zlib errors: Z_DATA_ERROR, Z_BUF_ERROR, …).
+    if (/^Z_/.test(String((error as { code?: unknown }).code))) return reply.code(400).send({ error: 'The request body is not valid gzip' });
     const statusCode = typeof (error as { statusCode?: unknown }).statusCode === 'number' ? (error as { statusCode: number }).statusCode : 500;
     return reply.code(statusCode).send({ error: error instanceof Error ? error.message : 'internal error' });
   });
@@ -203,11 +240,12 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   app.get('/health', async () => ({ status: 'ok' }));
 
   app.get('/ui/login', async (request, reply) => {
-    const code = (request.query as { code?: unknown }).code;
+    const { code, next } = request.query as { code?: unknown; next?: unknown };
     const session = typeof code === 'string' ? sessions.redeemLoginCode(code) : null;
     reply.headers(HTML_SECURITY_HEADERS).header('referrer-policy', 'no-referrer');
     if (session === null) return reply.code(401).type('text/html; charset=utf-8').send(signedOutPage('This login link is invalid, already used or expired. Run "jerry ui" again.'));
-    return reply.header('set-cookie', sessionCookie(session)).redirect('/', 302);
+    // An optional landing route (next=#/tasks/JRY-0001); anything but a plain dashboard route lands on the root.
+    return reply.header('set-cookie', sessionCookie(session)).redirect(loginRedirectTarget(next), 302);
   });
 
   // --- dashboard (browser session) -----------------------------------------------------------
@@ -250,9 +288,9 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   });
 
   // --- CLI and hooks (bearer token) -----------------------------------------------------------
-  app.post('/api/v1/ui/login-codes', { config: TOKEN_ONLY }, async () => {
+  app.post('/api/v1/ui/login-codes', { config: TOKEN_ONLY }, async (request) => {
     const { code, expiresAt } = sessions.issueLoginCode();
-    return { url: `${origins()[0]}/ui/login?code=${code}`, expiresAt: new Date(expiresAt).toISOString() };
+    return { url: loginUrl(origins()[0]!, code, loginNextFromBody(request.body)), expiresAt: new Date(expiresAt).toISOString() };
   });
 
   app.get('/api/v1/status', { config: TOKEN_OR_SESSION }, async () => {
@@ -307,11 +345,13 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     // Who edits which file: concurrent writes, and an implementer's first edit binds it to its assignment.
     if (decision.verdict !== 'DENY' && decision.taskId !== null && relative !== null) await store.noteWrite(decision.taskId, relative, gateRequest.agentId ?? null, now);
     // New quality findings of the work this session does, each told once.
-    if (decision.verdict !== 'DENY') {
-      const feedback = await qualityFeedback(store, gateRequest.sessionId, now);
-      if (feedback !== null) return { ...decision, feedback };
-    }
-    return decision;
+    const feedback = decision.verdict === 'DENY' ? null : await qualityFeedback(store, gateRequest.sessionId, now);
+    const answer: GateDecision = feedback === null ? decision : { ...decision, feedback };
+    // JERRY's share of Claude's context: what the bridge prints for this answer.
+    const injected = injectedChars(answer);
+    const repoRoot = decision.repoRoot ?? store.projectOf(relevantPath(gateRequest.toolInput, gateRequest.cwd))?.repoRoot ?? null;
+    if (injected > 0 && repoRoot !== null) await usage.addJerryShare({ sessionId: gateRequest.sessionId, repoRoot, kind: 'warnings', chars: injected }, now);
+    return answer;
   });
 
   app.post('/api/v1/events', { config: TOKEN_ONLY }, async (request, reply) => {
@@ -360,6 +400,8 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
       monitored,
       tasks: await summarize(store, tasks),
       sessionTasks: sessionId === null ? [] : (await store.tasksOfSession(sessionId)).filter((taskId) => tasks.some((task) => task.taskId === taskId)),
+      preferences: { qaLanguage: store.settings().qaLanguage, reviewMode: store.effectiveReviewModeAt(repoRoot ?? realPathOfNearestExisting(path)) },
+      skills: monitored ? (skillService?.triggers() ?? []) : [],
     };
     return state;
   });
@@ -479,20 +521,130 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
 
   const PROJECT_ROUTES = TOKEN_OR_SESSION;
 
-  app.get('/api/v1/projects', { config: TOKEN_OR_SESSION }, async () => {
-    const snapshot = store.snapshot();
-    const activity = await store.lastActivityByRepository();
-    return store.projects().map((project): ProjectSummary => {
-      const key = comparablePath(project.repoRoot, project.repoRoot, process.platform);
-      const tasks = snapshot.tasks.filter((task) => isComparableInside(comparablePath(task.repoRoot, task.repoRoot, process.platform), key));
-      return {
-        ...project,
-        tasks: tasks.length,
-        openTasks: tasks.filter((task) => !isTerminal(task.state)).length,
-        lastActivityAt: [...activity.entries()].filter(([root]) => isComparableInside(root, key)).map(([, at]) => at).sort().at(-1) ?? null,
-        exists: fs.existsSync(project.repoRoot),
-      };
-    });
+  app.get('/api/v1/projects', { config: TOKEN_OR_SESSION }, async () => projectSummaries(store, store.projects()));
+
+  /**
+   * A project's own review mode (null follows the global setting). A plain setting: no typed
+   * confirmation, but a browser session needs its CSRF token and Origin (preHandler).
+   */
+  app.post('/api/v1/projects/settings', { config: PROJECT_ROUTES }, async (request) => {
+    const body = parse(projectSettingsRequestSchema, request.body);
+    const target = path.resolve(body.path);
+    const wanted = fs.existsSync(target) ? (findGitRoot(realPathOfNearestExisting(target)) ?? target) : target;
+    const project = store.projects().find((candidate) => sameRepo(candidate.repoRoot, wanted));
+    if (project === undefined) throw new HttpError(404, `${body.path} is not a JERRY project (see "jerry project list")`);
+    const updated = await store.setProjectReviewMode(project.repoRoot, body.reviewMode, new Date(), request.client?.kind === 'session' ? 'dashboard' : 'cli');
+    const [summary] = await projectSummaries(store, [updated]);
+    return summary!;
+  });
+
+  // --- Claude usage ------------------------------------------------------------------------------
+  const usageLocations = { home: options.jerryHome, claudeConfigDir: options.claudeConfigDir ?? resolveClaudeConfigDir() };
+  const telemetryPort = options.telemetryPort ?? ((): number => resolveCorePort() || options.port());
+
+  /**
+   * Claude Code's OpenTelemetry metrics (OTLP/HTTP JSON). Claude Code cannot know the Core token, so
+   * this route has its own credential: the telemetry key JERRY wrote into the settings env, in the
+   * x-jerry-telemetry-key header. Loopback only (Host checked above), never from a browser, JSON only.
+   */
+  app.post(
+    TELEMETRY_METRICS_PATH,
+    {
+      bodyLimit: MAX_BODY_BYTES,
+      onRequest: async (request) => {
+        if (!isLoopback(request.socket.remoteAddress)) throw new HttpError(403, 'Metrics are accepted from this machine only');
+        if (request.client !== null || request.headers.origin !== undefined || request.headers['sec-fetch-site'] !== undefined || request.headers.cookie !== undefined) {
+          throw new HttpError(403, 'Metrics are not accepted from a browser or with JERRY credentials');
+        }
+        const presented = request.headers[TELEMETRY_KEY_HEADER];
+        const expected = readTelemetryConfig(options.jerryHome)?.key ?? null;
+        if (typeof presented !== 'string' || expected === null || !safeEqual(presented, expected)) throw new HttpError(401, 'Missing or invalid telemetry key');
+        const type = (request.headers['content-type'] ?? '').split(';')[0]!.trim().toLowerCase();
+        if (type !== 'application/json') throw new HttpError(415, 'Only OTLP/HTTP JSON is accepted (OTEL_EXPORTER_OTLP_METRICS_PROTOCOL=http/json)');
+      },
+      // OTLP exporters may gzip the body (OTEL_EXPORTER_OTLP_COMPRESSION). The size limit applies to the unpacked JSON.
+      preParsing: async (request, _reply, payload) => {
+        const encoding = (request.headers['content-encoding'] ?? 'identity').trim().toLowerCase();
+        if (encoding === 'identity') return payload;
+        if (encoding !== 'gzip') throw new HttpError(415, `Unsupported Content-Encoding "${encoding}" (gzip or none)`);
+        const unpacked = Object.assign(zlib.createGunzip(), { receivedEncodedLength: 0 });
+        payload.on('data', (chunk: Buffer) => {
+          unpacked.receivedEncodedLength += chunk.length;
+        });
+        payload.on('error', (error) => unpacked.destroy(error));
+        return payload.pipe(unpacked);
+      },
+    },
+    async (request) => {
+      let parsed: ReturnType<typeof parseOtlpMetrics>;
+      try {
+        parsed = parseOtlpMetrics(request.body);
+      } catch (error) {
+        if (error instanceof OtlpError) throw new HttpError(400, `Not an OTLP metrics request: ${error.message}`);
+        throw error;
+      }
+      const now = new Date();
+      const recorded = await usage.recordTelemetry(parsed, now);
+      // That metrics arrive, per client, is kept for "jerry usage status" (no numbers, any session),
+      // with the attribute names of the request (never their values). The entrypoints are those
+      // resolved per point (attribute, else the session's registered one); a request without
+      // points falls back to the resources' entrypoint attributes.
+      const entrypoints = recorded.entrypoints.length > 0 ? recorded.entrypoints : parsed.entrypoints;
+      writeTelemetryLast(options.jerryHome, now.toISOString(), entrypoints, parsed.attributeKeys);
+      return {};
+    },
+  );
+
+  /** The status-line script's snapshots; limits from any session, the rest only of project sessions. */
+  app.post('/api/v1/usage/snapshots', { config: TOKEN_ONLY }, async (request, reply) => {
+    const body = parse(usageSnapshotsRequestSchema, request.body);
+    const result = await usage.recordSnapshots(body.snapshots);
+    return reply.code(202).send({ accepted: body.snapshots.length, ...result });
+  });
+
+  /** Characters the hook bridge or the MCP server put into Claude's context (JERRY's share). */
+  app.post('/api/v1/usage/jerry-share', { config: TOKEN_ONLY }, async (request, reply) => {
+    const body = parse(jerryShareRequestSchema, request.body);
+    const recorded = await usage.recordJerryShare(body, await store.resolveOrigin(body.origin), new Date());
+    return reply.code(202).send({ recorded });
+  });
+
+  app.get('/api/v1/usage', { config: TOKEN_OR_SESSION }, async (): Promise<UsageSummary> => usage.summary(new Date(), usageLocations, store.settings()));
+
+  /**
+   * Turns both sources on or off in the user's Claude Code settings, exactly like "jerry usage
+   * enable|disable" (a backup first; only JERRY's keys). The CLI asks in a terminal; the dashboard
+   * shows its own confirmation and needs its CSRF token and Origin (preHandler).
+   */
+  app.post('/api/v1/usage/collection', { config: TOKEN_OR_SESSION }, async (request): Promise<UsageCollectionResult> => {
+    const body = parse(usageCollectionRequestSchema, request.body);
+    const change = body.enabled ? enableUsageCollection({ ...usageLocations, port: telemetryPort() }) : disableUsageCollection(usageLocations);
+    const problems = collectionProblems(change);
+    await store.recordAudit('usage.collection', { enabled: body.enabled, channel: request.client?.kind === 'session' ? 'dashboard' : 'cli', problems }, new Date());
+    const status = usageCollectionStatus(usageLocations);
+    return { statusline: status.statusline, telemetry: status.telemetry, showBar: store.settings().usageShowBar, problems };
+  });
+
+  // --- Skills: Claude Code skills the user adds through JERRY (skill-routes.ts) --------------------
+  const ownPluginDir = options.dashboardDir === undefined ? null : path.resolve(options.dashboardDir, '..', '..', 'plugin');
+  const skills = new SkillService({
+    db: store.kysely,
+    home: options.jerryHome,
+    claudeConfigDir: usageLocations.claudeConfigDir,
+    // The installed plugin first, else the one this Core ships with.
+    pluginSkillDirs: () => [path.join(jerryPaths(options.jerryHome).marketplaceDir, 'plugins', 'jerry', 'skills'), ...(ownPluginDir === null ? [] : [path.join(ownPluginDir, 'skills')])],
+    ...(options.skillsGitHub === undefined ? {} : { github: options.skillsGitHub }),
+  });
+  skillService = skills;
+  app.addHook('onReady', async () => skills.refreshTriggers());
+  registerSkillRoutes(app, skills, () => store.settings().decisionConfirmation);
+
+  // --- Settings: changed only by the user (the CLI asks in a terminal; the dashboard needs CSRF) ---
+  app.get('/api/v1/settings', { config: TOKEN_OR_SESSION }, async (): Promise<Settings> => store.settings());
+
+  app.post('/api/v1/settings', { config: TOKEN_OR_SESSION }, async (request): Promise<Settings> => {
+    const body = parse(settingsUpdateRequestSchema, request.body);
+    return store.updateSettings(body, new Date(), request.client?.kind === 'session' ? 'dashboard' : 'cli');
   });
 
   app.post('/api/v1/projects', { config: PROJECT_ROUTES }, async (request, reply) => {
@@ -536,25 +688,25 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   // and Origin.
 
   const DATA_ROUTES = TOKEN_OR_SESSION;
-  const data: DataContext = { store, logsDir: path.join(options.jerryHome, 'logs'), retentionDays: options.retentionDays ?? DEFAULT_RETENTION_DAYS };
+  const dataContext: DataContext = { store, logsDir: path.join(options.jerryHome, 'logs'), retentionDays: options.retentionDays ?? DEFAULT_RETENTION_DAYS };
 
-  app.get('/api/v1/data/usage', { config: TOKEN_OR_SESSION }, async () => dataUsage(data, new Date()));
+  app.get('/api/v1/data/usage', { config: TOKEN_OR_SESSION }, async () => dataUsage(dataContext, new Date()));
 
   app.post('/api/v1/data/prune/preview', { config: DATA_ROUTES }, async (request) => {
     const { confirmation: _ignored, ...options } = parse(pruneRequestSchema, request.body);
-    return previewPrune(data, options, new Date());
+    return previewPrune(dataContext, options, new Date());
   });
 
   app.post('/api/v1/data/prune', { config: DATA_ROUTES }, async (request) => {
     const { confirmation, ...options } = parse(pruneRequestSchema, request.body);
     const fromDashboard = request.client?.kind === 'session';
     if (fromDashboard && confirmation !== 'delete') throw new HttpError(400, 'Deleting data from the dashboard needs the typed confirmation "delete"');
-    return prune(data, options, new Date(), fromDashboard ? 'dashboard' : 'cli');
+    return prune(dataContext, options, new Date(), fromDashboard ? 'dashboard' : 'cli');
   });
 
   app.post('/api/v1/data/forget/preview', { config: DATA_ROUTES }, async (request) => {
     const body = parse(forgetRequestSchema, request.body);
-    return previewForget(data, forgetRoot(body.path));
+    return previewForget(dataContext, forgetRoot(body.path));
   });
 
   app.post('/api/v1/data/forget', { config: DATA_ROUTES }, async (request) => {
@@ -562,7 +714,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     const repoRoot = forgetRoot(body.path);
     const fromDashboard = request.client?.kind === 'session';
     if (fromDashboard && !typedRoot(body.confirmation, repoRoot)) throw new HttpError(400, `Type the repository root (${repoRoot}) to make JERRY forget it`);
-    return forget(data, repoRoot, new Date(), fromDashboard ? 'dashboard' : 'cli');
+    return forget(dataContext, repoRoot, new Date(), fromDashboard ? 'dashboard' : 'cli');
   });
 
   app.get('/api/v1/tasks', { config: TOKEN_OR_SESSION }, async () => summarize(store, store.snapshot().tasks));
@@ -642,14 +794,44 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     return reply.code(201).send(await store.saveCheckpoint(taskId, { summary: body.summary, nextSteps: body.nextSteps }, sessionId, new Date()));
   });
 
+  /**
+   * A reversible decision from the dashboard (approve or reject a plan, accept or reject a report,
+   * approve or reject a fix plan, skip review). The task ID must be typed only when the user chose
+   * typed confirmations in Settings; a task ID sent anyway must match. The session, its CSRF token and
+   * the Origin are checked by the preHandler in both modes; token (CLI) requests confirm in a terminal.
+   * Irreversible actions (cancel, project removal, prune, forget, exclusion) check their own typed
+   * confirmation and ignore this setting.
+   */
+  const checkDecisionConfirmation = (request: FastifyRequest, taskId: string, typed: string | undefined, message: string): void => {
+    if (request.client?.kind !== 'session') return;
+    const given = typed?.trim().toUpperCase() ?? '';
+    const required = store.settings().decisionConfirmation === 'typed';
+    if ((required || given !== '') && given !== taskId.toUpperCase()) throw new HttpError(400, message);
+  };
+
   app.post('/api/v1/tasks/:taskId/approvals', { config: TOKEN_OR_SESSION }, async (request, reply) => {
     const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId);
     const body = parse(approvalRequestSchema, request.body);
     const fromDashboard = request.client?.kind === 'session';
-    if (fromDashboard && body.confirmTaskId !== taskId) {
-      throw new HttpError(400, `Approving from the dashboard needs the task ID typed as confirmation (${taskId})`);
-    }
+    checkDecisionConfirmation(request, taskId, body.confirmTaskId, `Approving from the dashboard needs the task ID typed as confirmation (${taskId})`);
     return reply.code(201).send(await store.recordApproval(taskId, body, new Date(), fromDashboard ? 'dashboard' : 'cli'));
+  });
+
+  /**
+   * Claude waits here for the user's decision after a submission (MCP wait_for_decision): a long poll
+   * that answers at once when the decision on that stage and version exists, else when it arrives or
+   * after waitMs ('pending'). Token only and read-only: waiting never decides anything.
+   */
+  const decisionWaits = new DecisionWaits(store);
+  // Closing Core does not wait for a long poll: open waits answer 'pending' at once.
+  app.addHook('preClose', async () => decisionWaits.abortAll());
+  app.get('/api/v1/tasks/:taskId/decision', { config: TOKEN_ONLY }, async (request, reply) => {
+    const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId);
+    const query = parse(decisionWaitQuerySchema, request.query);
+    // The client went away (Claude stopped the call): stop waiting.
+    const gone = new AbortController();
+    reply.raw.once('close', () => gone.abort());
+    return decisionWaits.wait({ taskId, ...query, signal: gone.signal });
   });
 
   app.get('/api/v1/tasks/:taskId/transitions', { config: TOKEN_OR_SESSION }, async (request) => {
@@ -715,16 +897,16 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   // --- Evals -------------------------------------------------------------------------------------
   const evals = new EvalStore(store.kysely);
   // The plugin this Core ships with (dist/plugin next to dist/core): what the evals measure.
-  const ownFingerprint = (): JerryFingerprint | null => {
-    const pluginDir = options.dashboardDir === undefined ? null : path.resolve(options.dashboardDir, '..', '..', 'plugin');
-    return pluginDir !== null && fs.existsSync(pluginDir) ? jerryFingerprint(pluginDir) : null;
+  // Skills the user added count too: Claude Code loads them in the eval sessions.
+  const ownFingerprint = async (): Promise<JerryFingerprint | null> => {
+    return ownPluginDir !== null && fs.existsSync(ownPluginDir) ? jerryFingerprint(ownPluginDir, await skills.fingerprints()) : null;
   };
 
   /** A finished eval run, recorded by the CLI runner. */
   app.post('/api/v1/evals/runs', { config: TOKEN_ONLY }, async (request, reply) => reply.code(201).send(await evals.recordRun(parse(evalRunSubmissionSchema, request.body), new Date())));
   app.get('/api/v1/evals/runs', { config: TOKEN_OR_SESSION }, async () => evals.runs());
   app.get('/api/v1/evals/runs/:runId', { config: TOKEN_OR_SESSION }, async (request) => evals.run((request.params as { runId: string }).runId));
-  app.get('/api/v1/evals/status', { config: TOKEN_OR_SESSION }, async () => evals.status(ownFingerprint()));
+  app.get('/api/v1/evals/status', { config: TOKEN_OR_SESSION }, async () => evals.status(await ownFingerprint()));
   app.get('/api/v1/evals/calibration', { config: TOKEN_OR_SESSION }, async () => evals.calibration());
 
   /** The user's baseline choice: the dashboard also needs the run ID typed. */
@@ -767,13 +949,26 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     return reply.code(201).send(await store.reportFixes(taskParam(request), body.summary, await store.resolveOrigin(body.origin), new Date()));
   });
 
-  /** The user waives the review with a reason; the dashboard also needs the typed task ID. */
+  /** The user waives the review with a reason; the dashboard needs the typed task ID only in typed mode. */
   app.post('/api/v1/tasks/:taskId/review/skip', { config: TOKEN_OR_SESSION }, async (request) => {
     const taskId = taskParam(request);
     const body = parse(reviewSkipRequestSchema, request.body);
     const fromDashboard = request.client?.kind === 'session';
-    if (fromDashboard && body.confirmTaskId?.trim().toUpperCase() !== taskId) throw new HttpError(400, `Type ${taskId} to confirm waiving the review`);
+    checkDecisionConfirmation(request, taskId, body.confirmTaskId, `Type ${taskId} to confirm waiving the review`);
     return store.skipReview(taskId, body.reason, new Date(), fromDashboard ? 'dashboard' : 'cli');
+  });
+
+  /**
+   * The user re-runs the final checks of a task waiting in FINAL_REPORT; Core sets DONE if they pass.
+   * User only: the CLI token (the terminal asked) or a dashboard session with CSRF and Origin, typed
+   * task ID as Settings require. Not an MCP tool, and the hard rules block agents' direct calls.
+   */
+  app.post('/api/v1/tasks/:taskId/final-checks', { config: TOKEN_OR_SESSION }, async (request): Promise<FinalChecksRerun> => {
+    const taskId = taskParam(request);
+    const body = parse(finalChecksRerunRequestSchema, request.body ?? {});
+    const fromDashboard = request.client?.kind === 'session';
+    checkDecisionConfirmation(request, taskId, body.confirmTaskId, `Type ${taskId} to confirm re-running its final checks`);
+    return store.rerunFinalChecks(taskId, new Date(), fromDashboard ? 'dashboard' : 'cli');
   });
 
   /** The task's current implementer assignments; cheap, no Git. */
@@ -805,7 +1000,11 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     return store.planVersions(taskId);
   });
 
-  /** Pause, resume or cancel: user decisions, like approvals (the CLI asks in a terminal, the dashboard asks for the typed ID). */
+  /**
+   * Pause, resume or cancel: user decisions, like approvals (the CLI asks in a terminal). Cancelling
+   * cannot be undone, so the dashboard always needs the typed task ID for it, whatever the decision
+   * confirmation setting says; pause and resume are one click.
+   */
   app.post('/api/v1/tasks/:taskId/transitions', { config: TOKEN_OR_SESSION }, async (request, reply) => {
     const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId);
     const body = parse(taskTransitionRequestSchema, request.body);
@@ -852,6 +1051,37 @@ function identify(request: FastifyRequest, token: string, sessions: BrowserSessi
   return { kind: 'session', session };
 }
 
+/**
+ * Characters the hook bridge puts into Claude's context for a gate answer (apps/hook-bridge emit()):
+ * a warning as systemMessage and additionalContext (with the quality feedback), or the feedback
+ * alone. A block goes to Claude as the hook's error, not as context, and is not counted.
+ */
+export function injectedChars(decision: GateDecision): number {
+  const feedback = decision.feedback;
+  if (decision.verdict === 'WARN') {
+    const systemMessage = decorate(EMOJI.warning, `JERRY: ${decision.reason} [${decision.ruleId}]`);
+    const additionalContext = `${decorate(EMOJI.warning, `JERRY warning: ${decision.reason} [${decision.ruleId}]`)}${feedback === undefined ? '' : `\n${feedback}`}`;
+    return systemMessage.length + additionalContext.length;
+  }
+  return decision.verdict === 'PASS' && feedback !== undefined ? feedback.length : 0;
+}
+
+function isLoopback(address: string | undefined): boolean {
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
+}
+
+/** What could not be changed by a usage switch, in words for the dashboard and the CLI. */
+export function collectionProblems(change: UsageCollectionChange): string[] {
+  const problems: string[] = [];
+  if (!change.statusline.ok) problems.push(`Status line: ${change.statusline.error}`);
+  else if (change.statusline.result.change === 'not-jerry') problems.push("Status line: the one in Claude Code's settings is not JERRY's any more; left as it is.");
+  if (!change.telemetry.ok) problems.push(`Telemetry: ${change.telemetry.error}`);
+  else if (change.telemetry.result.change === 'clash') {
+    problems.push(`Telemetry: you configured telemetry yourself (${change.telemetry.result.clashKeys.join(', ')}); JERRY left it as it is and does not collect tokens.`);
+  } else if (change.telemetry.result.change === 'not-jerry') problems.push("Telemetry: the keys in Claude Code's settings are not JERRY's any more; left as they are.");
+  return problems;
+}
+
 /** The path a tool call is about: its target file, else the working directory (resolved on disk). */
 function relevantPath(toolInput: Record<string, unknown>, cwd: string): string {
   const target = toolInput['file_path'] ?? toolInput['notebook_path'];
@@ -888,6 +1118,24 @@ function sameRepo(a: string, b: string): boolean {
   return comparablePath(a, a, process.platform) === comparablePath(b, b, process.platform);
 }
 
+/** Projects as `jerry project list` and the dashboard show them. */
+async function projectSummaries(store: StateStore, projects: readonly Project[]): Promise<ProjectSummary[]> {
+  const snapshot = store.snapshot();
+  const activity = await store.lastActivityByRepository();
+  return projects.map((project): ProjectSummary => {
+    const key = comparablePath(project.repoRoot, project.repoRoot, process.platform);
+    const tasks = snapshot.tasks.filter((task) => isComparableInside(comparablePath(task.repoRoot, task.repoRoot, process.platform), key));
+    return {
+      ...project,
+      effectiveReviewMode: store.effectiveReviewModeAt(project.repoRoot),
+      tasks: tasks.length,
+      openTasks: tasks.filter((task) => !isTerminal(task.state)).length,
+      lastActivityAt: [...activity.entries()].filter(([root]) => isComparableInside(root, key)).map(([, at]) => at).sort().at(-1) ?? null,
+      exists: fs.existsSync(project.repoRoot),
+    };
+  });
+}
+
 const NO_ACTIVITY = { activity: { sessionCount: 0, lastSessionId: null, lastActivityAt: null, lastSessionEndedAt: null }, lastCheckpoint: null };
 
 /**
@@ -907,6 +1155,14 @@ async function qualityFeedback(store: StateStore, sessionId: string, now: Date):
   return [decorate(EMOJI.finding, `JERRY quality: ${lines.length} new finding(s) in your changes (only changed lines are checked):`), ...lines, 'Fix them within the approved scope, or tell the user why not; list_findings lists all open ones. The user dismisses findings, not you.'].join('\n');
 }
 
+/**
+ * Whether the accepted latest report went to independent review; null until it is accepted.
+ * Acceptances made before review became optional carry no choice: they always went to review.
+ */
+function reviewRequested(decision: ApprovalRecord | null): boolean | null {
+  return decision?.decision === 'APPROVED' ? (decision.review ?? true) : null;
+}
+
 async function summarize(store: StateStore, tasks: readonly Task[]): Promise<TaskSummary[]> {
   const [activity, reports, checks, findingCounts, testRuns] = await Promise.all([store.taskActivity(), store.latestReports(), store.latestCompletionChecks(), store.findingCounts(), store.latestTestRuns()]);
   const summaries: TaskSummary[] = [];
@@ -916,19 +1172,22 @@ async function summarize(store: StateStore, tasks: readonly Task[]): Promise<Tas
     const open = !isTerminal(task.state);
     const analyses = open ? await store.analysesOf(task.taskId) : [];
     const agentRuns = open ? await store.agentRunsOf(task.taskId) : [];
+    const decision = report === null ? null : store.reportDecision(report);
     summaries.push({
       ...task,
       planDecision: store.planDecision(task.taskId),
       finalCheck: checks.get(task.taskId) ?? null,
       ...(activity.get(task.taskId) ?? NO_ACTIVITY),
       lastReport: report,
-      reportDecision: report === null ? null : store.reportDecision(report),
+      reportDecision: decision,
       analyses,
       agentRuns,
       // Informational: it never blocks an approval.
       planGrade: open ? gradePlan({ planVersion: task.plan.version, document: task.plan.document, analyses, agentRuns, caseInsensitive: process.platform === 'win32' }) : null,
       findings: findingCounts.get(task.taskId) ?? null,
       lastTestRun: testRuns.get(task.taskId) ?? null,
+      reviewRequested: reviewRequested(decision),
+      effectiveReviewMode: store.effectiveReviewModeAt(task.repoRoot),
     });
   }
   return summaries;

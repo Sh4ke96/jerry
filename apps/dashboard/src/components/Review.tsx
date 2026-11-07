@@ -4,7 +4,8 @@ import { defineComponent, onMounted, ref, watch, type PropType } from 'vue';
 import { api } from '../api';
 import { formatTime } from '../format';
 import { ATTENTION, LIST } from '../lib/classes';
-import { handleError, perform } from '../state';
+import { decisionConfirmation } from '../settings';
+import { handleError, perform, state as dashboard } from '../state';
 import { ConfirmDialog } from './ConfirmDialog';
 import { Emoji } from './Emoji';
 import { StatusBadge } from './StatusBadge';
@@ -174,6 +175,7 @@ export const ReviewPanel = defineComponent({
             <ConfirmDialog
               title={pending.value === 'waive' ? `Waive the review of ${props.task.taskId}` : `${pending.value === 'approve-fixes' ? 'Approve' : 'Reject'} the fix plan of ${props.task.taskId}`}
               expected={props.task.taskId}
+              mode={decisionConfirmation(dashboard.settings)}
               confirmLabel={pending.value === 'waive' ? 'Waive review' : pending.value === 'approve-fixes' ? 'Approve fix plan' : 'Reject fix plan'}
               tone={pending.value === 'approve-fixes' ? 'primary' : 'danger'}
               busy={busy.value}

@@ -18,6 +18,7 @@ import { BrowserSessions } from './auth.js';
 import { drainSpool, importLegacyGateLog } from './events.js';
 import { StateStore } from './state-store.js';
 import { QualityScheduler } from './quality-scheduler.js';
+import { drainUsageSpool, UsageStore } from './usage-store.js';
 
 const SPOOL_DRAIN_INTERVAL_MS = 15_000;
 const RETENTION_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -66,10 +67,14 @@ async function main(): Promise<void> {
   const debounce = Number(process.env['JERRY_QUALITY_DEBOUNCE_MS']);
   const quality = new QualityScheduler({ store, git: store.gitReader, ...(Number.isInteger(debounce) && debounce >= 0 && debounce <= 60_000 ? { debounceMs: debounce } : {}) });
   const retentionDays = resolveRetentionDays();
+  const usage = new UsageStore(store, startedAt);
   const createApp = (): FastifyInstance =>
     buildCoreApp({
       quality,
       retentionDays,
+      usage,
+      // Claude Code's telemetry goes to the configured port; with any free port (0), to the one bound.
+      telemetryPort: () => (configuredPort === 0 ? boundPort : configuredPort),
       token,
       store,
       jerryHome: home,
@@ -92,9 +97,10 @@ async function main(): Promise<void> {
       while ((await drainSpool(home, store, evaluate)) > 0) {
         // keep draining in batches until the spool is empty
       }
+      await drainUsageSpool(home, usage);
       const removed = await store.applyRetention(new Date(), retentionDays);
-      if (removed.events + removed.sessions > 0) {
-        process.stdout.write(`Retention (${retentionDays} days): removed ${removed.events} events and ${removed.sessions} sessions\n`);
+      if (removed.events + removed.sessions + removed.usage > 0) {
+        process.stdout.write(`Retention (${retentionDays} days): removed ${removed.events} events, ${removed.sessions} sessions and ${removed.usage} usage rows\n`);
       }
     } catch (error) {
       process.stderr.write(`Upkeep failed: ${error instanceof Error ? error.message : String(error)}\n`);
@@ -102,7 +108,7 @@ async function main(): Promise<void> {
   };
   let upkeepRunning: Promise<void> = upkeep();
   const spoolTimer = setInterval(() => {
-    upkeepRunning = upkeepRunning.then(() => drainSpool(home, store, evaluate).then(() => undefined, (error: unknown) => {
+    upkeepRunning = upkeepRunning.then(() => drainSpool(home, store, evaluate).then(() => drainUsageSpool(home, usage)).then(() => undefined, (error: unknown) => {
       process.stderr.write(`Spool drain failed: ${error instanceof Error ? error.message : String(error)}\n`);
     }));
   }, SPOOL_DRAIN_INTERVAL_MS);

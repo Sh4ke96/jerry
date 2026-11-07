@@ -204,15 +204,42 @@ describe('hard rules: always blocked, with or without a plan, outside projects t
     expect(evaluateGate(shell('node dist/cli/jerry.mjs core stop'), context()).ruleId).toBe('hard.user-only-command');
     expect(evaluateGate(shell('jerry uninstall --purge-data'), context()).ruleId).toBe('hard.user-only-command');
     expect(evaluateGate(shell('node dist/cli/jerry.mjs ui --print-url'), context()).ruleId).toBe('hard.user-only-command');
-    for (const action of ['pause', 'resume', 'cancel']) {
+    for (const action of ['pause', 'resume', 'cancel', 'recheck']) {
       expect(evaluateGate(shell(`jerry task ${action} JRY-0001`), context()).ruleId, action).toBe('hard.user-only-command');
+    }
+    // Re-running the final checks can set DONE: the user's decision, in every spelling of the CLI.
+    for (const command of ['node dist/cli/jerry.mjs task recheck JRY-0001', 'jerry.cmd TASK  RECHECK JRY-0001', 'jerry.ps1 task recheck jry-0001']) {
+      expect(evaluateGate(shell(command), context()).ruleId, command).toBe('hard.user-only-command');
+      expect(evaluateGate(shell(command), notAdded()).ruleId, command).toBe('hard.user-only-command');
     }
     for (const command of ['jerry project add .', 'jerry project add', 'node dist/cli/jerry.mjs project remove D:/Work/Repo', 'jerry.cmd PROJECT  ADD', 'jerry data prune --done-older-than 30', 'jerry data forget D:/Work/Repo', 'jerry repo include .']) {
       expect(evaluateGate(shell(command), context()).ruleId, command).toBe('hard.user-only-command');
       expect(evaluateGate(shell(command), notAdded()).ruleId, command).toBe('hard.user-only-command');
     }
-    // Reading projects and data usage is not a user-only action.
-    for (const command of ['jerry project list', 'jerry data', 'jerry data --json']) expect(evaluateGate(shell(command), context()).verdict, command).not.toBe('DENY');
+    // Changing a setting is the user's decision too.
+    for (const command of ['jerry settings set review.mode required', 'jerry settings set review.mode inherit --project .', 'node dist/cli/jerry.mjs settings set qa.language en', 'jerry.cmd SETTINGS  SET qa.language pl']) {
+      expect(evaluateGate(shell(command), context()).ruleId, command).toBe('hard.user-only-command');
+      expect(evaluateGate(shell(command), notAdded()).ruleId, command).toBe('hard.user-only-command');
+    }
+    // Turning JERRY's status line on or off edits the Claude Code settings: the user's decision.
+    for (const command of ['jerry statusline enable', 'jerry statusline disable', 'node dist/cli/jerry.mjs statusline enable', 'jerry.cmd STATUSLINE  DISABLE']) {
+      expect(evaluateGate(shell(command), context()).ruleId, command).toBe('hard.user-only-command');
+      expect(evaluateGate(shell(command), notAdded()).ruleId, command).toBe('hard.user-only-command');
+    }
+    // Turning usage collection (status line and telemetry) on or off edits them too.
+    for (const command of ['jerry usage enable', 'jerry usage disable', 'node dist/cli/jerry.mjs usage enable', 'jerry.cmd USAGE  DISABLE', 'jerry.ps1 usage enable']) {
+      expect(evaluateGate(shell(command), context()).ruleId, command).toBe('hard.user-only-command');
+      expect(evaluateGate(shell(command), notAdded()).ruleId, command).toBe('hard.user-only-command');
+    }
+    // Adding, switching, updating and removing a Claude Code skill is the user's decision.
+    for (const command of ['jerry skill add https://github.com/acme/skills/tree/main/pdf', 'jerry skill enable pdf', 'jerry skill disable pdf', 'node dist/cli/jerry.mjs skill update pdf', 'jerry.cmd SKILL  REMOVE pdf', 'jerry.ps1 skill add ./my-skill']) {
+      expect(evaluateGate(shell(command), context()).ruleId, command).toBe('hard.user-only-command');
+      expect(evaluateGate(shell(command), notAdded()).ruleId, command).toBe('hard.user-only-command');
+    }
+    // Listing and showing skills is read-only.
+    for (const command of ['jerry skill list', 'jerry skill show pdf', 'node dist/cli/jerry.mjs skill list --json']) expect(evaluateGate(shell(command), context()).verdict, command).not.toBe('DENY');
+    // Reading projects, data usage, settings, the status line and the usage state is not a user-only action.
+    for (const command of ['jerry project list', 'jerry data', 'jerry data --json', 'jerry settings', 'jerry settings --json', 'jerry settings show', 'jerry statusline status', 'jerry statusline status --json', 'jerry usage', 'jerry usage status', 'jerry usage status --json', 'jerry data usage']) expect(evaluateGate(shell(command), context()).verdict, command).not.toBe('DENY');
     expect(evaluateGate(shell('jerry task show JRY-0001'), context()).verdict).toBe('PASS');
     expect(evaluateGate(shell('jerry task list'), context()).verdict).toBe('PASS');
     expect(evaluateGate(shell('node dist/cli/jerry.mjs task list --all'), context()).verdict).toBe('PASS');
@@ -220,6 +247,7 @@ describe('hard rules: always blocked, with or without a plan, outside projects t
     expect(evaluateGate(shell('jerry repo scan; rm -rf src'), context()).verdict).not.toBe('PASS');
     expect(evaluateGate(shell('curl -c c.txt "http://127.0.0.1:47823/ui/login?code=abc"'), context()).ruleId).toBe('hard.core-api');
     expect(evaluateGate(shell('curl -X POST http://127.0.0.1:5555/api/v1/tasks/JRY-0001/approvals'), context(approved)).ruleId).toBe('hard.core-api');
+    expect(evaluateGate(shell('curl -X POST http://127.0.0.1:5555/api/v1/tasks/JRY-0001/final-checks'), context(approved)).ruleId).toBe('hard.core-api');
   });
 
   it('blocks commands that reference JERRY data, even read-only ones', () => {
@@ -316,6 +344,28 @@ describe('subagents', () => {
     expect(evaluateGate({ ...write('src/a.ts'), agentId: 'imp' }, ctx)).toMatchObject({ verdict: 'PASS', ruleId: 'monitor.in-approved-scope' });
     // Hard rules still come first.
     expect(evaluateGate({ ...shell('git commit -am x'), agentId: 'rev' }, ctx).verdict).toBe('DENY');
+  });
+
+  it('passes an added skill in its states, warns outside them, and ignores skills JERRY does not start', () => {
+    const skill = (name: unknown, cwd = REPO): GateCheckRequest => ({ sessionId: 's1', cwd, toolName: 'Skill', toolInput: { skill: name, args: 'x' }, toolUseId: null, agentId: null });
+    const states = (name: string) => (name === 'release-notes' ? (['CODE_REVIEW', 'REVERIFICATION'] as const) : name === 'unassigned' ? ([] as const) : null);
+    const inReview = context(emptyState(), { skillStates: states, openTasks: () => [{ taskId: 'JRY-0001', state: 'CODE_REVIEW' }] });
+    const implementing = context(emptyState(), { skillStates: states, openTasks: () => [{ taskId: 'JRY-0001', state: 'IMPLEMENTATION' }] });
+
+    expect(evaluateGate(skill('release-notes'), inReview)).toMatchObject({ verdict: 'PASS', ruleId: 'monitor.skill-in-state', taskId: 'JRY-0001', repoRoot: REPO });
+    expect(evaluateGate(skill('/release-notes'), inReview)).toMatchObject({ verdict: 'PASS', ruleId: 'monitor.skill-in-state' });
+    expect(evaluateGate(skill('release-notes'), implementing)).toMatchObject({ verdict: 'WARN', ruleId: 'monitor.skill-out-of-state', taskId: 'JRY-0001', reason: expect.stringContaining('CODE_REVIEW, REVERIFICATION') });
+    expect(evaluateGate(skill('release-notes'), context(emptyState(), { skillStates: states }))).toMatchObject({ verdict: 'WARN', reason: expect.stringContaining('no open task') });
+    expect(evaluateGate(skill('unassigned'), inReview)).toMatchObject({ verdict: 'WARN', reason: expect.stringContaining('no task state yet') });
+    expect(evaluateGate(skill('pdf'), implementing)).toMatchObject({ verdict: 'PASS', ruleId: 'monitor.skill' });
+    expect(evaluateGate(skill('jerry:review'), implementing).verdict).toBe('PASS');
+    expect(evaluateGate(skill(undefined), implementing)).toMatchObject({ verdict: 'PASS', ruleId: 'tool.not-guarded' });
+    expect(evaluateGate(skill('release-notes'), context(emptyState(), { skillStates: states, isMonitored: () => false }))).toMatchObject({ verdict: 'PASS', ruleId: 'monitor.not-a-project' });
+    expect(evaluateGate(skill('release-notes', 'C:/Temp'), implementing)).toMatchObject({ verdict: 'PASS', ruleId: 'monitor.outside-repository' });
+  });
+
+  it('keeps assigning skills to task states a user-only command', () => {
+    expect(evaluateGate(shell('jerry skill states release-notes CODE_REVIEW'), context())).toMatchObject({ verdict: 'DENY', ruleId: 'hard.user-only-command' });
   });
 
   it('warns before a fourth concurrent subagent, and never blocks one', () => {

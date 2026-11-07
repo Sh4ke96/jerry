@@ -1,7 +1,7 @@
 // Builds a versioned JERRY release package:
 //   dist/release/jerry-<version>/        cli, core (with dashboard), plugin, evals, manifest.json, SHA256SUMS, RELEASE-NOTES.md
 //   dist/release/jerry-<version>.tar.gz  the same, as one archive, with its .sha256 next to it
-//   dist/release/jerry-<version>/desktop/ the optional JERRY Desktop installer, when built
+//   dist/release/jerry-<version>/desktop/ the optional Jerry desktop app installer, when built
 // Usage: node scripts/release.mjs [--skip-build] [--with-desktop] [--dist <dir>]
 // The release never contains source maps, tests, the user's data or anything from JERRY_HOME.
 import { createHash } from 'node:crypto';
@@ -21,7 +21,7 @@ function option(flag) {
 // --dist <dir> builds from (and into) another directory; the tests use it with a staged copy.
 const dist = path.resolve(option('--dist') ?? path.join(root, 'dist'));
 const withDesktop = process.argv.includes('--with-desktop');
-const DESKTOP_INSTALLER = /^JERRY-Desktop-(.+)-x64-setup\.exe$/;
+const DESKTOP_INSTALLER = /^Jerry-(.+)-x64-setup\.exe$/;
 
 function fail(message) {
   console.error(`release: ${message}`);
@@ -40,22 +40,22 @@ const pluginVersion = JSON.parse(fs.readFileSync(path.join(root, 'claude-plugin'
 if (pluginVersion !== version) fail(`the plugin manifest says ${pluginVersion}, JERRY_VERSION says ${version}; make them equal`);
 if (!/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(version)) fail(`${version} is not a semantic version`);
 
-// JERRY Desktop is optional: --with-desktop builds it (Rust and the C++ Build Tools are needed);
+// Jerry desktop app is optional: --with-desktop builds it (Rust and the C++ Build Tools are needed);
 // otherwise an installer already in dist/desktop is included, and without one the release has none.
 if (withDesktop) {
   const cargoBin = path.join(process.env.USERPROFILE ?? process.env.HOME ?? '', '.cargo', 'bin');
   const env = { ...process.env, PATH: fs.existsSync(cargoBin) ? `${cargoBin}${path.delimiter}${process.env.PATH ?? ''}` : process.env.PATH };
   const desktop = spawnSync('corepack pnpm --filter @jerry/desktop build', { cwd: root, stdio: 'inherit', windowsHide: true, shell: true, env });
-  if (desktop.status !== 0) fail('the JERRY Desktop build failed');
+  if (desktop.status !== 0) fail('the Jerry desktop app build failed');
 }
 const desktopConfig = path.join(root, 'apps', 'desktop', 'src-tauri', 'tauri.conf.json');
 if (fs.existsSync(desktopConfig)) {
   const desktopVersion = JSON.parse(fs.readFileSync(desktopConfig, 'utf8')).version;
-  if (desktopVersion !== version) fail(`JERRY Desktop says ${desktopVersion}, JERRY_VERSION says ${version}; make them equal`);
+  if (desktopVersion !== version) fail(`Jerry desktop app says ${desktopVersion}, JERRY_VERSION says ${version}; make them equal`);
 }
 // 'pnpm build' empties dist/, so without dist/desktop the installer is taken straight from Tauri's
 // bundle folder (only for the repository's own dist; --dist builds use exactly what they were given).
-const TAURI_INSTALLER = /^JERRY Desktop_(.+)_x64-setup\.exe$/;
+const TAURI_INSTALLER = /^Jerry_(.+)_x64-setup\.exe$/;
 const tauriBundleDir = path.join(root, 'apps', 'desktop', 'src-tauri', 'target', 'release', 'bundle', 'nsis');
 const desktopDir = path.join(dist, 'desktop');
 const fromDist = fs.existsSync(desktopDir)
@@ -73,10 +73,10 @@ const fromBundle =
     : [];
 const found = fromDist.length > 0 ? fromDist : fromBundle;
 const stale = found.filter((installer) => installer.version !== version);
-if (stale.length > 0) fail(`found a JERRY Desktop installer of another version (${stale.map((installer) => path.basename(installer.file)).join(', ')}); rebuild it with --with-desktop`);
+if (stale.length > 0) fail(`found a Jerry desktop app installer of another version (${stale.map((installer) => path.basename(installer.file)).join(', ')}); rebuild it with --with-desktop`);
 const desktopSource = found[0]?.file;
-const desktopInstaller = desktopSource === undefined ? undefined : `JERRY-Desktop-${version}-x64-setup.exe`;
-if (withDesktop && desktopInstaller === undefined) fail('the JERRY Desktop build left no installer in dist/desktop');
+const desktopInstaller = desktopSource === undefined ? undefined : `Jerry-${version}-x64-setup.exe`;
+if (withDesktop && desktopInstaller === undefined) fail('the Jerry desktop app build left no installer in dist/desktop');
 
 const name = `jerry-${version}`;
 const releaseDir = path.join(dist, 'release');
@@ -94,9 +94,9 @@ if (desktopSource !== undefined && desktopInstaller !== undefined) {
 }
 const desktopNotes =
   desktopInstaller === undefined
-    ? ['## 🖥️ JERRY Desktop', '', 'Not included in this package. Build it with `pnpm release --with-desktop` (needs Rust and the C++ Build Tools).', '']
+    ? ['## 🖥️ Jerry, the desktop app', '', 'Not included in this package. Build it with `pnpm release --with-desktop` (needs Rust and the C++ Build Tools).', '']
     : [
-        '## 🖥️ JERRY Desktop (optional)',
+        '## 🖥️ Jerry, the desktop app (optional)',
         '',
         `\`desktop/${desktopInstaller}\` installs the desktop app for your Windows user, no admin needed: the dashboard in its own`,
         'window, a tray icon with JERRY\'s state, notifications and Start/Stop Core. JERRY works without it. The installer is',

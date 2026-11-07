@@ -38,6 +38,7 @@ export async function showDataUsage(options: { json: boolean }): Promise<void> {
   console.log(`  Backups    ${formatBytes(usage.backups.bytes).padStart(9)}  ${usage.backups.count} file(s) in ${usage.backups.dir}`);
   console.log(`  Logs       ${formatBytes(usage.logs.bytes).padStart(9)}  ${usage.logs.dir}`);
   console.log(`  Events and sessions older than ${usage.retentionDays} days are removed automatically.`);
+  console.log('  Claude usage (tokens, cost, plan limits) is kept as long as events and counts under them.');
   console.log('');
   console.log(`  ${'What'.padEnd(13)} ${'Rows'.padStart(10)} ${'Size'.padStart(10)}`);
   for (const category of usage.categories) {

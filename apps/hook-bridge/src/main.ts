@@ -179,7 +179,9 @@ async function registerSession(input: SessionStartInput): Promise<SessionRegistr
   const body = await requestCore(info, {
     method: 'POST',
     path: '/api/v1/sessions',
-    body: { sessionId: input.session_id, cwd: input.cwd, source: input.source ?? null },
+    // Claude Code sets CLAUDE_CODE_ENTRYPOINT (cli, claude-vscode, …) for its hooks; its metrics do
+    // not carry it, so Core attributes a session's telemetry by this registration.
+    body: { sessionId: input.session_id, cwd: input.cwd, source: input.source ?? null, entrypoint: process.env['CLAUDE_CODE_ENTRYPOINT'] ?? null },
     timeoutMs: CORE_TIMEOUT_MS,
   });
   if (!isSessionRegistrationResponse(body)) throw new Error('Core answered the session registration with an unexpected shape');
@@ -362,8 +364,26 @@ function resumeContext(openTasks: readonly OpenTask[]): string[] {
   return lines;
 }
 
+/** The share report waits at most this long; the context is already written by then. */
+const SHARE_TIMEOUT_MS = 300;
+
+/**
+ * JERRY's share of Claude's context: the length of the session-start context, reported after it is
+ * written (Core keeps it only for a session it registered in a project). Never fails.
+ */
+async function reportSessionStartShare(sessionId: string, chars: number): Promise<void> {
+  try {
+    const info = readCoreRuntimeInfo(resolveJerryHome());
+    await requestCore(info, { method: 'POST', path: '/api/v1/usage/jerry-share', body: { kind: 'sessionStart', chars, origin: { sessionId } }, timeoutMs: SHARE_TIMEOUT_MS });
+  } catch {
+    // Only a statistic: losing it never matters.
+  }
+}
+
 async function sessionStart(raw: string): Promise<void> {
   let context: string;
+  /** Set when Core registered the session in a project: then the context counts toward JERRY's share. */
+  let counted: string | null = null;
   try {
     const input: unknown = JSON.parse(raw);
     if (!isSessionStartInput(input)) throw new Error('unrecognised SessionStart input');
@@ -379,6 +399,7 @@ async function sessionStart(raw: string): Promise<void> {
       registration = await registerSessionAfterAutostart(input);
     }
     context = monitoredSessionContext(registration);
+    if (registration.monitored !== false && !registration.excluded) counted = input.session_id;
   } catch (error) {
     const cause = error instanceof Error ? error.message : String(error);
     context = `${decorate(EMOJI.warning, `JERRY: Core unavailable (${cause}); edits are checked against the plan once it is back.`)} ${decorate(EMOJI.security, HARD_RULES_TEXT)}`;
@@ -389,6 +410,7 @@ async function sessionStart(raw: string): Promise<void> {
     }
   }
   writeOut(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: context } }));
+  if (counted !== null) await reportSessionStartShare(counted, context.length);
   proceed();
 }
 

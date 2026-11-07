@@ -1,6 +1,6 @@
 import path from 'node:path';
 import readline from 'node:readline/promises';
-import { approvalRecordSchema, finalReportSchema, planSchema, REVIEWER_ROLES, reviewStateSchema, type ReviewState, taskDetailSchema, taskSchema, taskWithDecisionSchema, workflowTransitionSchema, type ApprovalRecord, type ImplementationReportRecord, type Task, type TaskDetail } from '@jerry/contracts';
+import { approvalRecordSchema, type CompletionCheck, finalChecksRerunSchema, finalReportSchema, planSchema, REVIEWER_ROLES, reviewStateSchema, type ReviewState, taskDetailSchema, taskSchema, taskWithDecisionSchema, workflowTransitionSchema, type ApprovalRecord, type ImplementationReportRecord, type Task, type TaskDetail } from '@jerry/contracts';
 import { readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
 import { diffPlans, isEmptyDiff, isTerminal, STATE_LABELS } from '@jerry/workflow';
 import { z } from 'zod';
@@ -124,6 +124,10 @@ export async function showFinalReport(taskId: string, options: { json: boolean }
     out(`\n${mark('warning', 'Limitations')}`);
     for (const limitation of report.limitations) out(`  - ${limitation}`);
   }
+  if (report.laterWork.length > 0) {
+    out(`\n${mark('info', 'Changed later by other tasks (under their approved plans; not a block)')}`);
+    for (const work of report.laterWork) out(`  ${work.taskId}: ${work.files.join(', ')}`);
+  }
   out(`\n${mark(report.definitionOfDone.passed ? 'done' : 'fail', `Definition of Done: ${report.definitionOfDone.passed ? 'met' : 'not met'}`)}`);
   for (const item of report.definitionOfDone.items) out(`  - ${item}`);
   for (const condition of report.definitionOfDone.evidence.filter((entry) => entry.blocking)) out(`  ${resultMark(condition.passed ? 'PASS' : 'FAIL', condition.passed ? 'ok  ' : 'FAIL')} ${condition.detail}`);
@@ -246,7 +250,9 @@ async function fetchTask(taskId: string): Promise<z.infer<typeof taskWithDecisio
  * interactive terminal and typing the task ID. Claude Code's shell tools have no TTY, so an agent
  * cannot complete this command (and the hard rules block it before it starts).
  */
-export async function decide(options: { taskId: string; stage: 'PLAN' | 'IMPLEMENTATION' | 'REVIEW_FIX'; version: number; decision: ApprovalRecord['decision']; comment: string }): Promise<void> {
+export async function decide(options: { taskId: string; stage: 'PLAN' | 'IMPLEMENTATION' | 'REVIEW_FIX'; version: number; decision: ApprovalRecord['decision']; comment: string; review?: boolean }): Promise<void> {
+  const accepting = options.stage === 'IMPLEMENTATION' && options.decision === 'APPROVED';
+  if (options.review !== undefined && !accepting) throw new Error('--review and --no-review apply only to accepting an implementation (--stage implementation).');
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     throw new Error('Approvals require an interactive terminal (PowerShell or the VS Code terminal). In Git Bash/mintty run it via "winpty".');
   }
@@ -283,12 +289,27 @@ export async function decide(options: { taskId: string; stage: 'PLAN' | 'IMPLEME
 
   const verb = options.decision === 'APPROVED' ? (options.stage === 'IMPLEMENTATION' ? 'accept' : 'approve') : options.stage === 'IMPLEMENTATION' ? 'request changes to' : 'reject';
   const prompt = readline.createInterface({ input: process.stdin, output: process.stdout });
-  const typed = (await prompt.question(`\nType ${task.taskId} to ${verb} ${label}: `)).trim();
-  prompt.close();
-  if (typed !== task.taskId) {
-    console.log(mark('fail', 'Confirmation did not match. Nothing was recorded.'));
-    process.exitCode = 1;
-    return;
+  let review = options.review;
+  try {
+    // Accepting offers independent review: required mode decides for you, optional mode asks.
+    if (accepting) {
+      if (task.effectiveReviewMode === 'required') {
+        if (review === false) throw new Error(`Independent review is required for ${task.repoRoot} (review mode "required"), so ${task.taskId} cannot be accepted without it. Change it with "jerry settings set review.mode" first, or accept with review.`);
+        console.log(`\n${mark('review', 'Review mode is "required" here: the accepted implementation goes to independent code review.')}`);
+        review = true;
+      } else if (review === undefined) {
+        const answer = (await prompt.question('\nSend it to independent code review by three JERRY reviewers first? [y/N] ')).trim().toLowerCase();
+        review = answer === 'y' || answer === 'yes';
+      }
+    }
+    const typed = (await prompt.question(`\nType ${task.taskId} to ${verb} ${label}${accepting ? (review === true ? ' with independent review' : ' without review') : ''}: `)).trim();
+    if (typed !== task.taskId) {
+      console.log(mark('fail', 'Confirmation did not match. Nothing was recorded.'));
+      process.exitCode = 1;
+      return;
+    }
+  } finally {
+    prompt.close();
   }
 
   const record = approvalRecordSchema.parse(
@@ -297,11 +318,15 @@ export async function decide(options: { taskId: string; stage: 'PLAN' | 'IMPLEME
       version: options.version,
       decision: options.decision,
       comment: options.comment,
+      ...(accepting && review !== undefined ? { review } : {}),
     }),
   );
   console.log(mark(record.decision === 'APPROVED' ? 'pass' : 'fail', `${record.decision}: ${record.taskId} ${label} (${record.contentHash}) as ${record.approvalId}`));
-  if (options.stage === 'IMPLEMENTATION' && options.decision === 'APPROVED') {
+  if (accepting && record.review !== false) {
     console.log(mark('review', `${task.taskId} goes to independent code review: three JERRY reviewers check every changed file. "jerry review show ${task.taskId}" follows it; "jerry review skip ${task.taskId}" waives it.`));
+  } else if (accepting) {
+    // Without review the final checks ran with the acceptance.
+    printFinalCheck(taskDetailSchema.parse(await callCore('GET', `/api/v1/tasks/${encodeURIComponent(task.taskId)}`)));
   }
 }
 
@@ -360,13 +385,54 @@ export async function skipReview(taskId: string, options: { reason?: string }): 
 
 /** Core's final checks: DONE, or what keeps the task from it. */
 function printFinalCheck(task: TaskDetail): void {
-  const check = task.finalCheck;
-  if (check === null) return;
-  console.log(`\n${check.passed ? mark('done', `JERRY final checks passed: ${task.taskId} is DONE.`) : mark('fail', `JERRY final checks did not pass: ${task.taskId} stays in final checks. Request changes or cancel the task.`)}`);
+  if (task.finalCheck !== null) printCheck(task.taskId, task.finalCheck);
+}
+
+function printCheck(taskId: string, check: CompletionCheck): void {
+  console.log(
+    `\n${check.passed ? mark('done', `JERRY final checks passed: ${taskId} is DONE.`) : mark('fail', `JERRY final checks did not pass: ${taskId} stays in final checks. Request changes, cancel the task, or re-run the checks later with "jerry task recheck ${taskId}".`)}`,
+  );
   for (const condition of check.conditions) {
     const label = condition.passed ? 'ok  ' : condition.blocking ? 'FAIL' : 'note';
     console.log(`  ${resultMark(condition.passed ? 'PASS' : condition.blocking ? 'FAIL' : 'WARN', label)} ${condition.detail}`);
   }
+  for (const work of check.laterWork) console.log(`  ${mark('info', `changed later by ${work.taskId}: ${work.files.join(', ')}`)}`);
+}
+
+/**
+ * Re-running the final checks is the user's decision: an interactive terminal and a y/N answer.
+ * Core runs the same checks as at acceptance and sets DONE itself when they pass.
+ */
+export async function recheckTask(taskId: string): Promise<void> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error('"jerry task recheck" requires an interactive terminal (PowerShell or the VS Code terminal). In Git Bash/mintty run it via "winpty".');
+  }
+  const id = taskId.toUpperCase();
+  const task = taskDetailSchema.parse(await callCore('GET', `/api/v1/tasks/${encodeURIComponent(id)}`));
+  console.log(stateMark(task.state, `${task.taskId}  ${STATE_LABELS[task.state]}  ${task.title}`));
+  if (task.state !== 'FINAL_REPORT') {
+    process.exitCode = 1;
+    console.error(mark('fail', `${task.taskId} is ${STATE_LABELS[task.state]} (${task.state}); final checks can be re-run only while a task waits in final checks.`));
+    return;
+  }
+  if (task.finalCheck !== null) {
+    const blocking = task.finalCheck.conditions.filter((condition) => condition.blocking && !condition.passed);
+    for (const condition of blocking) console.log(`  ${resultMark('FAIL', 'FAIL')} ${condition.detail}`);
+  }
+  const prompt = readline.createInterface({ input: process.stdin, output: process.stdout });
+  let answer: string;
+  try {
+    answer = (await prompt.question(`\nRe-run the final checks of ${task.taskId} now? DONE follows if they pass. [y/N] `)).trim().toLowerCase();
+  } finally {
+    prompt.close();
+  }
+  if (answer !== 'y' && answer !== 'yes') {
+    console.log(mark('info', 'Nothing was changed.'));
+    return;
+  }
+  const result = finalChecksRerunSchema.parse(await callCore('POST', `/api/v1/tasks/${encodeURIComponent(task.taskId)}/final-checks`, {}));
+  printCheck(task.taskId, result.check);
+  if (!result.check.passed) process.exitCode = 1;
 }
 
 /** The report as the user reviews it in a terminal: claims next to what JERRY recorded. */

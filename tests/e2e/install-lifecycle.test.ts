@@ -17,6 +17,8 @@ const EXISTING_SETTINGS = {
   hooks: { Stop: [{ hooks: [{ type: 'command', command: 'echo user-hook' }] }] },
   env: { FOO: 'bar' },
   enabledPlugins: { 'other@elsewhere': false },
+  // The user's own status line: JERRY's replaces it, chains it, and uninstall puts it back.
+  statusLine: { type: 'command', command: 'echo user-status', padding: 1 },
 };
 
 function fingerprintRealProfile(): string {
@@ -96,11 +98,35 @@ describe.skipIf(claude === null)('jerry install / doctor / uninstall (isolated C
 
   it('preserves unrelated Claude settings', () => {
     const current = settings();
-    const { enabledPlugins, extraKnownMarketplaces, ...rest } = current;
-    const { enabledPlugins: originalPlugins, ...originalRest } = EXISTING_SETTINGS;
+    const { enabledPlugins, extraKnownMarketplaces, statusLine, env: settingsEnv, ...rest } = current;
+    const { enabledPlugins: originalPlugins, statusLine: originalStatusLine, env: originalEnv, ...originalRest } = EXISTING_SETTINGS;
     expect(rest).toEqual(originalRest);
+    // Claude Code telemetry to JERRY Core by default: only JERRY's keys are added to the user's env.
+    const telemetry = JSON.parse(fs.readFileSync(path.join(jerryHome, 'config', 'telemetry.json'), 'utf8')) as { key: string; setByJerry: Record<string, string> };
+    expect(settingsEnv).toEqual({ ...originalEnv, ...telemetry.setByJerry });
+    expect(telemetry.setByJerry).toMatchObject({ CLAUDE_CODE_ENABLE_TELEMETRY: '1', OTEL_METRICS_EXPORTER: 'otlp', OTEL_EXPORTER_OTLP_METRICS_PROTOCOL: 'http/json', OTEL_EXPORTER_OTLP_METRICS_HEADERS: `x-jerry-telemetry-key=${telemetry.key}` });
+    expect(telemetry.setByJerry['OTEL_EXPORTER_OTLP_METRICS_ENDPOINT']).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/v1\/metrics$/);
     expect(enabledPlugins).toEqual({ ...originalPlugins, 'jerry@jerry-local': true });
     expect(extraKnownMarketplaces).toHaveProperty('jerry-local');
+    // JERRY's status line by default, with the user's saved to be chained and restored.
+    const script = path.join(jerryHome, 'runtime', 'statusline', 'statusline.mjs');
+    expect(statusLine).toEqual({ type: 'command', command: `node "${script.replaceAll('\\', '/')}"`, padding: 0 });
+    expect(fs.existsSync(script)).toBe(true);
+    expect(JSON.parse(fs.readFileSync(path.join(jerryHome, 'config', 'statusline.json'), 'utf8'))).toMatchObject({ previous: originalStatusLine });
+    expect(fs.readdirSync(path.join(jerryHome, 'backups')).some((name) => /^claude-settings-.*\.json$/.test(name))).toBe(true);
+  });
+
+  it('the installed status line runs and chains the user\'s previous one', () => {
+    const script = path.join(jerryHome, 'runtime', 'statusline', 'statusline.mjs');
+    const input = JSON.stringify({ session_id: 'e2e', cwd: repo, version: '2.1.90', cost: { total_cost_usd: 0.5 } });
+    const result = spawnSync(process.execPath, [script], { input, env: { ...env, JERRY_NO_EMOJI: '1', CLAUDE_CODE_ENTRYPOINT: 'cli' }, encoding: 'utf8', timeout: 10_000, windowsHide: true });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe('user-status\nJERRY · $0.50\n');
+    const status = jerry(['statusline', 'status']);
+    expect(status.exitCode, status.output).toBe(0);
+    expect(status.output).toContain('status line: on');
+    expect(status.output).toContain('echo user-status');
+    expect(status.output).toContain('entrypoint cli');
   });
 
   it('is idempotent', () => {
@@ -149,6 +175,18 @@ describe.skipIf(claude === null)('jerry install / doctor / uninstall (isolated C
 
   it('uninstall is idempotent', () => {
     expect(jerry(['uninstall']).exitCode).toBe(0);
+    expect(settings()['statusLine']).toEqual(EXISTING_SETTINGS.statusLine);
+  });
+
+  it('install --no-statusline leaves the status line alone', () => {
+    const result = jerry(['install', '--no-statusline']);
+    expect(result.exitCode, result.output).toBe(0);
+    expect(result.output).toContain('--no-statusline');
+    expect(settings()['statusLine']).toEqual(EXISTING_SETTINGS.statusLine);
+    expect(fs.existsSync(path.join(jerryHome, 'config', 'statusline.json'))).toBe(false);
+    const removed = jerry(['uninstall']);
+    expect(removed.exitCode, removed.output).toBe(0);
+    expect(settings()['statusLine']).toEqual(EXISTING_SETTINGS.statusLine);
   });
 
   it('--purge-data deletes only what JERRY created in JERRY_HOME', () => {

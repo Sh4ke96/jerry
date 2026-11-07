@@ -13,7 +13,6 @@ const FIELDS = [
   'taskDone',
   'taskBlocked',
   'coreStopped',
-  'sound',
 ];
 let settings = null;
 let saving = false;
@@ -27,11 +26,12 @@ function render() {
   for (const field of FIELDS) {
     $(field).setAttribute('aria-checked', String(Boolean(settings[field])));
   }
-  // The per-type switches only matter while notifications are on.
+  $('sound').value = settings.sound;
+  // The per-type switches and the sound only matter while notifications are on.
   for (const row of document.querySelectorAll('[data-type]')) {
     const off = !settings.notificationsEnabled;
     row.classList.toggle('option--disabled', off);
-    row.querySelector('.switch').disabled = off;
+    row.querySelector('.switch, .select').disabled = off;
   }
   $('test').disabled = false;
 }
@@ -62,9 +62,15 @@ for (const field of FIELDS) {
   });
 }
 
+$('sound').addEventListener('change', () => {
+  if (settings === null) return;
+  save({ ...settings, sound: $('sound').value });
+});
+
 $('test').addEventListener('click', async () => {
   try {
-    await invoke('send_test_notification');
+    // The sound shown in the list, so the test plays it even while the change is being saved.
+    await invoke('send_test_notification', { sound: $('sound').value });
     setMessage('Test notification sent.');
   } catch (error) {
     setMessage(String(error), true);

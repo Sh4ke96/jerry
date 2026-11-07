@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>⚙️ JERRY Desktop settings</title>
+    <title>⚙️ Jerry settings</title>
     <link rel="stylesheet" href="styles.css" />
     <script src="settings.js" defer></script>
   </head>
@@ -17,13 +17,13 @@
       <section class="card" aria-labelledby="startup-title">
         <div class="card-header">
           <h2 class="card-title" id="startup-title">🚀 Startup</h2>
-          <p class="card-description">How JERRY Desktop starts.</p>
+          <p class="card-description">How Jerry starts.</p>
         </div>
         <div class="card-content">
           <div class="option">
             <div class="option-text">
               <label class="label" for="launchWithWindows">Launch with Windows</label>
-              <span class="description">Starts JERRY Desktop in the tray when you sign in.</span>
+              <span class="description">Starts Jerry in the tray when you sign in.</span>
             </div>
             <button type="button" class="switch" role="switch" id="launchWithWindows" aria-checked="false"><span class="switch-thumb"></span></button>
           </div>
@@ -31,7 +31,7 @@
           <div class="option">
             <div class="option-text">
               <label class="label" for="openWindowOnStart">Open the window on start</label>
-              <span class="description">Otherwise JERRY Desktop waits in the tray. Starts with Windows always stay in the tray.</span>
+              <span class="description">Otherwise Jerry waits in the tray. Starts with Windows always stay in the tray.</span>
             </div>
             <button type="button" class="switch" role="switch" id="openWindowOnStart" aria-checked="false"><span class="switch-thumb"></span></button>
           </div>
@@ -41,7 +41,7 @@
       <section class="card" aria-labelledby="notifications-title">
         <div class="card-header">
           <h2 class="card-title" id="notifications-title">🔔 Notifications</h2>
-          <p class="card-description">Windows notifications when something needs you. Click one to open the dashboard.</p>
+          <p class="card-description">Windows notifications when something needs you. Click one while it is on screen to open its task in the dashboard.</p>
         </div>
         <div class="card-content">
           <div class="option">
@@ -98,13 +98,47 @@
           <div class="option" data-type>
             <div class="option-text">
               <label class="label" for="sound">🔊 Sound</label>
-              <span class="description">Play the Windows notification sound.</span>
+              <span class="description">One of the Windows notification sounds. Alarm and call sounds play once.</span>
             </div>
-            <button type="button" class="switch" role="switch" id="sound" aria-checked="false"><span class="switch-thumb"></span></button>
+            <select class="select" id="sound">
+              <option value="None">None</option>
+              <optgroup label="Notification sounds">
+                <option value="Default">Default</option>
+                <option value="IM">IM</option>
+                <option value="Mail">Mail</option>
+                <option value="Reminder">Reminder</option>
+                <option value="SMS">SMS</option>
+              </optgroup>
+              <optgroup label="Alarm sounds">
+                <option value="Alarm">Alarm 1</option>
+                <option value="Alarm2">Alarm 2</option>
+                <option value="Alarm3">Alarm 3</option>
+                <option value="Alarm4">Alarm 4</option>
+                <option value="Alarm5">Alarm 5</option>
+                <option value="Alarm6">Alarm 6</option>
+                <option value="Alarm7">Alarm 7</option>
+                <option value="Alarm8">Alarm 8</option>
+                <option value="Alarm9">Alarm 9</option>
+                <option value="Alarm10">Alarm 10</option>
+              </optgroup>
+              <optgroup label="Call sounds">
+                <option value="Call">Call 1</option>
+                <option value="Call2">Call 2</option>
+                <option value="Call3">Call 3</option>
+                <option value="Call4">Call 4</option>
+                <option value="Call5">Call 5</option>
+                <option value="Call6">Call 6</option>
+                <option value="Call7">Call 7</option>
+                <option value="Call8">Call 8</option>
+                <option value="Call9">Call 9</option>
+                <option value="Call10">Call 10</option>
+              </optgroup>
+            </select>
           </div>
         </div>
         <div class="card-footer">
           <button type="button" class="button button--outline" id="test">Send test notification</button>
+          <span class="description">Plays the chosen sound.</span>
         </div>
       </section>
 
@@ -119,7 +153,7 @@
             <dd id="core-status">…</dd>
             <dt>Core version</dt>
             <dd id="core-version">…</dd>
-            <dt>JERRY Desktop</dt>
+            <dt>Jerry</dt>
             <dd id="app-version">…</dd>
             <dt>JERRY_HOME</dt>
             <dd class="mono" id="core-home">…</dd>

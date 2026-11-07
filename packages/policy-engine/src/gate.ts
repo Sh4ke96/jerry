@@ -1,4 +1,4 @@
-import type { GateCheckRequest, GateDecision } from '@jerry/contracts';
+import type { GateCheckRequest, GateDecision, WorkflowState } from '@jerry/contracts';
 import type { ApprovedPlan } from './approvals.js';
 import { absolutePath, comparablePath, isComparableInside, matchesAnyGlob, relativeInside } from './paths.js';
 import { assessMcpGitUsage } from './mcp.js';
@@ -47,6 +47,13 @@ export interface GateContext {
   implementerCheck?(taskId: string, agentId: string | null, relativePath: string): { ruleId: string; reason: string } | null;
   /** The plugin agent type of a subagent (e.g. "jerry:jerry-security-reviewer"), when known. */
   agentType?(agentId: string): string | null;
+  /**
+   * The task states JERRY starts an added skill in (empty: none assigned), or null when JERRY does
+   * not start that skill (not added through JERRY, switched off or not converted). Absent where unknown.
+   */
+  skillStates?(name: string): readonly WorkflowState[] | null;
+  /** The repository's open tasks and their states. Absent where unknown. */
+  openTasks?(repoRoot: string): ReadonlyArray<{ taskId: string; state: WorkflowState }>;
 }
 
 /** JERRY's read-only roles: analysts and reviewers never write. */
@@ -54,10 +61,12 @@ const READ_ONLY_AGENT = /jerry-[\w-]*-(?:analyst|reviewer)$/;
 
 /**
  * Commands only the user may run. Read-only ones (status, doctor, task list/show, project list, data
- * usage, core status) stay available. Pausing, resuming and cancelling a task are user decisions, and
- * so are adding or removing a project and deleting JERRY's data.
+ * usage, core status, settings, statusline status, usage status) stay available. Pausing, resuming,
+ * cancelling a task and re-running its final checks are user decisions, and so are adding or removing a project, deleting JERRY's data,
+ * changing a setting and turning JERRY's status line or usage collection on or off (they edit the
+ * Claude Code settings).
  */
-const USER_ONLY_JERRY_COMMAND = /\bjerry(?:\.mjs|\.cmd|\.ps1)?\s+(?:approve|reject|install|uninstall|ui|repo\s+(?:exclude|include)|project\s+(?:add|remove)|data\s+(?:prune|forget)|task\s+(?:pause|resume|cancel)|core\s+(?:start|stop)|db\s+restore)\b/i;
+const USER_ONLY_JERRY_COMMAND = /\bjerry(?:\.mjs|\.cmd|\.ps1)?\s+(?:approve|reject|install|uninstall|ui|repo\s+(?:exclude|include)|project\s+(?:add|remove)|data\s+(?:prune|forget)|task\s+(?:pause|resume|cancel|recheck)|core\s+(?:start|stop)|db\s+restore|settings\s+set|statusline\s+(?:enable|disable)|usage\s+(?:enable|disable)|skills?\s+(?:add|enable|disable|update|remove|states))\b/i;
 /** Tools that start a Claude Code subagent. */
 const SUBAGENT_TOOLS: ReadonlySet<string> = new Set(['Task', 'Agent']);
 /** The Core API and the dashboard login: an agent holding a session could approve its own plan. */
@@ -93,6 +102,7 @@ export function evaluateHardRules(action: ToolAction, cwd: string, context: Pick
         : null;
     }
     case 'file-write-unknown':
+    case 'skill':
     case 'not-guarded':
       return null;
   }
@@ -164,6 +174,8 @@ function evaluateMonitoring(action: ToolAction, request: GateCheckRequest, conte
     }
     case 'mcp':
       return decision('PASS', 'monitor.mcp-tool', `${action.server}/${action.tool} does not change Git state`);
+    case 'skill':
+      return monitorSkill(action.name, request.cwd, context);
     case 'file-write-unknown':
       return decision('WARN', 'monitor.unknown-target', `${action.detail}; JERRY could not check it against the approved plan.`);
     case 'file-write':
@@ -173,6 +185,26 @@ function evaluateMonitoring(action: ToolAction, request: GateCheckRequest, conte
     case 'shell-opaque':
       return monitorShell(request.cwd, context, { readOnly: false, reason: `${request.toolName} runs commands JERRY does not classify` });
   }
+}
+
+/**
+ * Added skills are started only by JERRY, in the task states the user assigned them to. A call to
+ * one while no open task of the repository is in those states is warned about and recorded as a
+ * deviation, never blocked: blocking would be a new hard rule.
+ */
+function monitorSkill(name: string | null, cwd: string, context: GateContext): GateDecision {
+  if (name === null) return decision('PASS', 'tool.not-guarded', 'Skill call without a skill name');
+  const states = context.skillStates?.(name) ?? null;
+  if (states === null) return decision('PASS', 'monitor.skill', `${name} is not a skill JERRY starts`);
+  const repoRoot = context.findRepoRoot(absolutePath(context.realPath(absolutePath(cwd, cwd, context.platform)), cwd, context.platform));
+  if (repoRoot === null) return decision('PASS', 'monitor.outside-repository', `Working directory is not inside a Git repository (skill ${name})`);
+  if (!context.isMonitored(repoRoot)) return decision('PASS', 'monitor.not-a-project', `${repoRoot} is not added to JERRY; only hard rules apply there`, null, repoRoot);
+  const open = context.openTasks?.(repoRoot) ?? [];
+  const match = open.find((task) => states.includes(task.state));
+  if (match !== undefined) return decision('PASS', 'monitor.skill-in-state', `JERRY starts ${name} in ${states.join(', ')}; ${match.taskId} is in ${match.state}`, match.taskId, repoRoot);
+  const assigned = states.length === 0 ? 'no task state yet (the user assigns them on its page in the JERRY dashboard)' : states.join(', ');
+  const now = open.length === 0 ? 'there is no open task here' : `the open tasks here are in ${[...new Set(open.map((task) => task.state))].join(', ')}`;
+  return decision('WARN', 'monitor.skill-out-of-state', `${name} is a skill JERRY starts only while a task is in ${assigned}, and ${now}. It proceeds and is recorded as a deviation; use it only when JERRY's next action names it.`, open[0]?.taskId ?? null, repoRoot);
 }
 
 function monitorWrite(target: string, cwd: string, context: GateContext, agentId: string | null = null): GateDecision {

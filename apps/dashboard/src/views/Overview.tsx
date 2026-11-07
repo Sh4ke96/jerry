@@ -3,15 +3,20 @@ import { STATE_LABELS } from '@jerry/workflow';
 import { computed, defineComponent } from 'vue';
 import { Emoji, resultEmoji } from '../components/Emoji';
 import { StatusBadge, toneOf } from '../components/StatusBadge';
+import { UsageCard } from '../components/UsageCard';
 import { Button } from '../components/ui/button';
 import { Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '../components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { eventReason, eventTarget, formatDuration, formatTime, inImplementation, shortPath, startOfToday, waitsForUser } from '../format';
 import { ATTENTION } from '../lib/classes';
+import { projectName, versionsText } from '../lib/tasks';
+import { linkTo, navigate, taskHref, type Route } from '../router';
 import { state } from '../state';
+import { taskFilters } from './Tasks';
 
 /** Cards that lead to another view also answer Enter and Space. */
-function linkTo(go: () => void) {
+function cardLinkTo(target: Route) {
+  const go = (): void => navigate(target);
   return {
     role: 'button',
     tabindex: 0,
@@ -27,8 +32,7 @@ function linkTo(go: () => void) {
 
 export const Overview = defineComponent({
   name: 'Overview',
-  emits: { navigate: (view: 'tasks' | 'timeline') => typeof view === 'string' },
-  setup(_props, { emit }) {
+  setup() {
     const today = computed(() => state.events.filter((event) => event.timestamp >= startOfToday()));
     const deviationsToday = computed(() => today.value.filter((event) => event.verdict === 'WARN').length);
     const blockedToday = computed(() => today.value.filter((event) => event.verdict === 'DENY').length);
@@ -63,7 +67,7 @@ export const Overview = defineComponent({
                 </span>
               </CardFooter>
             </Card>
-            <Card class={['@container/card', cardLink]} {...linkTo(() => emit('navigate', 'tasks'))}>
+            <Card class={['@container/card', cardLink]} {...cardLinkTo({ section: 'tasks' })}>
               <CardHeader>
                 <CardDescription>
                   <Emoji symbol={EMOJI.task} />
@@ -73,7 +77,7 @@ export const Overview = defineComponent({
               </CardHeader>
               <CardFooter class={['text-sm', waiting.value.length > 0 ? 'font-medium text-amber-700 dark:text-amber-400' : 'text-muted-foreground']}>{waiting.value.length} waiting for your decision</CardFooter>
             </Card>
-            <Card class={['@container/card', cardLink]} {...linkTo(() => emit('navigate', 'timeline'))}>
+            <Card class={['@container/card', cardLink]} {...cardLinkTo({ section: 'timeline' })}>
               <CardHeader>
                 <CardDescription>
                   <Emoji symbol={blockedToday.value > 0 ? EMOJI.blocked : deviationsToday.value > 0 ? EMOJI.warning : EMOJI.pass} />
@@ -95,26 +99,40 @@ export const Overview = defineComponent({
                   Waiting for your decision
                 </CardTitle>
                 <CardAction>
-                  <Button size="sm" onClick={() => emit('navigate', 'tasks')}>
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      taskFilters.filter = 'waiting';
+                      navigate({ section: 'tasks' });
+                    }}
+                  >
                     Review tasks
                   </Button>
                 </CardAction>
               </CardHeader>
               <CardContent>
-                <ul class="grid gap-2 text-sm">
+                <ul class="grid gap-3 text-sm sm:grid-cols-2">
                   {waiting.value.map((task) => (
-                    <li key={task.taskId} class="flex flex-wrap items-baseline gap-x-2">
-                      <Emoji symbol={STATE_EMOJI[task.state]} class="mr-0" />
-                      <strong class="font-mono font-medium">{task.taskId}</strong> {task.title}{' '}
-                      <span class="text-muted-foreground">
-                        plan v{task.plan.version} · {STATE_LABELS[task.state]}
-                      </span>
+                    <li key={task.taskId}>
+                      <a class="waiting-task hover:border-ring focus-visible:border-ring focus-visible:ring-ring/50 grid h-full gap-1 rounded-lg border p-3 transition-[border-color,box-shadow] outline-none hover:shadow-sm focus-visible:ring-3" {...linkTo(taskHref(task.taskId))}>
+                        <span class="flex flex-wrap items-center gap-x-2">
+                          <Emoji symbol={STATE_EMOJI[task.state]} class="mr-0" />
+                          <strong class="font-mono font-medium">{task.taskId}</strong>
+                          <span class="text-muted-foreground text-xs">{STATE_LABELS[task.state]}</span>
+                        </span>
+                        <span class="font-medium">{task.title}</span>
+                        <span class="text-muted-foreground text-xs">
+                          {projectName(task.repoRoot)} · {versionsText(task)}
+                        </span>
+                      </a>
                     </li>
                   ))}
                 </ul>
               </CardContent>
             </Card>
           )}
+
+          <UsageCard />
 
           <Card>
             <CardHeader>

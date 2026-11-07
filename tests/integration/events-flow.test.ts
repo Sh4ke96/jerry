@@ -142,7 +142,7 @@ describe('retention', () => {
     await store.registerSession({ sessionId: 'new-session', cwd: repo, source: null }, at(1));
     const task = await store.createTask({ repoRoot: repo, title: 'Kept', scope: ['**'] }, at(200));
 
-    expect(await store.applyRetention(now, 90)).toEqual({ events: 1, sessions: 1 });
+    expect(await store.applyRetention(now, 90)).toEqual({ events: 1, sessions: 1, usage: 0 });
     expect((await store.listEvents({ limit: 10 })).map((stored) => stored.eventId)).toEqual(['evt_new_000001']);
     expect(store.snapshot().sessions.map((session) => session.sessionId)).toEqual(['new-session']);
     expect(store.snapshot().tasks.map((kept) => kept.taskId)).toEqual([task.taskId]);

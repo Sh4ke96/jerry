@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { assessMcpGitUsage, parseMcpToolName } from '@jerry/policy-engine';
 import { describe, expect, it } from 'vitest';
-import { TOOLS } from '../../apps/mcp-server/src/tools.js';
+import { DECISION_WAIT_CALLS, TOOLS } from '../../apps/mcp-server/src/tools.js';
 
 /**
  * JERRY's MCP server is 'guardian' in the plugin 'jerry', so Claude Code shows its tools as
@@ -43,6 +43,18 @@ describe('MCP tool references', () => {
       }
     }
     expect(missing).toEqual([]);
+  });
+
+  it('has every skill that submits something for a decision wait for it, and never approve it', () => {
+    const submits: Record<string, string> = { plan: 'stage: plan', analyze: 'stage: plan', report: 'stage: implementation', review: 'stage: review-fix' };
+    for (const [skill, stage] of Object.entries(submits)) {
+      const text = fs.readFileSync(path.join(ROOT, 'claude-plugin', 'skills', skill, 'SKILL.md'), 'utf8');
+      expect(NAMES.has('wait_for_decision')).toBe(true);
+      expect(text, skill).toContain('`wait_for_decision`');
+      expect(text, skill).toContain(stage);
+      expect(text, skill).toContain(`at most ${DECISION_WAIT_CALLS} calls in a row`);
+      expect(text, skill).toMatch(/Never (approve|accept)/);
+    }
   });
 
   it('gives every agent at least one JERRY tool', () => {

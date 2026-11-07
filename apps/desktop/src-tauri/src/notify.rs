@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::core::UsageBrief;
 use crate::settings::Settings;
 
 pub const WAIT_PLAN_APPROVAL: &str = "WAIT_PLAN_APPROVAL";
@@ -37,6 +38,8 @@ pub struct Snapshot {
     pub stopped_by_user: bool,
     /// run/autostart.disabled exists ("jerry core stop" or Stop Core).
     pub autostart_disabled: bool,
+    /// Claude usage for the tooltip; `None` while Core has none or cannot be reached.
+    pub usage: Option<UsageBrief>,
 }
 
 impl Snapshot {
@@ -73,6 +76,32 @@ pub struct Event {
     pub body: String,
 }
 
+/// The dashboard's task list. Its filters are not part of the address, so the waiting summary
+/// opens the list itself.
+pub const TASKS_ROUTE: &str = "#/tasks";
+
+/// Whether a task id can go into a route as it is (Core issues ids like JRY-0001).
+fn is_plain_task_id(task_id: &str) -> bool {
+    !task_id.is_empty() && task_id.len() <= 64 && task_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+impl Event {
+    /// The dashboard route a click on this notification opens: the task's page for a task event,
+    /// the task list for the waiting summary, none (the main window as it is) when Core stopped.
+    pub fn route(&self) -> Option<String> {
+        match self.kind {
+            EventKind::CoreStoppedUnexpectedly => None,
+            EventKind::WaitingSummary => Some(TASKS_ROUTE.to_owned()),
+            EventKind::PlanWaiting | EventKind::ReportWaiting | EventKind::FixesWaiting | EventKind::TaskDone | EventKind::TaskBlocked => {
+                Some(match self.task_id.as_deref() {
+                    Some(task_id) if is_plain_task_id(task_id) => format!("{TASKS_ROUTE}/{task_id}"),
+                    _ => TASKS_ROUTE.to_owned(),
+                })
+            }
+        }
+    }
+}
+
 /// The event a task state calls for, if any.
 pub fn kind_for_state(state: &str) -> Option<EventKind> {
     match state {
@@ -105,7 +134,7 @@ fn task_event(kind: EventKind, task_id: &str, task: &TaskEntry) -> Event {
         EventKind::FixesWaiting => "🛠️ Review fixes waiting for your approval",
         EventKind::TaskDone => "🏁 Task done",
         EventKind::TaskBlocked => "⛔ Task blocked",
-        EventKind::CoreStoppedUnexpectedly | EventKind::WaitingSummary => "🛡️ JERRY",
+        EventKind::CoreStoppedUnexpectedly | EventKind::WaitingSummary => "Jerry",
     };
     let body = if task.title.is_empty() { task_id.to_owned() } else { format!("{task_id} · {}", task.title) };
     Event { kind, task_id: Some(task_id.to_owned()), title: title.to_owned(), body }
@@ -200,14 +229,26 @@ impl Notifier {
     }
 }
 
+/// " · 5h 23% · week 41%": the last known plan windows, while the user keeps the usage bar on.
+/// A window without a reading is left out; nothing at all without any.
+pub fn usage_suffix(usage: Option<&UsageBrief>) -> String {
+    let Some(usage) = usage.filter(|usage| usage.show_bar) else {
+        return String::new();
+    };
+    [("5h", usage.five_hour), ("week", usage.seven_day)]
+        .iter()
+        .filter_map(|(name, pct)| pct.map(|pct| format!(" · {name} {pct}%")))
+        .collect()
+}
+
 /// The tray icon's tooltip.
 pub fn tray_tooltip(snapshot: &Snapshot) -> String {
     if snapshot.core_reachable {
-        format!("🛡️ JERRY · GUARDED · {} waiting", snapshot.waiting_count())
+        format!("Jerry · GUARDED · {} waiting{}", snapshot.waiting_count(), usage_suffix(snapshot.usage.as_ref()))
     } else if snapshot.stopped_on_purpose() {
-        "🛡️ JERRY · Core stopped".to_owned()
+        "Jerry · Core stopped".to_owned()
     } else {
-        "🛡️ JERRY · Core unreachable".to_owned()
+        "Jerry · Core unreachable".to_owned()
     }
 }
 
@@ -226,11 +267,12 @@ mod tests {
             core_reachable: true,
             stopped_by_user: false,
             autostart_disabled: false,
+            usage: None,
         }
     }
 
     fn unreachable() -> Snapshot {
-        Snapshot { tasks: None, core_reachable: false, stopped_by_user: false, autostart_disabled: false }
+        Snapshot { tasks: None, core_reachable: false, stopped_by_user: false, autostart_disabled: false, usage: None }
     }
 
     fn kinds(events: &[Event]) -> Vec<EventKind> {
@@ -278,6 +320,47 @@ mod tests {
         }
         assert_eq!(events[0].task_id.as_deref(), Some("JRY-0001"));
         assert_eq!(events[0].body, "JRY-0001 · Title of JRY-0001");
+    }
+
+    #[test]
+    fn each_notification_carries_the_route_it_opens() {
+        let settings = Settings::default();
+        let mut notifier = Notifier::new();
+        let summary = notifier.observe(&snapshot(&[("JRY-0001", WAIT_PLAN_APPROVAL), ("JRY-0002", "IMPLEMENTATION"), ("JRY-0003", "CODE_REVIEW"), ("JRY-0004", "FINAL_REPORT"), ("JRY-0005", "IMPLEMENTATION")]), &settings);
+        assert_eq!(kinds(&summary), vec![EventKind::WaitingSummary]);
+        assert_eq!(summary[0].route().as_deref(), Some("#/tasks"));
+
+        let events = notifier.observe(
+            &snapshot(&[
+                ("JRY-0001", DONE),
+                ("JRY-0002", WAIT_IMPLEMENTATION_ACCEPTANCE),
+                ("JRY-0003", WAIT_REVIEW_FIX_APPROVAL),
+                ("JRY-0004", BLOCKED),
+                ("JRY-0005", WAIT_PLAN_APPROVAL),
+            ]),
+            &settings,
+        );
+        let routes: Vec<(EventKind, Option<String>)> = events.iter().map(|event| (event.kind, event.route())).collect();
+        assert_eq!(
+            routes,
+            vec![
+                (EventKind::TaskDone, Some("#/tasks/JRY-0001".to_owned())),
+                (EventKind::ReportWaiting, Some("#/tasks/JRY-0002".to_owned())),
+                (EventKind::FixesWaiting, Some("#/tasks/JRY-0003".to_owned())),
+                (EventKind::TaskBlocked, Some("#/tasks/JRY-0004".to_owned())),
+                (EventKind::PlanWaiting, Some("#/tasks/JRY-0005".to_owned())),
+            ]
+        );
+        assert_eq!(core_stopped_event().route(), None, "Core stopped opens the main window as it is");
+    }
+
+    #[test]
+    fn an_odd_task_id_opens_the_task_list() {
+        let task = TaskEntry { state: DONE.to_owned(), title: String::new() };
+        for odd in ["", "JRY 1", "../x", "a#b", "JRY-1?x=1", "é", &"A".repeat(65)] {
+            assert_eq!(task_event(EventKind::TaskDone, odd, &task).route().as_deref(), Some(TASKS_ROUTE), "{odd:?}");
+        }
+        assert_eq!(task_event(EventKind::TaskDone, "ABC_1-2", &task).route().as_deref(), Some("#/tasks/ABC_1-2"));
     }
 
     #[test]
@@ -370,9 +453,24 @@ mod tests {
     #[test]
     fn the_tooltip_says_what_core_is_doing() {
         let running = snapshot(&[("JRY-0001", WAIT_PLAN_APPROVAL), ("JRY-0002", WAIT_REVIEW_FIX_APPROVAL), ("JRY-0003", DONE)]);
-        assert_eq!(tray_tooltip(&running), "🛡️ JERRY · GUARDED · 2 waiting");
-        assert_eq!(tray_tooltip(&unreachable()), "🛡️ JERRY · Core unreachable");
-        assert_eq!(tray_tooltip(&Snapshot { autostart_disabled: true, ..unreachable() }), "🛡️ JERRY · Core stopped");
-        assert_eq!(tray_tooltip(&Snapshot { stopped_by_user: true, ..unreachable() }), "🛡️ JERRY · Core stopped");
+        assert_eq!(tray_tooltip(&running), "Jerry · GUARDED · 2 waiting");
+        assert_eq!(tray_tooltip(&unreachable()), "Jerry · Core unreachable");
+        assert_eq!(tray_tooltip(&Snapshot { autostart_disabled: true, ..unreachable() }), "Jerry · Core stopped");
+        assert_eq!(tray_tooltip(&Snapshot { stopped_by_user: true, ..unreachable() }), "Jerry · Core stopped");
+    }
+
+    #[test]
+    fn the_tooltip_adds_the_plan_limits_while_the_usage_bar_is_on() {
+        let usage = |show_bar: bool, five_hour: Option<u32>, seven_day: Option<u32>| Some(UsageBrief { show_bar, five_hour, seven_day });
+        let running = |usage: Option<UsageBrief>| Snapshot { usage, ..snapshot(&[("JRY-0001", WAIT_PLAN_APPROVAL)]) };
+        assert_eq!(tray_tooltip(&running(usage(true, Some(23), Some(41)))), "Jerry · GUARDED · 1 waiting · 5h 23% · week 41%");
+        assert_eq!(tray_tooltip(&running(usage(true, None, Some(41)))), "Jerry · GUARDED · 1 waiting · week 41%");
+        assert_eq!(tray_tooltip(&running(usage(true, None, None))), "Jerry · GUARDED · 1 waiting");
+        assert_eq!(tray_tooltip(&running(usage(false, Some(23), Some(41)))), "Jerry · GUARDED · 1 waiting", "the user hid the usage bar");
+        assert_eq!(tray_tooltip(&running(None)), "Jerry · GUARDED · 1 waiting", "a Core without usage");
+        // Stopped or unreachable: no limits, whatever was known.
+        assert_eq!(tray_tooltip(&Snapshot { usage: usage(true, Some(23), Some(41)), ..unreachable() }), "Jerry · Core unreachable");
+        // Windows cuts tray tooltips at 127 characters; the longest one stays well inside.
+        assert!(tray_tooltip(&running(usage(true, Some(100), Some(100)))).chars().count() < 64);
     }
 }

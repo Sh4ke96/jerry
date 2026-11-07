@@ -86,7 +86,8 @@ describe('jerry CLI (Commander)', () => {
       expect(shown.stdout).toContain('JRY-0001  Waiting for plan approval (WAIT_PLAN_APPROVAL)');
       expect(shown.stdout).toMatch(/new\s+-> WAIT_PLAN_APPROVAL\s+plan\.submitted by user/);
 
-      for (const verb of ['pause', 'resume', 'cancel']) {
+      // Re-running the final checks can set DONE: a terminal too.
+      for (const verb of ['pause', 'resume', 'cancel', 'recheck']) {
         const refused = jerry(['task', verb, 'JRY-0001'], { JERRY_HOME: home });
         expect(refused.exitCode, verb).toBe(1);
         expect(refused.stderr, verb).toContain('interactive terminal');
@@ -130,6 +131,44 @@ describe('jerry CLI (Commander)', () => {
       const json = JSON.parse(run(['data', '--json']).stdout) as { totalBytes: number; categories: unknown[] };
       expect(json.totalBytes).toBeGreaterThan(0);
       expect(json.categories).toHaveLength(10);
+    } finally {
+      await core.stop();
+    }
+  });
+
+  it('jerry settings: shows them without a terminal, changes them only in one', async () => {
+    const home = path.join(base, 'settings-home');
+    const repo = createFixtureRepo(path.join(base, 'settings-repo'));
+    const core = await startCore(home, {}, { projects: [repo] });
+    try {
+      const run = (args: string[]) => jerry(args, { JERRY_HOME: home, JERRY_NO_EMOJI: '1' });
+      const shown = run(['settings']);
+      expect(shown.exitCode, shown.stderr).toBe(0);
+      expect(shown.stdout).toMatch(/review\.mode\s+optional/);
+      expect(shown.stdout).toMatch(/qa\.language\s+pl/);
+      expect(JSON.parse(run(['settings', '--json']).stdout)).toMatchObject({ reviewMode: 'optional', qaLanguage: 'pl', projects: [{ repoRoot: repo, reviewMode: null, effectiveReviewMode: 'optional' }] });
+
+      // Changing a setting is the user's decision: no terminal, no change.
+      for (const args of [['settings', 'set', 'review.mode', 'required'], ['settings', 'set', 'qa.language', 'en'], ['settings', 'set', 'review.mode', 'inherit', '--project', repo]]) {
+        const refused = run(args);
+        expect(refused.exitCode, args.join(' ')).toBe(1);
+        expect(refused.stderr, args.join(' ')).toContain('interactive terminal');
+      }
+      // Invalid values are refused before anything else.
+      expect(run(['settings', 'set', 'review.mode', 'sometimes']).stderr).toContain('review.mode must be "optional" or "required"');
+      expect(run(['settings', 'set', 'qa.language', 'de']).stderr).toContain('qa.language must be "pl" or "en"');
+      expect(run(['settings', 'set', 'qa.language', 'en', '--project', repo]).stderr).toContain('no per-project value');
+      expect(run(['settings', 'set', 'theme', 'dark']).stderr).toContain('Unknown setting "theme"');
+      expect(JSON.parse(run(['settings', '--json']).stdout)).toMatchObject({ reviewMode: 'optional', qaLanguage: 'pl' });
+
+      // The review choice belongs to accepting an implementation, which needs a terminal too.
+      expect(run(['approve', 'JRY-0001', '--stage', 'plan', '--version', '1', '--review']).stderr).toContain('apply only to accepting an implementation');
+      for (const flag of ['--review', '--no-review']) {
+        const refused = run(['approve', 'JRY-0001', '--stage', 'implementation', '--version', '1', flag]);
+        expect(refused.exitCode, flag).toBe(1);
+        expect(refused.stderr, flag).toContain('interactive terminal');
+      }
+      expect(run(['reject', 'JRY-0001', '--stage', 'implementation', '--version', '1', '--review']).stderr).toContain("unknown option '--review'");
     } finally {
       await core.stop();
     }

@@ -17,19 +17,29 @@ local dashboard. It never changes your code and never touches Git: you do all Gi
 | ⛔ **Hard rules, always enforced** | No Git command that changes anything, no writes inside `.git`, no tampering with JERRY's data or the settings that enable it, no approving its own work. These hold even when Core is down. |
 | 🔎 **Analysis before the plan** | Up to three read-only analysts (architecture, risk, quality) study the repository; the plan cites their evidence. |
 | 🐞 **Continuous quality** | JERRY checks the lines Claude changed (naming, error handling, test quality, security) and tells Claude about new findings. |
-| 🔍 **Independent review** | Three read-only reviewers check every changed file. Fixes need your approval, and the same reviewers check again. |
-| 📄 **Reports from facts** | Implementation and final reports are built from what JERRY recorded, not from what Claude says: real test results, deviations, risks, QA scenarios. |
+| 🔍 **Independent review, when you want it** | Three read-only reviewers check every changed file. It is optional by default: you ask for it when you accept a report, or make it required for all projects or one. Fixes need your approval, and the same reviewers check again. |
+| 📄 **Reports from facts** | Implementation and final reports are built from what JERRY recorded, not from what Claude says: real test results, deviations, risks, and QA scenarios in Polish or English (your setting). |
 | 📊 **Evals** | Golden cases run as real Claude Code sessions in throwaway fixtures, compared with a baseline to catch regressions. |
 | 🎨 **Optional Artifact** | After a task is done, Claude can create a presentation or diagram in your claude.ai account, only if you say yes. |
 
 ### 🔄 The life of a task
 
 ```text
-🔎 analysis → 📋 plan → ⏳ your approval → 🛠️ implementation → 📄 report → ⏳ your acceptance
-   → 🔍 independent review → (🛠️ fixes you approve → 🔍 re-review) → 🏁 DONE
+🔎 analysis → 📋 plan → ⏳ your approval → 🛠️ implementation → 📄 report → ⏳ your acceptance → 🏁 DONE
+                                                  (optional) → 🔍 independent review → 🛠️ fixes you approve → 🏁 DONE
 ```
 
-JERRY Core moves the task between states; only you approve, accept, waive, pause or cancel.
+JERRY Core moves the task between states; only you approve, accept, waive, pause or cancel. When you accept a
+report you choose whether it goes to independent review; with review required (globally or for a project) it always
+does. A task already in review finishes when the review passes or when you skip it.
+
+⏩ You decide in the dashboard (or the CLI) and Claude carries on by itself: after submitting a plan or a report, Claude
+waits for your decision (up to about 6 minutes) and continues when you approve, or revises when you reject. You do
+not have to type "go" in Claude.
+
+🏁 Before DONE, Core runs its final checks. Files changed after the report block DONE, unless another approved task
+changed them as part of its own work; those are listed in the final report as "Changed later by other tasks". When a
+task is held back, re-run the checks with **Re-run final checks** on its tile or `jerry task recheck <id>`.
 
 ---
 
@@ -75,6 +85,30 @@ Open the dashboard with `jerry ui`.
 `📋 JRY-0012 plan v1 submitted · ⏳ waiting for your approval`. For permission rules, the tool ids are
 `mcp__plugin_jerry_guardian__<tool>`. None of the tools can approve, accept or waive anything.
 
+### ✨ Your own skills
+
+Besides JERRY's `/jerry:*` skills you can add any Claude Code skill, for example one from GitHub. Open **Skills**
+in the dashboard (or the Jerry app), click **Add skill** and give a GitHub URL (repository, folder or `SKILL.md`),
+a `.zip`/`.skill` file or a local folder.
+
+Skills you add are started only by JERRY, by task state, and used by Claude:
+
+- 🎯 On the skill's page you tick the task states it belongs to (for example **Code review** and **Re-verification**).
+  While a task is in one of them, JERRY's next action tells Claude to use the skill, and Claude runs it.
+- 🙈 JERRY adds `user-invocable: false` to the skill's `SKILL.md`, so it is not in the `/` menu, and sets
+  `skillOverrides` to `name-only`, so Claude sees only its name and never picks it on its own.
+- ⚠️ If Claude uses the skill in another state, JERRY warns and records a deviation; it does not block.
+- 🔁 A skill added before this is converted when you first choose its states (its folder is backed up first).
+
+- 🔍 JERRY shows every file before installing, with its checksum, and flags risky content: instructions that try to
+  steer Claude, scripts and binaries, network calls, secrets, and `allowed-tools` with shell access. Nothing is run.
+- 📌 GitHub skills are pinned to the commit you saw; **Update** shows what changed and installs only after you confirm.
+- 📁 Skills go to `~/.claude/skills/<name>`. JERRY never overwrites a skill it did not install.
+- 🔀 The switch turns a skill off through Claude Code's own `skillOverrides` setting, without moving files. **Remove**
+  keeps a backup in JERRY's data.
+- ⌨️ The same from a terminal: `jerry skill list|show|add|enable|disable|update|remove`, and
+  `jerry skill states <name> CODE_REVIEW REVERIFICATION` (or `--clear`) for the task states (changes are yours only 🔐).
+
 ---
 
 ## ⌨️ CLI: `jerry`
@@ -90,6 +124,8 @@ need an interactive terminal, and Claude is not allowed to run them.
 | `jerry uninstall [--purge-data]` | Remove JERRY. Your data stays unless you pass `--purge-data`. 🔐 |
 | `jerry doctor` | Full diagnostics: installation, hooks, Core, database, settings. |
 | `jerry status` | Short summary: guard state, plans, today's deviations. |
+| `jerry usage status` / `enable` / `disable` | 📊 Claude usage collection (status line + telemetry): what arrives from where. `enable`/`disable` 🔐 |
+| `jerry statusline status` / `enable` / `disable` | Only the status line part. `enable`/`disable` 🔐 |
 | `jerry ui` | Open the dashboard with a one-time login link. 🔐 |
 | `jerry core start` / `stop` / `status` | Manage the local Core process. `start`/`stop` 🔐 |
 
@@ -101,9 +137,11 @@ need an interactive terminal, and Claude is not allowed to run them.
 | `jerry task show <id>` | A task's state, plan, decisions and history. |
 | `jerry task create` | Create a task with plan version 1. |
 | `jerry task pause` / `resume` / `cancel <id>` | Pause, resume or cancel a task. 🔐 |
+| `jerry task recheck <id>` | 🏁 Re-run the final checks of a task Core held back. 🔐 |
 | `jerry plan diff <id>` | What changed between plan versions. |
 | `jerry plan revise <id> --scope <glob>` | Create the next plan version with a new scope. |
-| `jerry approve <id> --stage plan\|implementation\|review-fix --version <n>` | ✅ Approve a plan, accept a report, or approve review fixes. 🔐 |
+| `jerry approve <id> --stage plan\|implementation\|review-fix --version <n>` | ✅ Approve a plan, accept a report (`--review` / `--no-review`), or approve review fixes. 🔐 |
+| `jerry settings` / `settings set review.mode optional\|required [--project <path>]` / `settings set qa.language pl\|en` | ⚙️ Show or change JERRY's settings. `set` 🔐 |
 | `jerry reject <id> --stage … --version <n> --comment "…"` | ❌ Reject, or ask for changes. 🔐 |
 
 ### 🔍 Quality, review and reports
@@ -162,18 +200,64 @@ everything else stays until you prune it, which is fine: JERRY's data is usually
 
 `jerry ui` opens `http://127.0.0.1:47823` in your browser. It shows:
 - **Overview:** the guard state and what needs you;
-- **Tasks:** the state, plan, analyses, reports, findings, review, final report and the decisions the state allows;
+- **Tasks:** tiles with filters (active, waiting for you, in review, finished, cancelled). A tile expands to the key
+  facts and the decisions its state allows; a click opens the task's page with its plan, analysis, report, review,
+  final report and history;
+- **Projects:** your projects as tiles, each with its own page (profile, tasks, links, data, review setting), and
+  other repositories you can add;
 - **Timeline:** session events;
-- **Repositories:** your projects (add and remove them), profiles and links;
+- **Skills:** JERRY's skills and the ones you added: add, preview, switch off, update, remove;
 - **Data:** what JERRY stores, with preview-first clean-up;
-- **Evals:** runs, regressions and calibration.
+- **Evals:** runs, regressions and calibration;
+- **⚙️ Settings** (bottom of the sidebar): review optional or required, QA language (Polish or English), how decisions
+  are confirmed, Claude usage collection and the usage bar, theme; inside the Jerry app also its own settings (start
+  with Windows, notifications).
 
-🎨 It uses the shadcn/ui look with the Geist font. The theme switch in the top bar picks light, dark or your
-system's theme. It is reachable only from your machine and needs the one-time login link.
+✅ Decisions are one click by default: approving or rejecting a plan, accepting a report or requesting changes,
+approving or rejecting a fix plan and skipping the review each open a confirmation dialog that shows what you decide,
+with the decision button ready (Enter confirms, Escape cancels); pause and resume act at once. To type the task ID
+for these decisions as well, turn on **⚙️ Settings → Workflow → Type the task ID to confirm decisions**.
+Irreversible actions always ask for a typed confirmation, whatever this switch says: cancelling a task (its ID),
+adding or removing a project (its path), deleting data (`delete`) and forgetting a repository (its path).
+
+🎨 It uses the shadcn/ui look with the Geist font, in light, dark or your system's theme. It is reachable only from
+your machine and needs the one-time login link.
 
 ---
 
-## 🪟 JERRY Desktop (optional, Windows)
+## 📊 Claude usage
+
+JERRY shows your Claude usage like Claude's `/usage`: two small bars (`23%` · *5h session*, `41%` · *Week session*) at the top of every dashboard view
+(and in the Jerry tray tooltip), and a **Usage** card on the Overview with plan limits, tokens and estimated cost per
+day, model, project and VS Code vs terminal, plus how much JERRY itself adds.
+
+Where the numbers come from (documented Claude Code features only; JERRY never reads your conversations or your
+Claude login):
+- **Plan limits** (5-hour and weekly %): Claude Code passes them only to its **status line**, which runs in terminal
+  sessions. The VS Code extension does not run it, so JERRY shows the **last known** values with the time they were
+  read. The limits are account-wide: one message in a terminal session refreshes them. Per-model weekly limits are not
+  available from Claude Code. Readings older than 30 minutes are shown greyed out as "stale".
+  - 💡 **Live limits while you work in VS Code:** turn on the Claude Code extension setting **Use Terminal**
+    (`"claudeCode.useTerminal": true`). Claude then runs in the VS Code terminal, the status line works, and JERRY
+    gets fresh limits after every answer. The extension needs the Claude Code CLI on your PATH: install it with
+    `irm https://claude.ai/install.ps1 | iex` and add `%USERPROFILE%\.local\bin` to your user PATH if the installer
+    did not, then restart VS Code.
+  - 🔤 For a readable terminal: `"terminal.integrated.fontFamily": "Cascadia Code"` (or Geist Mono),
+    `"terminal.integrated.fontSize": 14`, `"terminal.integrated.lineHeight": 1.3`; `/theme` and `/terminal-setup` in
+    Claude. Windows Terminal is a good alternative outside VS Code.
+- **Tokens and cost**: Claude Code's **OpenTelemetry** metrics, sent every minute to the local JERRY Core on
+  `127.0.0.1` with a per-install key. Cost is an estimate at list price, not your bill.
+
+`jerry install` turns both on, after backing up `~/.claude/settings.json`. It writes only `statusLine` and a few
+`env` keys (`CLAUDE_CODE_ENABLE_TELEMETRY`, `OTEL_*`). If you already have your own status line, it keeps running
+next to JERRY's. If you have your own OpenTelemetry setup, JERRY leaves it alone and does not collect tokens.
+Turn it off in **⚙️ Settings → Usage**, with `jerry usage disable`, or by installing with `--no-usage`; your previous
+settings come back exactly. Only sessions in your projects are stored, apart from the account-wide limit
+percentages.
+
+---
+
+## 🪟 Jerry, the desktop app (optional, Windows)
 
 A small desktop app around the same dashboard. JERRY works fine without it.
 
@@ -181,13 +265,16 @@ A small desktop app around the same dashboard. JERRY works fine without it.
 - 🛡️ **Tray icon** with JERRY's state and how many things wait for you. Menu: Open dashboard, Start Core / Stop Core,
   Settings…, Quit.
 - 🔔 **Notifications** when a plan, a report or a fix plan waits for your decision, when a task is done or blocked,
-  and when Core stops unexpectedly.
+  and when Core stops unexpectedly. Clicking one (while it is on screen) opens that task's page. Pick the sound in
+  Settings: the Windows notification sounds or none (Windows does not allow custom sound files for this kind of app).
 - ⚙️ **Settings**:
   - 🚀 launch with Windows (off by default);
   - open the window at start;
   - notifications on or off, per type, with or without sound, plus a test notification.
 
-**Install** from the release package: run `desktop/JERRY-Desktop-<version>-x64-setup.exe`. It installs for your
+If you installed the earlier "JERRY Desktop", uninstall it once in Windows Settings → Apps; Jerry keeps its settings.
+
+**Install** from the release package: run `desktop/Jerry-<version>-x64-setup.exe`. It installs for your
 Windows user, no admin needed. The installer is not code-signed, so Windows SmartScreen may ask once; check
 `SHA256SUMS` first.
 
@@ -195,7 +282,7 @@ Windows user, no admin needed. The installer is not code-signed, so Windows Smar
 "Desktop development with C++"):
 
 ```powershell
-corepack pnpm desktop:build                 # dist/desktop/JERRY-Desktop-<version>-x64-setup.exe
+corepack pnpm desktop:build                 # dist/desktop/Jerry-<version>-x64-setup.exe
 corepack pnpm release --with-desktop        # the release package with the installer inside
 corepack pnpm desktop:test                  # the app's Rust tests
 ```
@@ -214,7 +301,7 @@ apps/hook-bridge        🪝 Claude Code hook adapter: forwards tool calls to Co
 apps/mcp-server         🔌 MCP server: Claude's tools for state, plans, reports, reviews
 apps/dashboard          🖥️ JERRY Control Center (Vue 3, TSX, Vite), served by Core
 apps/cli                ⌨️ the jerry command line
-apps/desktop            🪟 JERRY Desktop: Tauri app with tray, notifications and the dashboard (optional)
+apps/desktop            🪟 Jerry, the desktop app (Tauri): tray, notifications and the dashboard (optional)
 packages/contracts      📐 shared schemas and constants (Zod), the emoji vocabulary
 packages/database       💾 SQLite (node:sqlite + Kysely): schema, migrations, backup and restore
 packages/platform       🧰 JERRY_HOME, Core client, Claude Code discovery, safe file writes

@@ -3,11 +3,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { JERRY_VERSION } from '@jerry/contracts';
 import {
+  applyTelemetry,
   assertJerryHomeOutsideRepositories,
   JERRY_HOME_ENTRIES,
   jerryPaths,
   resolveClaudeConfigDir,
   resolveJerryHome,
+  telemetryPort,
   writeFileAtomic,
 } from '@jerry/platform';
 import {
@@ -23,9 +25,23 @@ import {
 } from './claude-cli.js';
 import { getCoreStatus, stopCore } from './core-commands.js';
 import { mark } from './emoji.js';
+import { disableUsage, enableUsage, reportCollectionChange, reportTelemetryEnabled } from './usage-commands.js';
 
 const PLUGIN_PAYLOAD = fileURLToPath(new URL('../plugin/', import.meta.url));
 const CORE_PAYLOAD = fileURLToPath(new URL('../core/', import.meta.url));
+
+/**
+ * Runs a settings change and returns what went wrong, or null. Its failure never undoes the rest
+ * of an install or uninstall: the caller tells the user and how to finish it by hand.
+ */
+function settingsProblem(change: () => void): string | null {
+  try {
+    change();
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
 
 /** Stage then swap, so a session never loads a half-copied plugin or Core. */
 function copyStagedThenSwap(source: string, target: string): void {
@@ -40,9 +56,11 @@ function copyStagedThenSwap(source: string, target: string): void {
 /**
  * Global, user-scope install. Copies the plugin payload into JERRY_HOME, publishes it through a
  * local marketplace and registers both via the official Claude Code CLI, which merges its own
- * keys into settings.json. JERRY never edits Claude settings files directly.
+ * keys into settings.json. JERRY writes two things itself, a plugin cannot: the "statusLine" (the
+ * user's previous one kept and chained) and its telemetry keys in "env" (never over telemetry the
+ * user configured), each with a backup first. --no-usage skips both; --no-statusline only the first.
  */
-export async function install(): Promise<void> {
+export async function install(options: { statusline: boolean; usage: boolean } = { statusline: true, usage: true }): Promise<void> {
   const claude = requireClaudeBinary();
   console.log(mark('agent', `Claude Code: ${claudeVersion(claude)} (${claude.source}: ${claude.path})`));
 
@@ -105,6 +123,21 @@ export async function install(): Promise<void> {
   console.log(mark('pass', `Installed ${PLUGIN_ID} (user scope), loaded from ${installed.readFromFolder ?? installed.installPath ?? pluginDir}.`));
   console.log(mark('pass', `Installed JERRY Core runtime at ${paths.runtimeCoreFile}; Claude Code sessions start it automatically.`));
 
+  // Installing is the user's explicit action; Claude usage collection is part of it, and easy to turn off.
+  const locations = { home, claudeConfigDir: resolveClaudeConfigDir() };
+  if (options.usage && options.statusline) {
+    if (reportCollectionChange(enableUsage(locations), true)) {
+      console.log(mark('info', 'Turn Claude usage collection off with "jerry usage disable" (or install with --no-usage).'));
+    }
+  } else if (options.usage) {
+    // --no-statusline: telemetry only; the status line stays as it is.
+    const problem = settingsProblem(() => reportTelemetryEnabled(applyTelemetry({ ...locations, port: telemetryPort(home) })));
+    if (problem !== null) console.log(mark('warning', `Claude Code telemetry was not changed: ${problem} Once fixed, run "jerry usage enable".`));
+    console.log(mark('info', "Left Claude Code's status line as it is (--no-statusline). Turn JERRY's on with: jerry statusline enable"));
+  } else {
+    console.log(mark('info', "Left Claude Code's status line and telemetry as they are (--no-usage). Turn usage collection on with: jerry usage enable"));
+  }
+
   try {
     const { status } = await getCoreStatus(home);
     if (status.version !== JERRY_VERSION) {
@@ -133,6 +166,8 @@ export async function uninstall(options: { purgeData: boolean }): Promise<void> 
   reportIdempotent(removeResult, 'not_configured', `Removed marketplace ${MARKETPLACE_NAME}`, `Marketplace ${MARKETPLACE_NAME} was not configured`);
 
   assertJerryHomeOutsideRepositories(home);
+  // Before the runtime (and with --purge-data the saved previous status line and telemetry keys) is deleted.
+  reportCollectionChange(disableUsage({ home, claudeConfigDir: resolveClaudeConfigDir() }), false);
   await stopCore();
   fs.rmSync(paths.marketplaceDir, { recursive: true, force: true });
   fs.rmSync(paths.runtimeDir, { recursive: true, force: true });

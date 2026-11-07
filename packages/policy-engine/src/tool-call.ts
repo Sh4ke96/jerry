@@ -10,6 +10,8 @@ export type ToolAction =
   | { kind: 'shell-opaque'; command: string }
   /** A tool of an MCP server; only Git-capable ones are subject to the hard rules. */
   | { kind: 'mcp'; server: string; tool: string }
+  /** Claude Code's Skill tool; name is null when the call does not say which skill. */
+  | { kind: 'skill'; name: string | null }
   | { kind: 'not-guarded' };
 
 const FILE_PATH_FIELD: Readonly<Record<string, string>> = {
@@ -44,6 +46,11 @@ export function classifyToolCall(toolName: string, toolInput: Readonly<Record<st
   }
   if (OPAQUE_COMMAND_TOOLS.has(toolName)) {
     return { kind: 'shell-opaque', command: typeof command === 'string' ? command : '' };
+  }
+  if (toolName === 'Skill') {
+    // Claude Code's Skill tool input: { skill: "<name>", args?: "..." }.
+    const name = toolInput['skill'];
+    return { kind: 'skill', name: typeof name === 'string' && name.trim() !== '' ? name.trim().replace(/^\//, '') : null };
   }
   const mcpTool = parseMcpToolName(toolName);
   if (mcpTool !== null) return { kind: 'mcp', ...mcpTool };

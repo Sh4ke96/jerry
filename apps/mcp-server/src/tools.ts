@@ -18,18 +18,24 @@ import {
   type ReviewState,
   targetedTestsSchema,
   coreStatusSchema,
+  decisionWaitResultSchema,
+  decisionWaitStageSchema,
+  type DecisionWaitResult,
   gatePreviewResponseSchema,
   implementationReportRecordSchema,
   implementationReportSchema,
   planDocumentSchema,
   projectProfileSchema,
   repositoryStateSchema,
+  settingsSchema,
   workspaceGraphSchema,
   storedEventSchema,
   taskSchema,
   taskSummarySchema,
   type CallOrigin,
   type PlanGrade,
+  type QaLanguage,
+  type Settings,
   type RepositoryState,
   type Task,
   type TaskSummary,
@@ -46,7 +52,8 @@ import type { CallContext, ToolDefinition, ToolResult } from './protocol.js';
  * JERRY tools for Claude. They read state, preview gate decisions, submit plans and
  * implementation reports, and save progress checkpoints. There is deliberately no tool that
  * approves, accepts, rejects, excludes, pauses or completes anything: those are user actions in the
- * CLI or dashboard. A submitted plan or report only ever waits for the user; a checkpoint is a note.
+ * CLI or dashboard. A submitted plan or report only ever waits for the user (wait_for_decision only
+ * reads the user's decision, so Claude can continue in the same turn); a checkpoint is a note.
  */
 
 const DEFAULT_DEVIATION_WINDOW_MINUTES = 480;
@@ -83,10 +90,22 @@ function projectDir(): string {
   return process.env['CLAUDE_PROJECT_DIR'] ?? process.cwd();
 }
 
-async function core(method: 'GET' | 'POST', path: string, body?: unknown): Promise<unknown> {
+async function core(method: 'GET' | 'POST', path: string, body?: unknown, timeoutMs = 3000): Promise<unknown> {
   const info = readCoreRuntimeInfo(resolveJerryHome());
-  return requestCore(info, { method, path, timeoutMs: 3000, ...(body === undefined ? {} : { body }) });
+  return requestCore(info, { method, path, timeoutMs, ...(body === undefined ? {} : { body }) });
 }
+
+/**
+ * How long one wait_for_decision call waits for the user. Claude Code moves an MCP call of the main
+ * conversation to the background once it runs for two minutes (CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS);
+ * staying well below keeps the wait inside the turn. Stdio servers have no per-request timer, the
+ * idle window is 30 minutes and MCP_TOOL_TIMEOUT defaults to about 28 hours, so those never bind first.
+ */
+export const DECISION_WAIT_MS = 90_000;
+/** wait_for_decision calls in a row before Claude ends its turn (about six minutes). */
+export const DECISION_WAIT_CALLS = 4;
+/** The request to Core outlives the wait it asks for, so Core always answers first. */
+const DECISION_REQUEST_TIMEOUT_MS = DECISION_WAIT_MS + 15_000;
 
 /**
  * A successful answer: one human line with emoji first (what the user sees in the tool row), then
@@ -203,7 +222,7 @@ export const TOOLS: readonly ToolDefinition[] = [
   {
     name: 'get_state',
     title: 'JERRY state',
-    description: 'Live JERRY state for a repository: unfinished tasks with workflow state and scope, the plans that cover edits now, and the next expected action.',
+    description: "Live JERRY state for a repository: unfinished tasks with workflow state and scope, the plans that cover edits now, the next expected action, and the user's preferences there (QA language, review mode; read-only).",
     inputSchema: pathArgument,
     readOnly: true,
     handler: (args) =>
@@ -252,6 +271,10 @@ export const TOOLS: readonly ToolDefinition[] = [
           monitored: state.repoRoot !== null && !state.excluded,
           approved: open.filter(coversEdits).map(summarizeTask),
           open: open.filter((task) => !coversEdits(task)).map(summarizeTask),
+          // The user's settings here, read-only: QA scenarios go in qaLanguage; review follows reviewMode.
+          ...(state.preferences === undefined ? {} : { preferences: state.preferences }),
+          // Added skills JERRY starts, with the task states the user assigned them to (next names the ones due now).
+          ...(state.skills === undefined || state.skills.length === 0 ? {} : { jerrySkills: state.skills.map((skill) => ({ name: skill.name, states: skill.states })) }),
           currentTask:
             latest === undefined
               ? null
@@ -388,7 +411,7 @@ export const TOOLS: readonly ToolDefinition[] = [
           contentHash: task.plan.contentHash,
           state: task.state,
           ...(grade === null ? {} : { completeness: completenessOf(grade) }),
-          nextStep: `Tell the user that ${task.taskId} plan v${task.plan.version} waits for their decision in the JERRY dashboard (Tasks) or with "jerry approve ${task.taskId} --stage plan --version ${task.plan.version}". Do not approve it yourself. Edits before approval are recorded as deviations.${missing.length === 0 ? '' : ` JERRY's completeness check (${grade?.level}, ${grade?.score}/100) found gaps; mention them to the user, who may ask for a revised plan: ${missing.map((check) => check.detail).join('; ')}.`}`,
+          nextStep: `Tell the user that ${task.taskId} plan v${task.plan.version} waits for their decision in the JERRY dashboard (Tasks) or with "jerry approve ${task.taskId} --stage plan --version ${task.plan.version}", then call wait_for_decision (taskId ${task.taskId}, stage plan, version ${task.plan.version}) and continue on its answer. Do not approve it yourself. Edits before approval are recorded as deviations.${missing.length === 0 ? '' : ` JERRY's completeness check (${grade?.level}, ${grade?.score}/100) found gaps; mention them to the user, who may ask for a revised plan: ${missing.map((check) => check.detail).join('; ')}.`}`,
         }, `${EMOJI.plan} ${task.taskId} plan v${task.plan.version} submitted · ${EMOJI.waiting} waiting for your approval${grade === null ? '' : ` · completeness ${grade.score}/100`}`);
       }),
   },
@@ -578,7 +601,7 @@ export const TOOLS: readonly ToolDefinition[] = [
           round: round.round,
           contentHash: round.fixPlanHash,
           state: state.state,
-          nextStep: `Tell the user that the fix plan for ${taskId} (review round ${round.round}) waits for their decision in the JERRY dashboard or with "jerry approve ${taskId} --stage review-fix --version ${round.round}". Do not change code before they approve it.`,
+          nextStep: `Tell the user that the fix plan for ${taskId} (review round ${round.round}) waits for their decision in the JERRY dashboard or with "jerry approve ${taskId} --stage review-fix --version ${round.round}", then call wait_for_decision (taskId ${taskId}, stage review-fix, version ${round.round}) and continue on its answer. Do not change code before they approve it.`,
         }, `${EMOJI.implementation} ${taskId} fix plan (round ${round.round}) submitted · ${EMOJI.waiting} waiting for your approval`);
       }),
   },
@@ -818,14 +841,51 @@ export const TOOLS: readonly ToolDefinition[] = [
           (evidence.quality?.claimedVsObserved.length ?? 0) > 0 ? `checks JERRY saw end otherwise: ${evidence.quality!.claimedVsObserved.slice(0, 5).join('; ')}` : null,
           (evidence.quality?.unplannedFiles.length ?? 0) > 0 ? `changed files no plan step names: ${evidence.quality!.unplannedFiles.slice(0, 10).join(', ')}` : null,
         ].filter((item) => item !== null);
+        const language = qaLanguageNote(saved.document.qaLanguage, await settingsOrNull());
         return ok({
           taskId: saved.taskId,
           reportVersion: saved.version,
           contentHash: saved.contentHash,
           state: 'WAIT_IMPLEMENTATION_ACCEPTANCE',
           jerryRecorded: { deviations: evidence.deviationCount, blocked: evidence.blockedCount, observedEdits: evidence.observedEdits.length, unreportedEdits: evidence.unreportedEdits },
-          nextStep: `Tell the user that ${saved.taskId} report v${saved.version} waits for their acceptance in the JERRY dashboard (Tasks) or with "jerry approve ${saved.taskId} --stage implementation --version ${saved.version}" (or "jerry reject … --comment" to request changes).${attention.length > 0 ? ` Point out what JERRY recorded: ${attention.join('; ')}.` : ''} Do not accept it yourself, and do not change code until the user decides; Git operations stay with the user.`,
-        }, `${EMOJI.report} ${saved.taskId} report v${saved.version} submitted · ${EMOJI.waiting} waiting for your acceptance${attention.length === 0 ? '' : ` · ${EMOJI.warning} ${attention.length} thing(s) to check`}`);
+          nextStep: `Tell the user that ${saved.taskId} report v${saved.version} waits for their acceptance in the JERRY dashboard (Tasks) or with "jerry approve ${saved.taskId} --stage implementation --version ${saved.version}" (or "jerry reject … --comment" to request changes).${attention.length > 0 ? ` Point out what JERRY recorded: ${attention.join('; ')}.` : ''}${language === null ? '' : ` ${language}`} Then call wait_for_decision (taskId ${saved.taskId}, stage implementation, version ${saved.version}) and continue on its answer. Do not accept it yourself, and do not change code until the user decides; Git operations stay with the user.`,
+        }, `${EMOJI.report} ${saved.taskId} report v${saved.version} submitted · ${EMOJI.waiting} waiting for your acceptance${attention.length === 0 ? '' : ` · ${EMOJI.warning} ${attention.length} thing(s) to check`}${language === null ? '' : ` · ${EMOJI.warning} QA language differs from the setting`}`);
+      }),
+  },
+  {
+    name: 'wait_for_decision',
+    title: "Wait for the user's decision",
+    description: `After submit_plan, submit_report or submit_fix_plan: wait up to ${DECISION_WAIT_MS / 1000} s for the user's decision on exactly that stage and version, and return it: approved, rejected with the user's comment, or still pending. Read-only: it never approves, accepts or rejects anything; only the user decides.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        taskId: { type: 'string', description: 'The task (JRY-…).' },
+        stage: { type: 'string', enum: ['plan', 'implementation', 'review-fix'], description: 'plan: a plan version; implementation: a report version; review-fix: the fix plan of a review round.' },
+        version: { type: 'integer', minimum: 1, description: 'The plan version, report version or review round you submitted.' },
+      },
+      required: ['taskId', 'stage', 'version'],
+      additionalProperties: false,
+    },
+    readOnly: true,
+    handler: (args) =>
+      withCore(async () => {
+        const input = z
+          .object({ taskId: z.string().trim().min(1).transform((value) => value.toUpperCase()), stage: decisionWaitStageSchema, version: z.coerce.number().int().positive() })
+          .safeParse(args);
+        if (!input.success) return failure(`Pass the taskId, the stage (plan, implementation or review-fix) and the version you submitted:\n${z.prettifyError(input.error)}`);
+        const { taskId, stage, version } = input.data;
+        const params = new URLSearchParams({ stage, version: String(version), waitMs: String(DECISION_WAIT_MS) });
+        const result = decisionWaitResultSchema.parse(await core('GET', `/api/v1/tasks/${encodeURIComponent(taskId)}/decision?${params.toString()}`, undefined, DECISION_REQUEST_TIMEOUT_MS));
+        // The decision moved the task: the skills JERRY starts in its new state come with the next step.
+        let skills = '';
+        if (result.status !== 'pending' && !isTerminal(result.state)) {
+          try {
+            skills = skillsInstruction((await repositoryState(undefined)).skills, [{ taskId: result.taskId, state: result.state }]);
+          } catch {
+            // Only a hint: the next get_state carries it too.
+          }
+        }
+        return ok({ ...result, nextStep: skills === '' ? decisionNextStep(result) : `${decisionNextStep(result)} ${skills}` }, decisionSummary(result));
       }),
   },
   {
@@ -856,6 +916,68 @@ export const TOOLS: readonly ToolDefinition[] = [
       }),
   },
 ];
+
+const LANGUAGE_NAMES: Readonly<Record<QaLanguage, string>> = { pl: 'Polish', en: 'English' };
+
+/**
+ * The user's settings, or null when they cannot be read (an older Core has none). Used after a
+ * report was saved: failing to read them must not turn the saved report into an error.
+ */
+async function settingsOrNull(): Promise<Settings | null> {
+  try {
+    const parsed = settingsSchema.safeParse(await core('GET', '/api/v1/settings'));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Said when the report's QA scenarios are in another language than the user's QA language setting. */
+export function qaLanguageNote(reported: QaLanguage | undefined, settings: Settings | null): string | null {
+  if (reported === undefined || settings === null || reported === settings.qaLanguage) return null;
+  return `The QA scenarios are written in ${LANGUAGE_NAMES[reported]}, but the user's QA language setting is ${LANGUAGE_NAMES[settings.qaLanguage]} (get_state preferences.qaLanguage): tell the user, and write them in ${LANGUAGE_NAMES[settings.qaLanguage]} in the next report version if they ask.`;
+}
+
+/** "plan v4", "report v2", "fix plan (round 1)": what the user decides on. */
+function decisionSubject(result: DecisionWaitResult): string {
+  return result.stage === 'plan' ? `plan v${result.version}` : result.stage === 'implementation' ? `report v${result.version}` : `fix plan (round ${result.version})`;
+}
+
+/** "✅ JRY-0016 plan v4 approved — continue", "❌ … rejected: <comment>" or "⏳ still waiting for your decision". */
+export function decisionSummary(result: DecisionWaitResult): string {
+  const subject = `${result.taskId} ${decisionSubject(result)}`;
+  if (result.status === 'approved') {
+    const verb = result.stage === 'implementation' ? `accepted${result.review === true ? ' with review' : ''}` : 'approved';
+    return `${EMOJI.pass} ${subject} ${verb} — continue`;
+  }
+  if (result.status === 'rejected') return `${EMOJI.fail} ${subject} rejected: ${result.comment ?? 'no comment'}`;
+  if (isTerminal(result.state)) return `${STATE_EMOJI[result.state]} ${result.taskId} is ${stateWords(result.state)}: no decision will come`;
+  return `${EMOJI.waiting} still waiting for your decision`;
+}
+
+/** What Claude does with the decision: continue, revise, or wait again. */
+export function decisionNextStep(result: DecisionWaitResult): string {
+  const { taskId, stage, version, status } = result;
+  const comment = result.comment === undefined ? 'The user left no comment: ask them what to change.' : `The user asked: "${result.comment}".`;
+  if (status === 'pending') {
+    if (isTerminal(result.state)) return `${taskId} is ${stateWords(result.state)}; stop waiting and tell the user.`;
+    return `No decision yet. Call wait_for_decision again (at most ${DECISION_WAIT_CALLS} calls in a row); after that end your turn and tell the user you continue when they write. Never approve it yourself.`;
+  }
+  if (stage === 'plan') {
+    return status === 'approved'
+      ? `The user approved plan v${version}: implement it now, as /jerry:implement describes, within its scope. Git operations stay with the user.`
+      : `${comment} Revise the plan accordingly, submit it again with submit_plan (taskId ${taskId}), then wait_for_decision on the new version.`;
+  }
+  if (stage === 'implementation') {
+    if (status === 'rejected') return `${comment} Make the requested changes within the approved scope, run the checks again, submit a new report with /jerry:report, then wait_for_decision on the new version.`;
+    return result.review === true
+      ? 'The user accepted the report and asked for independent review: run /jerry:review now.'
+      : `The user accepted the report without review; JERRY ran the final checks (task state: ${stateWords(result.state)}). Summarise the task for the user${result.state === 'DONE' ? '; it is done' : ' and say what JERRY still needs'}. Git operations stay with the user.`;
+  }
+  return status === 'approved'
+    ? 'The user approved the fix plan: make exactly those fixes within the approved scope, run the checks, then report them with report_fixes.'
+    : `${comment} Revise the fix plan accordingly, submit it again with submit_fix_plan, then wait_for_decision on it.`;
+}
 
 /** "🔍 JRY-0001 review round 2 · 2/3 reviewers · 🐞 1 finding(s) (🟠 1)". */
 function reviewSummary(review: ReviewState): string {
@@ -965,7 +1087,29 @@ export function analysisDigest(task: TaskSummary): Record<string, unknown> {
   };
 }
 
+/**
+ * The added skills JERRY starts for these tasks' states, as an instruction for Claude; '' when none.
+ * Only JERRY starts these skills: Claude sees their names alone and uses them when this says so.
+ */
+export function skillsInstruction(skills: RepositoryState['skills'], tasks: ReadonlyArray<{ taskId: string; state: WorkflowState }>): string {
+  const lines = tasks.flatMap((task) => {
+    const assigned = (skills ?? []).filter((skill) => skill.states.includes(task.state));
+    if (assigned.length === 0) return [];
+    const list = assigned.map((skill) => `"${skill.name}" (${skill.description.length > 160 ? `${skill.description.slice(0, 157)}...` : skill.description})`).join(', ');
+    return [`${task.taskId} is in ${task.state}, where the user assigned the skill(s) ${list}: use them now with the Skill tool, within the task's scope.`];
+  });
+  return lines.length === 0 ? '' : `${EMOJI.jerry} JERRY starts skills here. ${lines.join(' ')}`;
+}
+
 export function nextAction(state: RepositoryState): { action: string; details: string } {
+  const base = stateAction(state);
+  if (state.repoRoot === null || notAdded(state)) return base;
+  const open = state.tasks.filter((task) => !isTerminal(task.state));
+  const skills = skillsInstruction(state.skills, open);
+  return skills === '' ? base : { action: base.action, details: `${base.details}\n${skills}` };
+}
+
+function stateAction(state: RepositoryState): { action: string; details: string } {
   if (state.repoRoot === null) {
     return { action: 'none', details: decorate(EMOJI.info, 'Not inside a Git repository: JERRY does not monitor edits here. Hard rules (no Git changes) still apply.') };
   }
@@ -1029,7 +1173,7 @@ export function nextAction(state: RepositoryState): { action: string; details: s
       .join(' | ');
     return {
       action: 'final-checks-failed',
-      details: `${EMOJI.fail} JERRY did not complete ${refused.map((task) => task.taskId).join(', ')} (${reasons}). Tell the user; they decide whether to request changes or cancel. Do not change code until then; edits now are recorded as deviations.`,
+      details: `${EMOJI.fail} JERRY did not complete ${refused.map((task) => task.taskId).join(', ')} (${reasons}). Tell the user; they decide whether to re-run the final checks (dashboard 'Re-run final checks' or 'jerry task recheck <id>', e.g. when later approved tasks changed the files), request changes or cancel. Do not change code until then; edits now are recorded as deviations.`,
     };
   }
   const paused = ids(['PAUSED']);

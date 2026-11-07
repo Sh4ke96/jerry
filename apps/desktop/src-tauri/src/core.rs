@@ -1,4 +1,4 @@
-//! Everything JERRY Desktop knows about JERRY Core, free of any Tauri runtime so it can be unit tested:
+//! Everything Jerry knows about JERRY Core, free of any Tauri runtime so it can be unit tested:
 //! where JERRY_HOME is, how run/core.json looks, the loopback HTTP client, starting and stopping Core,
 //! and which URLs the main window may show.
 //!
@@ -239,6 +239,34 @@ pub struct TaskBrief {
     pub state: String,
 }
 
+/// What the app needs of GET /api/v1/usage: whether the user wants the usage bar, and the last
+/// known plan windows in whole percent (None: no reading).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UsageBrief {
+    pub show_bar: bool,
+    pub five_hour: Option<u32>,
+    pub seven_day: Option<u32>,
+}
+
+impl UsageBrief {
+    /// Reads Core's usage summary; a missing or malformed part counts as no reading.
+    pub fn from_json(body: &Value) -> Self {
+        let percent = |window: &str| {
+            body.get("limits")
+                .and_then(|limits| limits.get(window))
+                .and_then(|limit| limit.get("pct"))
+                .and_then(Value::as_f64)
+                .filter(|pct| pct.is_finite())
+                .map(|pct| pct.round().clamp(0.0, 100.0) as u32)
+        };
+        Self {
+            show_bar: body.get("collection").and_then(|collection| collection.get("showBar")).and_then(Value::as_bool).unwrap_or(true),
+            five_hour: percent("fiveHour"),
+            seven_day: percent("sevenDay"),
+        }
+    }
+}
+
 /// JSON over loopback with the bearer token. No proxy (the token would reach it), no redirects,
 /// short timeouts, and the host is always 127.0.0.1.
 pub struct CoreClient {
@@ -296,14 +324,18 @@ impl CoreClient {
         self.finish(request.call())
     }
 
-    fn post_empty_object(&self, path: &str) -> Result<Value, CoreError> {
+    fn post_json(&self, path: &str, body: &str) -> Result<Value, CoreError> {
         let request = self
             .agent
             .post(format!("{}{}", self.origin, path))
             .header("Authorization", &self.authorization)
             .header("Accept", "application/json")
             .header("Content-Type", "application/json");
-        self.finish(request.send("{}"))
+        self.finish(request.send(body))
+    }
+
+    fn post_empty_object(&self, path: &str) -> Result<Value, CoreError> {
+        self.post_json(path, "{}")
     }
 
     /// GET /api/v1/status
@@ -337,10 +369,31 @@ impl CoreClient {
             .collect())
     }
 
+    /// GET /api/v1/usage: the plan limits for the tray tooltip. Ok(None) from a Core without usage (404).
+    pub fn usage(&self) -> Result<Option<UsageBrief>, CoreError> {
+        match self.get("/api/v1/usage") {
+            Ok(body) if body.is_object() => Ok(Some(UsageBrief::from_json(&body))),
+            Ok(_) => Err(CoreError::Unavailable("JERRY Core returned an unexpected usage summary".to_owned())),
+            Err(CoreError::Http(404, _)) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     /// POST /api/v1/ui/login-codes: a one-time dashboard login link. Only a link to this Core's own
     /// loopback origin is accepted.
     pub fn login_url(&self) -> Result<String, CoreError> {
-        let body = self.post_empty_object("/api/v1/ui/login-codes")?;
+        self.login_url_to(None)
+    }
+
+    /// A one-time login link that lands on `route` ("#/tasks/JRY-0001") after signing in. Core
+    /// validates the route again; one it does not accept, or a Core without landing routes, lands
+    /// on the dashboard's root. An invalid route is not sent at all.
+    pub fn login_url_to(&self, route: Option<&str>) -> Result<String, CoreError> {
+        let body = match route.filter(|route| is_dashboard_route(route)) {
+            Some(route) => serde_json::json!({ "next": route }).to_string(),
+            None => "{}".to_owned(),
+        };
+        let body = self.post_json("/api/v1/ui/login-codes", &body)?;
         let url = body.get("url").and_then(Value::as_str).unwrap_or("");
         if !url.starts_with(&format!("{}/", self.origin)) {
             return Err(CoreError::Unavailable("JERRY Core returned a login link to another address".to_owned()));
@@ -497,6 +550,27 @@ pub enum Navigation {
     External,
     /// Neither: nothing sensible to open.
     Block,
+    /// The dashboard asks for the app's own settings (its "Desktop app settings…" link): cancel the
+    /// navigation and show the local settings window instead.
+    OpenSettings,
+}
+
+/// The address on Core's origin that the dashboard links to for the app's settings.
+pub const DESKTOP_SETTINGS_PATH: &str = "/desktop/settings";
+
+/// The marker the dashboard looks for in the main window's user agent.
+pub const USER_AGENT_MARKER: &str = "JerryDesktop/";
+
+/// WebView2's own user agent with " JerryDesktop/<version>" appended, once.
+pub fn user_agent_with_marker(default: &str, version: &str) -> String {
+    let default = default.trim_end();
+    if default.contains(USER_AGENT_MARKER) {
+        return default.to_owned();
+    }
+    if default.is_empty() {
+        return format!("{USER_AGENT_MARKER}{version}");
+    }
+    format!("{default} {USER_AGENT_MARKER}{version}")
 }
 
 /// The app's own pages: tauri://localhost on macOS/Linux, http(s)://tauri.localhost on Windows,
@@ -525,14 +599,61 @@ pub fn is_core_page(url: &Url, core_port: Option<u16>) -> bool {
 }
 
 /// Where a navigation of the main window may go: the app's pages and the current Core's dashboard
-/// stay in the window; other web links open in the system browser; everything else is refused.
+/// stay in the window, except the dashboard's link to the app's settings, which opens the local
+/// settings window; other web links open in the system browser; everything else is refused.
 pub fn navigation_decision(url: &Url, core_port: Option<u16>, local_base: &Url) -> Navigation {
+    if is_core_page(url, core_port) && url.path().trim_end_matches('/') == DESKTOP_SETTINGS_PATH {
+        return Navigation::OpenSettings;
+    }
     if is_local_page(url, local_base) || is_core_page(url, core_port) {
         return Navigation::Allow;
     }
     match url.scheme() {
         "http" | "https" | "mailto" => Navigation::External,
         _ => Navigation::Block,
+    }
+}
+
+/// The longest dashboard route a login link may carry (Core's limit).
+pub const MAX_ROUTE_LENGTH: usize = 200;
+
+/// A dashboard route as Core accepts it after a login: "#/" and then letters, digits and
+/// `-_/%.?=&` only, at most 200 characters (Core's `^#\/[A-Za-z0-9\-_\/%.?=&]*$`).
+pub fn is_dashboard_route(route: &str) -> bool {
+    route.len() <= MAX_ROUTE_LENGTH
+        && route.starts_with("#/")
+        && route[2..].chars().all(|c| c.is_ascii_alphanumeric() || "-_/%.?=&".contains(c))
+}
+
+/// The dashboard of the Core on `port` at `route`: http://127.0.0.1:<port>/#/tasks/JRY-0001.
+/// `None` for a route that is not a dashboard route.
+pub fn dashboard_url(port: u16, route: &str) -> Option<Url> {
+    if !is_dashboard_route(route) {
+        return None;
+    }
+    Url::parse(&format!("http://127.0.0.1:{port}/{route}")).ok()
+}
+
+/// What a click on a notification does with the main window (which is shown and focused either way).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClickTarget {
+    /// Leave the window as it is: the dashboard is already open and there is no route.
+    Show,
+    /// The window is on the signed-in dashboard: go to the route there, without a new login.
+    Navigate(Url),
+    /// Open the dashboard with a fresh login link that lands on the route (or the root).
+    Login(Option<String>),
+}
+
+/// Decides a notification click from the main window's address, the running Core's port and the
+/// notification's route. A route that is not a dashboard route counts as none.
+pub fn click_target(current: Option<&Url>, core_port: Option<u16>, route: Option<&str>) -> ClickTarget {
+    let route = route.filter(|route| is_dashboard_route(route));
+    let on_dashboard = current.is_some_and(|url| is_core_page(url, core_port));
+    match (on_dashboard, core_port, route) {
+        (true, Some(port), Some(route)) => dashboard_url(port, route).map_or(ClickTarget::Show, ClickTarget::Navigate),
+        (true, _, None) => ClickTarget::Show,
+        (_, _, route) => ClickTarget::Login(route.map(str::to_owned)),
     }
 }
 
@@ -768,6 +889,69 @@ mod tests {
     }
 
     #[test]
+    fn a_login_link_can_ask_for_a_landing_route() {
+        let good_url = |port: u16| format!("http://127.0.0.1:{port}/ui/login?code={}&next=%23%2Ftasks%2FJRY-0001", "cd".repeat(16));
+        let answer = |port: u16| (200, serde_json::json!({ "url": good_url(port), "expiresAt": "2026-11-06T22:14:15.083Z" }).to_string());
+        let (port, seen) = mock_core(|port| vec![answer(port), answer(port), answer(port)]);
+        let client = CoreClient::new(&info_for(port), REQUEST_TIMEOUT);
+        assert_eq!(client.login_url_to(Some("#/tasks/JRY-0001")).unwrap(), good_url(port));
+        let request = seen.recv().unwrap();
+        assert_eq!((request.method.as_str(), request.path.as_str()), ("POST", "/api/v1/ui/login-codes"));
+        assert_eq!(serde_json::from_str::<Value>(&request.body).unwrap(), serde_json::json!({ "next": "#/tasks/JRY-0001" }));
+        assert_authorized(&request, port);
+        // An invalid route is not sent: the link lands on the root.
+        client.login_url_to(Some("https://example.com/")).unwrap();
+        assert_eq!(seen.recv().unwrap().body, "{}");
+        client.login_url_to(None).unwrap();
+        assert_eq!(seen.recv().unwrap().body, "{}");
+    }
+
+    #[test]
+    fn dashboard_routes_are_checked_like_core_does() {
+        for good in ["#/", "#/tasks", "#/tasks/JRY-0001", "#/projects/D%3A%5CWork", "#/tasks?filter=waiting&x=1"] {
+            assert!(is_dashboard_route(good), "{good}");
+        }
+        let long = format!("#/{}", "a".repeat(MAX_ROUTE_LENGTH - 1));
+        for bad in ["", "#", "#tasks", "/#/tasks", "tasks", "//evil.example", "javascript:alert(1)", "#/tasks/<x>", "#/a b", "#/é", "#/a\r\nb", long.as_str()] {
+            assert!(!is_dashboard_route(bad), "{bad:?}");
+        }
+        assert!(is_dashboard_route(&long[..MAX_ROUTE_LENGTH]));
+    }
+
+    #[test]
+    fn the_dashboard_url_of_a_route_stays_on_core() {
+        let url = dashboard_url(47823, "#/tasks/JRY-0001").unwrap();
+        assert_eq!(url.as_str(), "http://127.0.0.1:47823/#/tasks/JRY-0001");
+        assert!(is_core_page(&url, Some(47823)));
+        assert_eq!(dashboard_url(47823, "#/").unwrap().as_str(), "http://127.0.0.1:47823/#/");
+        assert_eq!(dashboard_url(47823, "//evil.example/"), None);
+        assert_eq!(dashboard_url(47823, "#/@evil.example"), None);
+    }
+
+    #[test]
+    fn a_notification_click_navigates_on_the_dashboard_and_logs_in_elsewhere() {
+        let local = Url::parse("http://tauri.localhost/index.html").unwrap();
+        let dashboard = Url::parse("http://127.0.0.1:47823/#/overview").unwrap();
+        let other_core = Url::parse("http://127.0.0.1:47824/").unwrap();
+        let route = Some("#/tasks/JRY-0001");
+        let navigate = ClickTarget::Navigate(Url::parse("http://127.0.0.1:47823/#/tasks/JRY-0001").unwrap());
+        let login = ClickTarget::Login(Some("#/tasks/JRY-0001".to_owned()));
+
+        assert_eq!(click_target(Some(&dashboard), Some(47823), route), navigate);
+        assert_eq!(click_target(Some(&local), Some(47823), route), login, "the fallback page signs in first");
+        assert_eq!(click_target(Some(&other_core), Some(47823), route), login, "a Core that is gone");
+        assert_eq!(click_target(Some(&dashboard), None, route), login, "no Core known");
+        assert_eq!(click_target(None, Some(47823), route), login);
+
+        // No route (Core stopped, the test notification): the window as it is, or the dashboard's root.
+        assert_eq!(click_target(Some(&dashboard), Some(47823), None), ClickTarget::Show);
+        assert_eq!(click_target(Some(&local), None, None), ClickTarget::Login(None));
+        // A route that is not a dashboard route counts as none.
+        assert_eq!(click_target(Some(&dashboard), Some(47823), Some("https://example.com/")), ClickTarget::Show);
+        assert_eq!(click_target(Some(&local), Some(47823), Some("//evil.example")), ClickTarget::Login(None));
+    }
+
+    #[test]
     fn shutdown_posts_an_empty_object() {
         let (port, seen) = mock_core(|_| vec![(202, r#"{"stopping":true}"#.to_owned())]);
         CoreClient::new(&info_for(port), REQUEST_TIMEOUT).shutdown().unwrap();
@@ -919,5 +1103,64 @@ mod tests {
         assert!(is_local_page(&Url::parse("http://127.0.0.1:1430/settings.html").unwrap(), &dev));
         assert!(!is_local_page(&Url::parse("http://127.0.0.1:1431/settings.html").unwrap(), &dev));
         assert_eq!(navigation_decision(&Url::parse("http://127.0.0.1:1430/index.html").unwrap(), Some(47823), &dev), Navigation::Allow);
+    }
+
+    #[test]
+    fn the_dashboards_settings_link_opens_the_local_settings_window() {
+        let base = Url::parse("http://tauri.localhost/").unwrap();
+        let decide = |url: &str, port: Option<u16>| navigation_decision(&Url::parse(url).unwrap(), port, &base);
+        assert_eq!(decide("http://127.0.0.1:47823/desktop/settings", Some(47823)), Navigation::OpenSettings);
+        assert_eq!(decide("http://127.0.0.1:47823/desktop/settings/", Some(47823)), Navigation::OpenSettings);
+        assert_eq!(decide("http://127.0.0.1:47823/desktop/settings?from=dashboard#x", Some(47823)), Navigation::OpenSettings);
+        // Only on the current Core's origin; anything else stays what it was.
+        assert_eq!(decide("http://127.0.0.1:47823/desktop/settings", Some(51000)), Navigation::External);
+        assert_eq!(decide("http://127.0.0.1:47823/desktop/settings", None), Navigation::External);
+        assert_eq!(decide("https://127.0.0.1:47823/desktop/settings", Some(47823)), Navigation::External);
+        assert_eq!(decide("http://localhost:47823/desktop/settings", Some(47823)), Navigation::External);
+        assert_eq!(decide("http://user@127.0.0.1:47823/desktop/settings", Some(47823)), Navigation::External);
+        assert_eq!(decide("https://example.com/desktop/settings", Some(47823)), Navigation::External);
+        assert_eq!(decide("http://127.0.0.1:47823/desktop/settings-other", Some(47823)), Navigation::Allow);
+        assert_eq!(decide("http://127.0.0.1:47823/desktop", Some(47823)), Navigation::Allow);
+        assert_eq!(decide("http://127.0.0.1:47823/#/settings", Some(47823)), Navigation::Allow);
+        assert_eq!(decide("http://tauri.localhost/desktop/settings", None), Navigation::Allow);
+    }
+
+    #[test]
+    fn the_user_agent_keeps_webviews_own_and_gets_the_marker_once() {
+        let edge = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36 Edg/142.0.0.0";
+        let marked = user_agent_with_marker(edge, "0.1.0");
+        assert_eq!(marked, format!("{edge} JerryDesktop/0.1.0"));
+        assert_eq!(user_agent_with_marker(&marked, "0.2.0"), marked, "already marked: unchanged");
+        assert_eq!(user_agent_with_marker("", "0.1.0"), "JerryDesktop/0.1.0");
+    }
+
+    #[test]
+    fn usage_is_read_for_the_tooltip_and_a_core_without_it_is_no_error() {
+        let summary = serde_json::json!({
+            "collection": { "statusline": "on", "telemetry": "on", "showBar": true },
+            "limits": {
+                "fiveHour": { "pct": 22.6, "resetsAt": null, "readAt": "2026-11-07T10:00:00.000Z", "entrypoint": "cli" },
+                "sevenDay": null
+            }
+        });
+        let (port, seen) = mock_core(|_| vec![(200, summary.to_string()), (404, serde_json::json!({ "error": "Not found" }).to_string()), (500, "{}".to_owned())]);
+        let client = CoreClient::new(&info_for(port), REQUEST_TIMEOUT);
+        assert_eq!(client.usage().unwrap(), Some(UsageBrief { show_bar: true, five_hour: Some(23), seven_day: None }));
+        let request = seen.recv().unwrap();
+        assert_eq!((request.method.as_str(), request.path.as_str()), ("GET", "/api/v1/usage"));
+        assert_authorized(&request, port);
+        assert_eq!(client.usage().unwrap(), None, "an older Core answers 404");
+        assert!(matches!(client.usage(), Err(CoreError::Http(500, _))));
+    }
+
+    #[test]
+    fn usage_fields_are_read_defensively() {
+        let read = |value: Value| UsageBrief::from_json(&value);
+        assert_eq!(read(serde_json::json!({})), UsageBrief { show_bar: true, five_hour: None, seven_day: None });
+        assert_eq!(
+            read(serde_json::json!({ "collection": { "showBar": false }, "limits": { "fiveHour": { "pct": 130 }, "sevenDay": { "pct": "41" } } })),
+            UsageBrief { show_bar: false, five_hour: Some(100), seven_day: None }
+        );
+        assert_eq!(read(serde_json::json!({ "limits": { "sevenDay": { "pct": -3 } } })).seven_day, Some(0));
     }
 }

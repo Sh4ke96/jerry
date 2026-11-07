@@ -19,7 +19,7 @@ const dist = path.join(root, 'dist');
 const dashboardRequire = createRequire(path.join(root, 'apps/dashboard/package.json'));
 const { default: tailwindcss } = await import(pathToFileURL(dashboardRequire.resolve('@tailwindcss/vite')).href);
 
-/** The JERRY Desktop app icons (the "J" logo) double as the dashboard's web app icons. */
+/** The Jerry desktop app icons (the "J" logo) double as the dashboard's web app icons. */
 const DESKTOP_ICONS = { '32x32.png': 'icon-32.png', '128x128@2x.png': 'icon-256.png', 'icon.png': 'icon-512.png' };
 
 function writeIcons(directory) {
@@ -44,8 +44,11 @@ const common = {
   logLevel: 'warning',
 };
 
-const [bridgeBuild] = await Promise.all([
+const [bridgeBuild, statuslineBuild] = await Promise.all([
   build({ ...common, entryPoints: [path.join(root, 'apps/hook-bridge/src/main.ts')], outfile: path.join(dist, 'plugin/hooks/bridge.mjs'), minify: true, metafile: true }),
+  // The status-line script `jerry install` copies to JERRY_HOME/runtime/statusline (Claude Code's
+  // "statusLine" setting cannot come from a plugin).
+  build({ ...common, entryPoints: [path.join(root, 'apps/statusline/src/main.ts')], outfile: path.join(dist, 'plugin/statusline/statusline.mjs'), minify: true, metafile: true }),
   build({ ...common, entryPoints: [path.join(root, 'apps/mcp-server/src/main.ts')], outfile: path.join(dist, 'plugin/mcp/server.mjs'), minify: true }),
   // Fastify and its dependencies are CommonJS and require Node built-ins; an ESM bundle needs a real `require`.
   build({
@@ -57,11 +60,17 @@ const [bridgeBuild] = await Promise.all([
   build({ ...common, entryPoints: [path.join(root, 'apps/cli/src/main.ts')], outfile: path.join(dist, 'cli/jerry.mjs'), banner: { js: '#!/usr/bin/env node' } }),
 ]);
 
-// The bridge starts on every guarded tool call; it must stay free of heavy dependencies.
+// The bridge starts on every guarded tool call and the status line on every refresh; both must stay
+// free of heavy dependencies.
 const BRIDGE_FORBIDDEN = [/[\\/]zod@/, /[\\/]kysely@/, /[\\/]fastify@/];
-const forbidden = Object.keys(bridgeBuild.metafile.inputs).filter((input) => BRIDGE_FORBIDDEN.some((pattern) => pattern.test(input)));
-if (forbidden.length > 0) {
-  throw new Error(`The hook bridge bundle must not include heavy dependencies; found:\n  ${forbidden.slice(0, 5).join('\n  ')}`);
+for (const [name, result] of [
+  ['hook bridge', bridgeBuild],
+  ['status line', statuslineBuild],
+]) {
+  const forbidden = Object.keys(result.metafile.inputs).filter((input) => BRIDGE_FORBIDDEN.some((pattern) => pattern.test(input)));
+  if (forbidden.length > 0) {
+    throw new Error(`The ${name} bundle must not include heavy dependencies; found:\n  ${forbidden.slice(0, 5).join('\n  ')}`);
+  }
 }
 
 // Dashboard: Vue components compiled ahead of time (no runtime template compiler, so the page
@@ -78,7 +87,7 @@ await viteBuild({
 });
 writeIcons(path.join(dashboardDir, 'icons'));
 
-for (const file of ['plugin/hooks/bridge.mjs', 'plugin/mcp/server.mjs', 'core/core.mjs', 'cli/jerry.mjs']) {
+for (const file of ['plugin/hooks/bridge.mjs', 'plugin/statusline/statusline.mjs', 'plugin/mcp/server.mjs', 'core/core.mjs', 'cli/jerry.mjs']) {
   const size = fs.statSync(path.join(dist, file)).size;
   console.log(`dist/${file}  ${(size / 1024).toFixed(1)} KiB`);
 }

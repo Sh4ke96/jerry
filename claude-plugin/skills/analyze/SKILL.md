@@ -61,5 +61,10 @@ Use `/jerry:plan` with the same task ID (`submit_plan` with `taskId`):
 
 Tell the user the task ID and plan version, the analysts that reported, the main findings and gaps, and how
 to approve the plan: in the JERRY dashboard (Tasks tab, `jerry ui`) or with
-`jerry approve <taskId> --stage plan --version <n>`. Never approve it yourself. Git operations stay with the
-user.
+`jerry approve <taskId> --stage plan --version <n>`. Keep it short and end with one line on what waits and
+where (one click in the dashboard).
+
+Then do not end your turn: wait for the decision with `wait_for_decision` (`stage: plan`) and continue as
+`/jerry:plan` describes in "Wait for the decision and continue": implement on approval, revise and resubmit
+on rejection, and call it again while pending, at most 4 calls in a row. Never approve it yourself. Git
+operations stay with the user.

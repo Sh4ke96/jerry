@@ -11,6 +11,7 @@ import { CORE_TOKEN_PATTERN, EVENT_SCHEMA_VERSION, GATE_VERDICTS, HOOK_EVENT_TYP
 export * from './constants.js';
 export * from './agents.js';
 export * from './emoji.js';
+export * from './skills.js';
 
 // ---------------------------------------------------------------------------
 // Claude Code hook input (stdin of a command hook)
@@ -202,6 +203,67 @@ export const planSchema = z.object({
 });
 export type Plan = z.infer<typeof planSchema>;
 
+// ---------------------------------------------------------------------------
+// Settings: the user's workflow preferences (changed only by the user)
+// ---------------------------------------------------------------------------
+
+/**
+ * Independent code review after an accepted implementation. optional: the user asks for it at
+ * acceptance (or runs /jerry:review); required: every acceptance goes to review.
+ */
+export const reviewModeSchema = z.enum(['optional', 'required']);
+export type ReviewMode = z.infer<typeof reviewModeSchema>;
+export const DEFAULT_REVIEW_MODE: ReviewMode = 'optional';
+
+/** The language of the human text of QA scenarios in implementation reports. */
+export const qaLanguageSchema = z.enum(['pl', 'en']);
+export type QaLanguage = z.infer<typeof qaLanguageSchema>;
+export const DEFAULT_QA_LANGUAGE: QaLanguage = 'pl';
+
+/** Whether the dashboard's top bar (and the Jerry app's tray tooltip) shows the compact usage bar. */
+export const DEFAULT_USAGE_SHOW_BAR = true;
+
+/**
+ * How the dashboard confirms reversible decisions (approve or reject a plan, accept or reject a
+ * report, approve or reject a fix plan, skip review, pause, resume). click: one confirmation dialog
+ * with the decision button; typed: the task ID must be typed as well. Irreversible actions (cancel a
+ * task, remove a project, prune or forget data, exclude a repository) always need the typed
+ * confirmation, whatever this says.
+ */
+export const decisionConfirmationSchema = z.enum(['click', 'typed']);
+export type DecisionConfirmation = z.infer<typeof decisionConfirmationSchema>;
+export const DEFAULT_DECISION_CONFIRMATION: DecisionConfirmation = 'click';
+
+/** GET and POST /api/v1/settings: the global settings. */
+export const settingsSchema = z.object({
+  reviewMode: reviewModeSchema,
+  qaLanguage: qaLanguageSchema,
+  usageShowBar: z.boolean(),
+  decisionConfirmation: decisionConfirmationSchema.default(DEFAULT_DECISION_CONFIRMATION),
+});
+export type Settings = z.infer<typeof settingsSchema>;
+
+/** POST /api/v1/settings: the settings to change; at least one. */
+export const settingsUpdateRequestSchema = z
+  .strictObject({
+    reviewMode: reviewModeSchema.optional(),
+    qaLanguage: qaLanguageSchema.optional(),
+    usageShowBar: z.boolean().optional(),
+    decisionConfirmation: decisionConfirmationSchema.optional(),
+  })
+  .refine((update) => Object.values(update).some((value) => value !== undefined), {
+    message: 'name at least one setting to change (reviewMode, qaLanguage, usageShowBar or decisionConfirmation)',
+  });
+export type SettingsUpdateRequest = z.infer<typeof settingsUpdateRequestSchema>;
+
+/** POST /api/v1/projects/settings: a project's own review mode; null follows the global setting. */
+export const projectSettingsRequestSchema = z.strictObject({ path: z.string().min(1), reviewMode: reviewModeSchema.nullable() });
+export type ProjectSettingsRequest = z.infer<typeof projectSettingsRequestSchema>;
+
+/** What Claude follows in a repository: the QA language and the effective review mode there. */
+export const preferencesSchema = z.object({ qaLanguage: qaLanguageSchema, reviewMode: reviewModeSchema });
+export type Preferences = z.infer<typeof preferencesSchema>;
+
 /** A manual QA scenario. */
 export const qaScenarioSchema = z.object({
   id: text,
@@ -250,6 +312,8 @@ export const implementationReportSchema = z.object({
   /** Proposed commit subjects in the repository's convention; the user commits. */
   commitSubjects: z.array(text).min(1),
   qaScenarios: z.array(qaScenarioSchema).min(1),
+  /** The language the QA scenarios' human text is written in (the user's QA language setting). */
+  qaLanguage: qaLanguageSchema.optional(),
   /** Optional artifact (demo, presentation); never written into the repository. */
   artifact: z.string().default(''),
 });
@@ -335,6 +399,11 @@ export const approvalRecordSchema = z.object({
   approvedBy: z.literal('local-user'),
   approvedAt: z.iso.datetime(),
   comment: z.string(),
+  /**
+   * Accepting an implementation only: whether the user sent it to independent review. Absent on
+   * other decisions and on acceptances made before review became optional (those always went to review).
+   */
+  review: z.boolean().optional(),
 });
 export type ApprovalRecord = z.infer<typeof approvalRecordSchema>;
 
@@ -374,7 +443,10 @@ export type WorkflowTransition = z.infer<typeof workflowTransitionSchema>;
 export const taskTransitionRequestSchema = z.object({
   event: z.enum(['task.paused', 'task.resumed', 'task.cancelled']),
   reason: z.string().default(''),
-  /** Required from the dashboard when cancelling: the task ID typed by the user. */
+  /**
+   * The task ID typed by the user in the dashboard: always required when cancelling; for pause and
+   * resume only when the decision confirmation setting is 'typed'.
+   */
   confirmTaskId: z.string().optional(),
 });
 
@@ -430,10 +502,49 @@ export const approvalRequestSchema = z.object({
   version: z.number().int().positive(),
   decision: approvalDecisionSchema,
   comment: z.string().default(''),
-  /** Required from the dashboard: the task ID typed by the user, like the CLI's confirmation prompt. */
+  /**
+   * The task ID typed by the user in the dashboard, like the CLI's confirmation prompt; required only
+   * when the decision confirmation setting is 'typed'.
+   */
   confirmTaskId: z.string().optional(),
+  /**
+   * Accepting an implementation only: send it to independent review. Missing: the effective review
+   * mode decides (optional: no review, required: review); false is refused while review is required.
+   */
+  review: z.boolean().optional(),
 });
 export type ApprovalRequest = z.infer<typeof approvalRequestSchema>;
+
+/**
+ * Waiting for the user's decision after Claude submitted something (MCP wait_for_decision). The
+ * stages use the CLI's words (jerry approve --stage …); the version is the plan version, the report
+ * version or the review round of the fix plan. Read-only: waiting never decides anything.
+ */
+export const DECISION_WAIT_STAGES = ['plan', 'implementation', 'review-fix'] as const;
+export const decisionWaitStageSchema = z.enum(DECISION_WAIT_STAGES);
+export type DecisionWaitStage = z.infer<typeof decisionWaitStageSchema>;
+/** The longest one request may wait; Core caps waitMs at it. */
+export const DECISION_WAIT_MAX_MS = 5 * 60_000;
+export const decisionWaitQuerySchema = z.object({
+  stage: decisionWaitStageSchema,
+  version: z.coerce.number().int().positive(),
+  /** How long to wait for a decision before answering 'pending' (0: answer at once). */
+  waitMs: z.coerce.number().int().min(0).default(0),
+});
+export const decisionWaitResultSchema = z.object({
+  taskId: taskIdSchema,
+  stage: decisionWaitStageSchema,
+  version: z.number().int().positive(),
+  status: z.enum(['approved', 'rejected', 'pending']),
+  /** The user's comment on the decision (what to change after a rejection). */
+  comment: z.string().optional(),
+  decidedAt: z.iso.datetime().optional(),
+  /** Accepting an implementation only: whether the user sent it to independent review. */
+  review: z.boolean().optional(),
+  /** The task's workflow state when the answer was sent. */
+  state: workflowStateSchema,
+});
+export type DecisionWaitResult = z.infer<typeof decisionWaitResultSchema>;
 
 // ---------------------------------------------------------------------------
 // Sessions and Core state
@@ -443,6 +554,8 @@ export const sessionRegistrationSchema = z.object({
   sessionId: z.string().min(1),
   cwd: z.string().min(1),
   source: z.string().nullable(),
+  /** CLAUDE_CODE_ENTRYPOINT of the session (cli, claude-vscode, …); absent from older bridges. */
+  entrypoint: z.string().nullable().optional(),
 });
 export type SessionRegistration = z.infer<typeof sessionRegistrationSchema>;
 
@@ -578,17 +691,29 @@ export const taskActivitySchema = z.object({
 });
 export type TaskActivity = z.infer<typeof taskActivitySchema>;
 
+/** Files another task changed after a task's report, under that other task's approved plan. */
+export const laterWorkSchema = z.object({ taskId: taskIdSchema, files: z.array(z.string()) });
+export type LaterWork = z.infer<typeof laterWorkSchema>;
+
 /** Core's final checks when the user accepted a report; DONE follows only if they pass. */
 export const completionCheckSchema = z.object({
   taskId: taskIdSchema,
   reportVersion: z.number().int().positive().nullable(),
   at: z.iso.datetime(),
   passed: z.boolean(),
-  conditions: z.array(z.object({ id: z.string(), blocking: z.boolean(), passed: z.boolean(), detail: z.string() })),
+  /** code.later-work also carries the structured list of later work. */
+  conditions: z.array(z.object({ id: z.string(), blocking: z.boolean(), passed: z.boolean(), detail: z.string(), laterWork: z.array(laterWorkSchema).optional() })),
   /** The plan's Definition of Done, confirmed by the user's acceptance. */
   definitionOfDone: z.array(z.string()),
+  /** Files other tasks changed after the report under their approved plans; they do not block DONE. */
+  laterWork: z.array(laterWorkSchema).default([]),
 });
 export type CompletionCheck = z.infer<typeof completionCheckSchema>;
+
+/** POST /api/v1/tasks/:id/final-checks: the user re-ran the final checks of a task in FINAL_REPORT. */
+export const finalChecksRerunRequestSchema = z.object({ confirmTaskId: z.string().optional() }).default({});
+export const finalChecksRerunSchema = z.object({ check: completionCheckSchema, state: workflowStateSchema });
+export type FinalChecksRerun = z.infer<typeof finalChecksRerunSchema>;
 
 /** `path:line` or `path:line-line`, repo-relative (absolute paths inside the repository are accepted). */
 const evidenceSchema = z.string().trim().regex(/^.+:\d+(-\d+)?$/, 'evidence is path:line or path:line-line');
@@ -918,8 +1043,10 @@ export const finalReportSchema = z.object({
   }),
   qa: z.array(z.record(z.string(), z.unknown())),
   security: z.object({ risks: z.array(z.object({ risk: z.string(), severity: z.string(), mitigation: z.string() })), openFindings: z.array(z.string()), securityFindings: z.array(z.string()) }),
+  /** Null before the implementation is accepted. When the user did not request review: requested false, outcome "not requested". */
   review: z
     .object({
+      requested: z.boolean(),
       outcome: z.string(),
       rounds: z.number().int(),
       reviewers: z.array(z.object({ role: z.string(), independent: z.boolean(), note: z.string() })),
@@ -933,6 +1060,8 @@ export const finalReportSchema = z.object({
   /** What was checked and what was not (the coverage ledger). */
   coverage: z.object({ reviewedFiles: z.array(z.string()), notReviewed: z.array(z.string()), checksNotRun: z.array(z.string()) }),
   limitations: z.array(z.string()),
+  /** Changed later by other tasks: files other tasks changed after the report under their approved plans. */
+  laterWork: z.array(laterWorkSchema).default([]),
   decisions: z.array(z.string()),
   definitionOfDone: z.object({ items: z.array(z.string()), passed: z.boolean(), evidence: z.array(z.object({ id: z.string(), blocking: z.boolean(), passed: z.boolean(), detail: z.string() })) }),
 });
@@ -960,7 +1089,11 @@ export const evalCaseResultSchema = z.object({
   attempts: z.array(evalAttemptSchema),
 });
 export type EvalCaseResult = z.infer<typeof evalCaseResultSchema>;
-export const jerryFingerprintSchema = z.object({ total: z.string(), components: z.object({ skills: z.string(), agents: z.string(), hooks: z.string(), rules: z.string() }) });
+export const jerryFingerprintSchema = z.object({
+  total: z.string(),
+  // addedSkills: the skills the user added through JERRY (names and content hashes); absent when there are none.
+  components: z.object({ skills: z.string(), agents: z.string(), hooks: z.string(), rules: z.string(), addedSkills: z.string().optional() }),
+});
 export const evalRunSubmissionSchema = z.object({
   startedAt: z.iso.datetime(),
   finishedAt: z.iso.datetime(),
@@ -1052,6 +1185,10 @@ export const taskSummarySchema = taskWithDecisionSchema.extend({
   analyses: z.array(analysisReportRecordSchema).default([]),
   /** Subagent runs of the sessions linked to the task. */
   agentRuns: z.array(agentRunSchema).default([]),
+  /** Whether the user sent the accepted latest report to independent review; null until it is accepted. */
+  reviewRequested: z.boolean().nullable().default(null),
+  /** The review mode in the task's repository: its project's own, else the global setting. */
+  effectiveReviewMode: reviewModeSchema.default(DEFAULT_REVIEW_MODE),
 });
 export type TaskSummary = z.infer<typeof taskSummarySchema>;
 
@@ -1100,6 +1237,13 @@ export const repositoryStateSchema = z.object({
   tasks: z.array(taskSummarySchema),
   /** Tasks the asking session worked on, when it said which session it is. */
   sessionTasks: z.array(taskIdSchema).default([]),
+  /** The user's settings as they apply in this repository; missing only from an older Core. */
+  preferences: preferencesSchema.optional(),
+  /**
+   * Added skills that are on and assigned to at least one state: JERRY tells Claude to use them while
+   * an open task is in one of their states. Missing only from an older Core.
+   */
+  skills: z.array(z.object({ name: z.string(), description: z.string(), states: z.array(workflowStateSchema) })).optional(),
 });
 export type RepositoryState = z.infer<typeof repositoryStateSchema>;
 
@@ -1178,11 +1322,15 @@ export const projectSchema = z.object({
   /** "cli", "dashboard" or "migration" (repositories that had open tasks when projects were introduced). */
   addedBy: z.string(),
   note: z.string().nullable(),
+  /** The project's own review mode; null follows the global setting. */
+  reviewMode: reviewModeSchema.nullable().default(null),
 });
 export type Project = z.infer<typeof projectSchema>;
 
 /** A project as `jerry project list` and the dashboard show it. */
 export const projectSummarySchema = projectSchema.extend({
+  /** The review mode that applies in the project: its own, else the global setting. */
+  effectiveReviewMode: reviewModeSchema.default(DEFAULT_REVIEW_MODE),
   tasks: z.number().int().nonnegative(),
   openTasks: z.number().int().nonnegative(),
   /** Latest task activity or session seen in the project; null when nothing happened yet. */
@@ -1256,7 +1404,7 @@ export const dataUsageSchema = z.object({
   logs: z.object({ dir: z.string(), bytes: count }),
   /** Database, backups and logs. */
   totalBytes: count,
-  /** Events and sessions older than this are removed automatically. */
+  /** Events, sessions and Claude usage older than this are removed automatically. */
   retentionDays: z.number().int().positive(),
 });
 export type DataUsage = z.infer<typeof dataUsageSchema>;
@@ -1267,7 +1415,7 @@ const days = z.number().int().min(0).max(36500);
 export const pruneOptionsSchema = z.object({
   /** DONE and CANCELLED tasks last changed more than this many days ago, with everything tied to them. */
   doneOlderThanDays: days.optional(),
-  /** Events, sessions and subagent runs older than this; untied quality batches and test runs too. */
+  /** Events, sessions and subagent runs older than this; untied quality batches, test runs and Claude usage too. */
   eventsOlderThanDays: days.optional(),
   /** Eval runs older than this, except runs that were ever a baseline. */
   evalsOlderThanDays: days.optional(),
@@ -1336,7 +1484,21 @@ export const gatePreviewResponseSchema = z.object({
   decisions: z.array(gateDecisionSchema.extend({ path: z.string() })),
 });
 
-/** One-time dashboard login link, created for the CLI's `jerry ui`. */
+/**
+ * Where a dashboard login link may lead after signing in: a dashboard route such as
+ * "#/tasks/JRY-0001". Only a hash route of plain characters, so the redirect after the login never
+ * leaves the dashboard (no other path, host, scheme or header break).
+ */
+export const LOGIN_NEXT_MAX_LENGTH = 200;
+export const LOGIN_NEXT_PATTERN = /^#\/[A-Za-z0-9\-_/%.?=&]*$/;
+export const loginNextSchema = z.string().max(LOGIN_NEXT_MAX_LENGTH).regex(LOGIN_NEXT_PATTERN);
+
+/** Body of a login code request (CLI and the Jerry app); an invalid `next` is ignored, not refused. */
+export const loginCodeRequestSchema = z.object({
+  next: loginNextSchema.optional().catch(undefined),
+});
+
+/** One-time dashboard login link, created for the CLI's `jerry ui` and the Jerry app. */
 export const loginCodeResponseSchema = z.object({
   url: z.string().url(),
   expiresAt: z.iso.datetime(),
@@ -1351,3 +1513,96 @@ export const apiErrorSchema = z.object({
   error: z.string(),
   details: z.unknown().optional(),
 });
+
+// --- Claude usage: plan limits, tokens and cost, JERRY's share ----------------------------------
+
+/** One plan-usage window as Claude Code's status line reports it. */
+export const usageWindowSchema = z.object({ pct: z.number().nonnegative().max(100_000), resetsAt: z.iso.datetime().nullable() });
+
+const optionalAmount = z.number().nonnegative().max(1e12).optional();
+
+/**
+ * What JERRY's status-line script reports (the UsageSnapshot of @jerry/platform). Optional fields
+ * are absent when Claude Code did not provide them.
+ */
+export const usageSnapshotSchema = z.object({
+  sessionId: z.string().min(1).max(200).nullable(),
+  cwd: z.string().min(1).max(4096).nullable(),
+  model: z.string().max(200).nullable(),
+  version: z.string().max(100).nullable(),
+  fiveHour: usageWindowSchema.optional(),
+  sevenDay: usageWindowSchema.optional(),
+  costUsd: optionalAmount,
+  inputTokens: optionalAmount,
+  outputTokens: optionalAmount,
+  contextUsedPct: z.number().nonnegative().max(100_000).optional(),
+  entrypoint: z.string().max(100).nullable(),
+  at: z.iso.datetime(),
+});
+export type UsageSnapshotRecord = z.infer<typeof usageSnapshotSchema>;
+
+/** POST /api/v1/usage/snapshots (CLI token only): what the status-line script sends. */
+export const usageSnapshotsRequestSchema = z.object({ snapshots: z.array(usageSnapshotSchema).min(1).max(500) });
+/** accepted: snapshots in the request; stored: kept for a project session; limits: plan-limit readings kept. */
+export const usageSnapshotsResultSchema = z.object({ accepted: count, stored: count, limits: count });
+
+/** on: JERRY's status line is set; not-jerry: another status line is; off: none is. */
+export const statuslineCollectionSchema = z.enum(['on', 'off', 'not-jerry']);
+/** on: JERRY's telemetry keys are set; clash: the user configured telemetry themselves (JERRY left it alone); off: neither. */
+export const telemetryCollectionSchema = z.enum(['on', 'off', 'clash']);
+
+export const usageCollectionSchema = z.object({ statusline: statuslineCollectionSchema, telemetry: telemetryCollectionSchema, showBar: z.boolean() });
+export type UsageCollection = z.infer<typeof usageCollectionSchema>;
+
+/** POST /api/v1/usage/collection: turns both sources on or off in the user's Claude Code settings. */
+export const usageCollectionRequestSchema = z.strictObject({ enabled: z.boolean() });
+/** The new collection status; problems says what could not be changed (e.g. a telemetry clash). */
+export const usageCollectionResultSchema = usageCollectionSchema.extend({ problems: z.array(z.string()) });
+export type UsageCollectionResult = z.infer<typeof usageCollectionResultSchema>;
+
+/** When a source last delivered anything, overall and per Claude Code entrypoint (e.g. cli, claude-vscode). */
+export const usageSourceSchema = z.object({ lastAt: z.iso.datetime().nullable(), byEntrypoint: z.record(z.string(), z.iso.datetime()) });
+
+/** The last known reading of one plan window; null when there is none or its reset time has passed. */
+export const usageLimitSchema = z
+  .object({ pct: z.number().nonnegative(), resetsAt: z.iso.datetime().nullable(), readAt: z.iso.datetime(), entrypoint: z.string().nullable() })
+  .nullable();
+export type UsageLimit = z.infer<typeof usageLimitSchema>;
+
+const amount = z.number().nonnegative();
+
+export const usageTotalsSchema = z.object({ input: amount, output: amount, cacheRead: amount, cacheCreation: amount, tokens: amount, costUsd: amount });
+export type UsageTotals = z.infer<typeof usageTotalsSchema>;
+
+/**
+ * GET /api/v1/usage: Claude usage as JERRY knows it. Tokens and cost come from telemetry where a
+ * session sent it, else from the status line's snapshots; only sessions in projects count. Limits
+ * are account-wide. Days are the local days of the machine Core runs on.
+ */
+export const usageSummarySchema = z.object({
+  collection: usageCollectionSchema,
+  sources: z.object({ statusline: usageSourceSchema, telemetry: usageSourceSchema }),
+  limits: z.object({ fiveHour: usageLimitSchema, sevenDay: usageLimitSchema }),
+  totals: z.object({ today: usageTotalsSchema, last7d: usageTotalsSchema, last30d: usageTotalsSchema }),
+  /** Last 30 days, most tokens first. */
+  byModel: z.array(z.object({ model: z.string(), tokens: amount, costUsd: amount })),
+  byProject: z.array(z.object({ repoRoot: z.string(), name: z.string(), tokens: amount, costUsd: amount })),
+  byEntrypoint: z.array(z.object({ entrypoint: z.string(), tokens: amount, costUsd: amount })),
+  /** The last 30 local days, oldest first; days without usage are zero. */
+  daily: z.array(z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), tokens: amount, costUsd: amount })),
+  /** What JERRY itself put into Claude's context in the last 30 days, in characters (tokens estimated as chars / 4). */
+  jerryShare: z.object({ chars30d: count, estimatedTokens30d: count, sessionStart: count, warnings: count, mcp: count }),
+});
+export type UsageSummary = z.infer<typeof usageSummarySchema>;
+
+/**
+ * POST /api/v1/usage/jerry-share (CLI token only): characters JERRY put into Claude's context. The
+ * hook bridge reports its session-start context and the MCP server each tool answer; Core counts its
+ * own warnings and quality feedback itself.
+ */
+export const jerryShareRequestSchema = z.object({
+  kind: z.enum(['sessionStart', 'mcp']),
+  chars: z.number().int().nonnegative().max(10_000_000),
+  origin: callOriginSchema.optional(),
+});
+export type JerryShareRequest = z.infer<typeof jerryShareRequestSchema>;

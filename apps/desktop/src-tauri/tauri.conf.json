@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "JERRY Desktop",
+  "productName": "Jerry",
   "version": "0.1.0",
   "identifier": "dev.jerry.desktop",
   "build": {
@@ -11,7 +11,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "🛡️ JERRY",
+        "title": "Jerry",
         "url": "index.html",
         "width": 1280,
         "height": 860,
@@ -23,7 +23,7 @@
       },
       {
         "label": "settings",
-        "title": "⚙️ JERRY Desktop settings",
+        "title": "⚙️ Jerry settings",
         "url": "settings.html",
         "width": 520,
         "height": 640,
@@ -42,7 +42,7 @@
     "active": true,
     "targets": ["nsis"],
     "publisher": "JERRY",
-    "shortDescription": "JERRY Desktop",
+    "shortDescription": "Jerry",
     "longDescription": "The JERRY dashboard in its own window, with a tray icon and notifications.",
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
     "windows": {

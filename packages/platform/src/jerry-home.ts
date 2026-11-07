@@ -49,6 +49,18 @@ export interface JerryPaths {
   configDir: string;
   installManifestFile: string;
   marketplaceDir: string;
+  /** Installed copy of the status-line script that Claude Code runs (settings.json "statusLine"). */
+  runtimeStatuslineFile: string;
+  /** The status line Claude Code had before JERRY's, restored by "jerry statusline disable" and uninstall. */
+  statuslineConfigFile: string;
+  /** What the status-line script saw last (no usage numbers), for "jerry statusline status". */
+  statuslineLastFile: string;
+  /** Usage snapshots the status-line script could not deliver to Core; drained by Core. */
+  usageSpoolFile: string;
+  /** The telemetry key Claude Code sends with its metrics, and the settings env keys JERRY set. */
+  telemetryConfigFile: string;
+  /** When Core last received Claude Code metrics, per entrypoint (no usage numbers). */
+  telemetryLastFile: string;
 }
 
 export function jerryPaths(home: string): JerryPaths {
@@ -79,6 +91,12 @@ export function jerryPaths(home: string): JerryPaths {
     configDir,
     installManifestFile: path.join(configDir, 'install-manifest.json'),
     marketplaceDir: path.join(home, 'marketplace'),
+    runtimeStatuslineFile: path.join(runtimeDir, 'statusline', 'statusline.mjs'),
+    statuslineConfigFile: path.join(configDir, 'statusline.json'),
+    statuslineLastFile: path.join(runDir, 'statusline-last.json'),
+    usageSpoolFile: path.join(home, 'spool', 'usage.jsonl'),
+    telemetryConfigFile: path.join(configDir, 'telemetry.json'),
+    telemetryLastFile: path.join(runDir, 'telemetry-last.json'),
   };
 }
 

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "JERRY Desktop: the JERRY dashboard in its own window, with a tray icon and notifications (Tauri 2, Windows).",
+  "description": "Jerry: the JERRY dashboard in its own window, with a tray icon and notifications (Tauri 2, Windows).",
   "scripts": {
     "dev": "tauri dev",
     "build": "tauri build --bundles nsis && node scripts/copy-installer.mjs",

@@ -4,7 +4,7 @@ import path from 'node:path';
 import readline from 'node:readline/promises';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { JERRY_VERSION, evalCalibrationSchema, evalRunDetailSchema, evalRunSummarySchema, evalStatusSchema, type EvalRunDetail } from '@jerry/contracts';
+import { JERRY_VERSION, evalCalibrationSchema, evalRunDetailSchema, evalRunSummarySchema, evalStatusSchema, skillsListSchema, type EvalRunDetail } from '@jerry/contracts';
 import { jerryFingerprint, loadCases, runSuite, type AttemptResult, type CaseResult, type EvalCase } from '@jerry/evals';
 import { findClaudeBinary, readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
 import { z } from 'zod';
@@ -83,7 +83,8 @@ export async function runEvals(options: { dir?: string; suite?: string; case?: s
     startedAt,
     finishedAt: new Date().toISOString(),
     jerryVersion: JERRY_VERSION,
-    fingerprint: jerryFingerprint(PLUGIN_DIR),
+    // Skills the user added through JERRY load in the eval sessions too.
+    fingerprint: jerryFingerprint(PLUGIN_DIR, await addedSkillFingerprints()),
     label: options.label ?? '',
     results: results.map(toSubmitted),
   };
@@ -98,6 +99,15 @@ export async function runEvals(options: { dir?: string; suite?: string; case?: s
   printRun(detail);
   if (detail.comparison.releaseBlocked) process.exitCode = 2;
   else if (detail.comparison.regressions.length > 0) process.exitCode = 1;
+}
+
+/** The added skills' names and content hashes, from Core; none when Core cannot tell. */
+async function addedSkillFingerprints(): Promise<Array<{ name: string; contentHash: string }>> {
+  try {
+    return skillsListSchema.parse(await callCore('GET', '/api/v1/skills')).added.map((skill) => ({ name: skill.name, contentHash: skill.contentHash }));
+  } catch {
+    return [];
+  }
 }
 
 function toSubmitted(result: CaseResult) {

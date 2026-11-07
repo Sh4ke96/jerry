@@ -1,10 +1,11 @@
-import type { DataCategory, DataUsage, ForgetPreview, ForgetResult, PruneOptions, PrunePreview, PruneResult } from '@jerry/contracts';
+import type { DataCategory, DataUsage, PruneOptions, PrunePreview, PruneResult } from '@jerry/contracts';
 import { EMOJI } from '@jerry/contracts/emoji';
 import { computed, defineComponent, onMounted, reactive, ref, watch } from 'vue';
 import { api } from '../api';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { Emoji } from '../components/Emoji';
 import { Fact, Facts } from '../components/Facts';
+import { useForget } from '../components/ForgetRepository';
 import { StatusBadge } from '../components/StatusBadge';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
@@ -13,7 +14,6 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Skeleton } from '../components/ui/skeleton';
 import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from '../components/ui/table';
-import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip';
 import { formatBytes, formatTime } from '../format';
 import { CHIP, LIST } from '../lib/classes';
 import { handleError, refresh, state } from '../state';
@@ -53,9 +53,8 @@ export const Data = defineComponent({
     const preview = ref<PrunePreview | null>(null);
     const pruned = ref<PruneResult | null>(null);
     const deleting = ref(false);
-    const forgetting = ref<ForgetPreview | null>(null);
-    const forgotten = ref<ForgetResult | null>(null);
     const busy = ref(false);
+    const forgetting = useForget(() => load());
 
     const load = async (): Promise<void> => {
       try {
@@ -102,30 +101,6 @@ export const Data = defineComponent({
         state.notice = `Deleted ${pruned.value.totalRows} row(s) and ${pruned.value.backups.count} backup file(s).`;
         deleting.value = false;
         preview.value = null;
-        await Promise.all([load(), refresh()]);
-      } catch (error) {
-        handleError(error);
-      } finally {
-        busy.value = false;
-      }
-    };
-
-    const askForget = async (repoRoot: string): Promise<void> => {
-      try {
-        forgetting.value = await api.previewForget(repoRoot);
-      } catch (error) {
-        handleError(error);
-      }
-    };
-
-    const forget = async (typed: string): Promise<void> => {
-      const plan = forgetting.value;
-      if (plan === null) return;
-      busy.value = true;
-      try {
-        forgotten.value = await api.forget(plan.repoRoot, typed);
-        state.notice = `JERRY forgot ${plan.repoRoot}: ${forgotten.value.totalRows} row(s) deleted.`;
-        forgetting.value = null;
         await Promise.all([load(), refresh()]);
       } catch (error) {
         handleError(error);
@@ -222,29 +197,6 @@ export const Data = defineComponent({
       </Card>
     );
 
-    const forgetButton = (repoRoot: string, openTasks: number) => {
-      if (openTasks === 0) {
-        return (
-          <Button variant="ghost" size="sm" class="text-destructive hover:text-destructive" onClick={() => void askForget(repoRoot)}>
-            Forget
-          </Button>
-        );
-      }
-      // A disabled button gets no pointer events: the tooltip hangs on a focusable wrapper.
-      return (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span tabindex={0} class="inline-flex" data-forget-blocked>
-              <Button variant="ghost" size="sm" disabled>
-                Forget
-              </Button>
-            </span>
-          </TooltipTrigger>
-          <TooltipContent>Finish or cancel its {openTasks} open task(s) first.</TooltipContent>
-        </Tooltip>
-      );
-    };
-
     const repositories = (data: DataUsage) => (
       <Card>
         <CardHeader>
@@ -282,7 +234,7 @@ export const Data = defineComponent({
                     </TableCell>
                     <TableCell class="text-right tabular-nums">{entry.events}</TableCell>
                     <TableCell class="text-muted-foreground">{entry.lastActivityAt === null ? 'none' : formatTime(entry.lastActivityAt)}</TableCell>
-                    <TableCell class="text-right">{forgetButton(entry.repoRoot, entry.openTasks)}</TableCell>
+                    <TableCell class="text-right">{forgetting.forgetButton(entry.repoRoot, entry.openTasks)}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -375,31 +327,19 @@ export const Data = defineComponent({
     );
 
     return () => {
-      const data = usage.value;
+      const stored = usage.value;
       return (
         <div class="data flex flex-col gap-4 md:gap-6">
-          {data === null ? (
+          {stored === null ? (
             <div class="grid gap-4">
               <span class="sr-only">Loading…</span>
               <Skeleton class="h-36" />
               <Skeleton class="h-64" />
             </div>
           ) : (
-            [summary(data), categories(data), repositories(data)]
+            [summary(stored), categories(stored), repositories(stored)]
           )}
-          {forgotten.value !== null && (
-            <Alert role="status" class="forget-result">
-              <AlertTitle>
-                <Emoji symbol={EMOJI.pass} />
-                JERRY forgot {forgotten.value.repoRoot}
-              </AlertTitle>
-              <AlertDescription>
-                <p>
-                  {forgotten.value.totalRows} row(s) deleted; freed {formatBytes(Math.max(0, forgotten.value.databaseBytesBefore - forgotten.value.databaseBytesAfter))}. Backup taken before: <code class="font-mono text-xs break-all">{forgotten.value.backupFile}</code>
-                </p>
-              </AlertDescription>
-            </Alert>
-          )}
+          {forgetting.result()}
           {cleanUp()}
 
           {deleting.value && preview.value !== null && (
@@ -410,18 +350,7 @@ export const Data = defineComponent({
               <p class="text-xs">This cannot be undone from the dashboard; Core keeps a backup of the database taken right before deleting.</p>
             </ConfirmDialog>
           )}
-          {forgetting.value !== null && (
-            <ConfirmDialog title="Forget this repository?" expected={forgetting.value.repoRoot} confirmLabel="Forget repository" tone="danger" busy={busy.value} onConfirm={forget} onCancel={() => (forgetting.value = null)}>
-              <p>
-                <code class="text-foreground font-mono">{forgetting.value.repoRoot}</code>
-              </p>
-              <p>
-                Deletes {forgetting.value.totalRows} row(s){forgetting.value.tasks.length > 0 && `, including ${forgetting.value.tasks.join(', ')}`}
-                {forgetting.value.project && '; the project is removed too'}.
-              </p>
-              <p class="text-xs">The repository itself is not touched. Core keeps a backup of the database taken right before deleting.</p>
-            </ConfirmDialog>
-          )}
+          {forgetting.dialog()}
         </div>
       );
     };

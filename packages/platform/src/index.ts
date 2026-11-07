@@ -6,3 +6,5 @@ export * from './core-runtime.js';
 export * from './spool.js';
 export * from './core-client.js';
 export * from './claude-binary.js';
+export * from './statusline.js';
+export * from './usage-collection.js';

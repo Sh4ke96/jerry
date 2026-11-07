@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { api, createFixtureRepo, runBridge, preToolUse, startCore, tempDir, type RunningCore } from '../helpers/harness.js';
 import { McpClient } from '../helpers/mcp-client.js';
 import { samplePlan } from '../helpers/plan-fixture.js';
+import { DECISION_WAIT_CALLS, DECISION_WAIT_MS, decisionNextStep, decisionSummary, nextAction, skillsInstruction } from '../../apps/mcp-server/src/tools.js';
 
 describe('JERRY MCP server (bundled)', () => {
   const base = tempDir('mcp');
@@ -34,7 +35,7 @@ describe('JERRY MCP server (bundled)', () => {
     const mcp = await connect();
     const listed = (await mcp.request('tools/list'))['result'] as { tools: Array<{ name: string; annotations: { readOnlyHint: boolean } }> };
     const names = listed.tools.map((tool) => tool.name).sort();
-    expect(names).toEqual(['assign_work', 'check_paths', 'finish_review', 'get_analysis', 'get_final_report', 'get_project_profile', 'get_review', 'get_state', 'list_deviations', 'list_findings', 'record_artifact', 'report_fixes', 'save_checkpoint', 'start_task', 'submit_analysis_report', 'submit_fix_plan', 'submit_plan', 'submit_report', 'submit_review']);
+    expect(names).toEqual(['assign_work', 'check_paths', 'finish_review', 'get_analysis', 'get_final_report', 'get_project_profile', 'get_review', 'get_state', 'list_deviations', 'list_findings', 'record_artifact', 'report_fixes', 'save_checkpoint', 'start_task', 'submit_analysis_report', 'submit_fix_plan', 'submit_plan', 'submit_report', 'submit_review', 'wait_for_decision']);
     expect(listed.tools.filter((tool) => !tool.annotations.readOnlyHint).map((tool) => tool.name)).toEqual(['submit_plan', 'start_task', 'record_artifact', 'submit_review', 'finish_review', 'submit_fix_plan', 'report_fixes', 'assign_work', 'submit_analysis_report', 'submit_report', 'save_checkpoint']);
     expect(names.some((name) => /approve|accept|reject|exclude|pause|resume|cancel|done|complete/.test(name))).toBe(false);
   });
@@ -135,10 +136,89 @@ describe('JERRY MCP server (bundled)', () => {
     expect(result.text).toContain('JERRY Core is not reachable');
   });
 
+  it("waits for the user's decision and says what came: approved, rejected with the comment, or a cancelled task", async () => {
+    const mcp = await connect();
+    const task = async (title: string): Promise<string> => ((await api(core, 'POST', '/api/v1/tasks', { repoPath: otherRepo, title, scope: ['src/**'] })).body as { taskId: string }).taskId;
+
+    // The user approves a moment after Claude started waiting: the same call returns the approval.
+    const approvedId = await task('Wait for approval');
+    const waiting = mcp.call('wait_for_decision', { taskId: approvedId.toLowerCase(), stage: 'plan', version: 1 });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await api(core, 'POST', `/api/v1/tasks/${approvedId}/approvals`, { stage: 'PLAN', version: 1, decision: 'APPROVED' });
+    const approved = await waiting;
+    expect(approved.isError).toBe(false);
+    expect(approved.summary).toBe(`✅ ${approvedId} plan v1 approved — continue`);
+    expect(approved.structured).toMatchObject({ taskId: approvedId, stage: 'plan', version: 1, status: 'approved', state: 'IMPLEMENTATION' });
+    expect(String(approved.structured['nextStep'])).toContain('/jerry:implement');
+
+    const rejectedId = await task('Wait for rejection');
+    await api(core, 'POST', `/api/v1/tasks/${rejectedId}/approvals`, { stage: 'PLAN', version: 1, decision: 'REJECTED', comment: 'Split step 2' });
+    const rejected = await mcp.call('wait_for_decision', { taskId: rejectedId, stage: 'plan', version: 1 });
+    expect(rejected.summary).toBe(`❌ ${rejectedId} plan v1 rejected: Split step 2`);
+    expect(String(rejected.structured['nextStep'])).toContain('submit_plan');
+
+    // Waiting decides nothing: a cancelled task gets no decision, and the wait ends at once.
+    const cancelledId = await task('Cancelled while waiting');
+    await api(core, 'POST', `/api/v1/tasks/${cancelledId}/transitions`, { event: 'task.cancelled' });
+    const cancelled = await mcp.call('wait_for_decision', { taskId: cancelledId, stage: 'plan', version: 1 });
+    expect(cancelled.summary).toBe(`🚫 ${cancelledId} is cancelled: no decision will come`);
+    expect(cancelled.structured).toMatchObject({ status: 'pending', state: 'CANCELLED' });
+    const tasks = (await api(core, 'GET', '/api/v1/tasks')).body as Array<{ taskId: string; planDecision: unknown }>;
+    expect(tasks.find((candidate) => candidate.taskId === cancelledId)?.planDecision).toBeNull();
+
+    const refused = await mcp.call('wait_for_decision', { taskId: approvedId, stage: 'approve', version: 1 });
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('plan, implementation or review-fix');
+    expect((await mcp.call('wait_for_decision', { taskId: 'JRY-9999', stage: 'plan', version: 1 })).isError).toBe(true);
+  });
+
   it('answers protocol errors without crashing', async () => {
     const mcp = await connect();
     expect((await mcp.request('tools/call', { name: 'approve_plan' }))['error']).toMatchObject({ code: -32602 });
     expect((await mcp.request('resources/list'))['error']).toMatchObject({ code: -32601 });
     expect((await mcp.request('ping'))['result']).toEqual({});
+  });
+});
+
+describe('wait_for_decision answers', () => {
+  const base = { taskId: 'JRY-0016', version: 4 } as const;
+
+  it("stays inside one turn: below Claude Code's two-minute move to the background", () => {
+    expect(DECISION_WAIT_MS).toBeLessThanOrEqual(120_000 - 30_000);
+    expect(DECISION_WAIT_CALLS * DECISION_WAIT_MS).toBeLessThanOrEqual(10 * 60_000);
+  });
+
+  it('says what came in one line, and what Claude does next', () => {
+    expect(decisionSummary({ ...base, stage: 'plan', status: 'approved', state: 'IMPLEMENTATION' })).toBe('✅ JRY-0016 plan v4 approved — continue');
+    expect(decisionSummary({ ...base, stage: 'plan', status: 'rejected', state: 'PLAN_DRAFT' })).toBe('❌ JRY-0016 plan v4 rejected: no comment');
+    expect(decisionSummary({ ...base, stage: 'implementation', status: 'approved', review: true, state: 'CODE_REVIEW' })).toBe('✅ JRY-0016 report v4 accepted with review — continue');
+    expect(decisionSummary({ ...base, stage: 'review-fix', status: 'rejected', comment: 'Keep the API', state: 'REVIEW_REPORT' })).toBe('❌ JRY-0016 fix plan (round 4) rejected: Keep the API');
+    const pending = { ...base, stage: 'plan', status: 'pending', state: 'WAIT_PLAN_APPROVAL' } as const;
+    expect(decisionSummary(pending)).toBe('⏳ still waiting for your decision');
+    expect(decisionNextStep(pending)).toContain(`at most ${DECISION_WAIT_CALLS} calls in a row`);
+    expect(decisionNextStep(pending)).toContain('Never approve it yourself');
+    expect(decisionNextStep({ ...base, stage: 'plan', status: 'rejected', state: 'PLAN_DRAFT' })).toContain('ask them what to change');
+    expect(decisionNextStep({ ...base, stage: 'implementation', status: 'approved', review: true, state: 'CODE_REVIEW' })).toContain('/jerry:review');
+    expect(decisionNextStep({ ...base, stage: 'implementation', status: 'approved', review: false, state: 'DONE' })).toContain('it is done');
+    expect(decisionNextStep({ ...base, stage: 'review-fix', status: 'approved', state: 'FIX_IMPLEMENTATION' })).toContain('report_fixes');
+  });
+
+  it('names the added skills JERRY starts in the current task state, and nothing otherwise', () => {
+    const skills = [
+      { name: 'release-notes', description: 'Writes release notes.', states: ['CODE_REVIEW', 'REVERIFICATION'] as const },
+      { name: 'a11y-check', description: 'Checks accessibility.', states: ['CODE_REVIEW'] as const },
+    ].map((skill) => ({ ...skill, states: [...skill.states] }));
+    const inReview = skillsInstruction(skills, [{ taskId: 'JRY-0001', state: 'CODE_REVIEW' }]);
+    expect(inReview).toContain('JERRY starts skills here');
+    expect(inReview).toContain('JRY-0001 is in CODE_REVIEW');
+    expect(inReview).toContain('"release-notes" (Writes release notes.)');
+    expect(inReview).toContain('"a11y-check"');
+    expect(inReview).toContain('Skill tool');
+    expect(skillsInstruction(skills, [{ taskId: 'JRY-0001', state: 'IMPLEMENTATION' }])).toBe('');
+    expect(skillsInstruction(undefined, [{ taskId: 'JRY-0001', state: 'CODE_REVIEW' }])).toBe('');
+
+    const state = { repoRoot: 'D:/Work/Repo', excluded: false, monitored: true, sessionTasks: [], skills, tasks: [] };
+    expect(nextAction(state).details).not.toContain('JERRY starts skills');
+    expect(nextAction({ ...state, monitored: false, excluded: true, skills }).details).not.toContain('JERRY starts skills');
   });
 });

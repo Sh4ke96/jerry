@@ -3,6 +3,7 @@ import { EMOJI } from '@jerry/contracts/emoji';
 import { defineComponent, onMounted, ref, type PropType } from 'vue';
 import { api } from '../api';
 import { ATTENTION, LIST } from '../lib/classes';
+import { finalReportReviewRequested } from '../settings';
 import { handleError } from '../state';
 import { Emoji, resultEmoji } from './Emoji';
 import { Section } from './Section';
@@ -92,8 +93,14 @@ export const FinalReportView = defineComponent({
               {line}
             </p>
           ))}
-          {r.review !== null && (
-            <p>
+          {r.review !== null && finalReportReviewRequested(r) === false && r.review.rounds === 0 && (
+            <p class="final-report__review">
+              <Emoji symbol={EMOJI.review} />
+              Review: <strong class="font-medium">not requested</strong> at acceptance
+            </p>
+          )}
+          {r.review !== null && !(finalReportReviewRequested(r) === false && r.review.rounds === 0) && (
+            <p class="final-report__review">
               <Emoji symbol={EMOJI.review} />
               Review: <strong class="font-medium">{r.review.outcome}</strong> after {r.review.rounds} round(s) · {r.review.findings.total} finding(s), {r.review.findings.fixed} fixed
               {r.review.findings.open.length > 0 && <span class={ATTENTION}> · open: {r.review.findings.open.join('; ')}</span>}
@@ -136,6 +143,22 @@ export const FinalReportView = defineComponent({
               <ul class={[LIST, 'list-disc pl-5 text-xs']}>
                 {r.limitations.map((limitation) => (
                   <li key={limitation}>{limitation}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {/* An older Core sends no later-work list. */}
+          {(r.laterWork ?? []).length > 0 && (
+            <div class="final-report__later-work grid gap-2">
+              <h4 class={HEADING}>
+                <Emoji symbol={EMOJI.info} />
+                Changed later by other tasks
+              </h4>
+              <ul class={[LIST, 'list-disc pl-5 text-xs']}>
+                {(r.laterWork ?? []).map((work) => (
+                  <li key={work.taskId}>
+                    <span class="font-mono">{work.taskId}</span>: {work.files.join(', ')}
+                  </li>
                 ))}
               </ul>
             </div>

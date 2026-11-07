@@ -273,7 +273,7 @@ expect('K1: no check is claimed as passed without tooling', (reported.lastReport
 expect('K1: Claude told the user how to accept it', k1.text.includes(task.taskId) && /--stage implementation/.test(k1.text), k1.text.slice(0, 200));
 const k2 = runClaude('K2: /jerry:commit-message', '/jerry:commit-message', ['Read', 'Bash(git status:*)', 'Bash(git diff:*)', 'Bash(git log:*)', 'mcp__plugin_jerry_guardian__get_state']);
 expect('K2: Claude proposed a commit message and left Git alone', /```/.test(k2.text) && gitUntouched(), k2.text.slice(0, 200));
-const accepted = await coreApi(info, 'POST', `/api/v1/tasks/${task.taskId}/approvals`, { stage: 'IMPLEMENTATION', version: 1, decision: 'APPROVED', comment: 'live check' });
+const accepted = await coreApi(info, 'POST', `/api/v1/tasks/${task.taskId}/approvals`, { stage: 'IMPLEMENTATION', version: 1, decision: 'APPROVED', comment: 'live check', review: true });
 
 // R — independent review: the accepted implementation goes to three read-only reviewers.
 expect('R: accepting the implementation starts the independent review', (await coreApi(info, 'GET', `/api/v1/tasks/${task.taskId}`)).state === 'CODE_REVIEW');
@@ -534,6 +534,105 @@ if (claudePlan !== undefined) {
   const document = JSON.parse(claudePlan.document_json);
   console.log(`      plan ${claudePlan.task_id}: scope ${JSON.stringify(document.scope.include)}, ${document.changes.length} change(s), ${document.tests.length} test(s), ${document.openQuestions.length} open question(s)`);
 }
+
+// W — Claude continues on its own after the user's decision: /jerry:plan submits a small plan and waits
+// with wait_for_decision; this script approves it through Core a few seconds later (as the user would in
+// the dashboard), and the same session, without a new prompt, implements it. If Claude then submits a
+// report, the script accepts it without review. A repository of its own keeps the main fixture's counts.
+const waitRepo = path.join(base, 'wait-repo');
+fs.mkdirSync(path.join(waitRepo, 'src'), { recursive: true });
+fs.writeFileSync(path.join(waitRepo, 'README.md'), '# wait fixture\n');
+fs.writeFileSync(path.join(waitRepo, 'src', 'index.ts'), 'export const ready = true;\n');
+const gitWait = (...args) =>
+  spawnSync('git', ['-c', 'user.name=JERRY Test', '-c', 'user.email=jerry-test@example.invalid', '--no-optional-locks', '-C', waitRepo, ...args], { encoding: 'utf8' });
+gitWait('init', '-q', '-b', 'main');
+gitWait('add', '.');
+gitWait('commit', '-q', '-m', 'initial');
+const waitHead = gitWait('rev-parse', 'HEAD').stdout.trim();
+await coreApi(info, 'POST', '/api/v1/projects', { path: waitRepo });
+const tasksBeforeW = new Set((await coreApi(info, 'GET', '/api/v1/tasks')).map((row) => row.taskId));
+const sameRepo = (left, right) => path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase();
+
+/** runClaude without blocking the event loop, so the script can decide while the session waits. */
+function runClaudeAsync(label, prompt, allowedTools, cwd, timeoutMs = 600_000) {
+  const args = ['-p', prompt, '--plugin-dir', pluginDir, '--model', model, '--permission-mode', 'acceptEdits', '--output-format', 'json', '--no-session-persistence', '--allowedTools', ...allowedTools];
+  const started = Date.now();
+  return new Promise((resolve) => {
+    const child = spawn(claude, args, { cwd, env, windowsHide: true });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => (stdout += chunk.toString()));
+    child.stderr.on('data', (chunk) => (stderr += chunk.toString()));
+    const timer = setTimeout(() => child.kill(), timeoutMs);
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      let parsed = null;
+      try {
+        parsed = JSON.parse(stdout);
+      } catch {
+        // keep raw output for the report
+      }
+      const text = parsed?.result ?? stdout;
+      console.log(`\n--- ${label} (exit ${code}, ${((Date.now() - started) / 1000).toFixed(1)} s, session ${parsed?.session_id ?? '?'})`);
+      console.log(String(text).trim().slice(0, 700));
+      if (stderr.trim()) console.log(`[stderr] ${stderr.trim().slice(0, 400)}`);
+      resolve({ sessionId: parsed?.session_id ?? null, text: String(text) });
+    });
+  });
+}
+
+let wSettled = false;
+const wSession = runClaudeAsync(
+  'W: /jerry:plan, then continue after the approval',
+  '/jerry:plan Add a file src/wait.ts that exports `export const waited = true;`. Keep the plan minimal: one step, scope src/wait.ts, no new tests (the repository has none).',
+  [
+    'Read',
+    'Glob',
+    'Grep',
+    'Write',
+    'Edit',
+    'Bash(git status:*)',
+    'Bash(git log:*)',
+    'Bash(git diff:*)',
+    'mcp__plugin_jerry_guardian__get_state',
+    'mcp__plugin_jerry_guardian__get_project_profile',
+    'mcp__plugin_jerry_guardian__check_paths',
+    'mcp__plugin_jerry_guardian__submit_plan',
+    'mcp__plugin_jerry_guardian__wait_for_decision',
+    'mcp__plugin_jerry_guardian__list_findings',
+    'mcp__plugin_jerry_guardian__list_deviations',
+    'mcp__plugin_jerry_guardian__save_checkpoint',
+    'mcp__plugin_jerry_guardian__submit_report',
+  ],
+  waitRepo,
+).finally(() => (wSettled = true));
+// The user's side: approve the plan a few seconds after it arrives, then accept the report if one comes.
+const wDecisions = [];
+let wTaskId = null;
+const wDeadline = Date.now() + 600_000;
+while (!wSettled && Date.now() < wDeadline) {
+  await new Promise((resolve) => setTimeout(resolve, 2_000));
+  const rows = (await coreApi(info, 'GET', '/api/v1/tasks')).filter((row) => !tasksBeforeW.has(row.taskId) && sameRepo(row.repoRoot, waitRepo));
+  const row = rows.find((candidate) => candidate.taskId === wTaskId) ?? rows[0];
+  if (row === undefined) continue;
+  wTaskId = row.taskId;
+  if (row.state === 'WAIT_PLAN_APPROVAL' && !wDecisions.includes(`plan v${row.plan.version}`)) {
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    await coreApi(info, 'POST', `/api/v1/tasks/${row.taskId}/approvals`, { stage: 'PLAN', version: row.plan.version, decision: 'APPROVED', comment: 'live check W' });
+    wDecisions.push(`plan v${row.plan.version}`);
+  } else if (row.state === 'WAIT_IMPLEMENTATION_ACCEPTANCE' && row.lastReport != null && !wDecisions.includes(`report v${row.lastReport.version}`)) {
+    await coreApi(info, 'POST', `/api/v1/tasks/${row.taskId}/approvals`, { stage: 'IMPLEMENTATION', version: row.lastReport.version, decision: 'APPROVED', comment: 'live check W', review: false });
+    wDecisions.push(`report v${row.lastReport.version}`);
+  }
+}
+const w = await wSession;
+const wEvents = await sessionEvents(w.sessionId);
+const wTools = wEvents.filter((event) => event.eventType === 'PreToolUse').map((event) => event.toolName);
+const wWaitAt = wTools.indexOf('mcp__plugin_jerry_guardian__wait_for_decision');
+expect('W: Claude submitted a plan and the script approved it through Core', wTaskId !== null && wDecisions.some((decision) => decision.startsWith('plan')), `${wTaskId ?? 'no task'}: ${wDecisions.join(', ') || 'no decision'}`);
+expect('W: the session waited with wait_for_decision after submitting', wTools.indexOf('mcp__plugin_jerry_guardian__submit_plan') !== -1 && wWaitAt > wTools.indexOf('mcp__plugin_jerry_guardian__submit_plan'), wTools.join(', '));
+expect('W: the same session continued after the approval, without a new prompt (src/wait.ts created)', fs.existsSync(path.join(waitRepo, 'src', 'wait.ts')) && wWaitAt !== -1 && wTools.slice(wWaitAt).some((tool) => tool === 'Write' || tool === 'Edit'));
+expect('W: Git untouched in the wait repository', gitWait('rev-parse', 'HEAD').stdout.trim() === waitHead && gitWait('diff', '--cached', '--quiet').status === 0);
 
 const registered = await registeredSessionIds();
 expect('SessionStart hook registered the sessions that have it', [a, c].every((run) => run.sessionId !== null && registered.has(run.sessionId)), `${registered.size} session(s) registered`);

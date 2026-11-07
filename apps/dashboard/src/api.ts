@@ -1,4 +1,6 @@
-import type { ApprovalRecord, ArtifactDecision, CoreStatus, FinalReport, EvalRunDetail, EvalRunSummary, EvalStatus, Finding, Plan, PlanDrift, ReviewState, ProjectProfile, ProjectAddResult, ProjectRemoveResult, ProjectSummary, DataUsage, PruneOptions, PrunePreview, PruneResult, ForgetPreview, ForgetResult, RepositorySummary, StoredEvent, Task, TaskSummary, WorkflowTransition, WorkspaceGraph } from '@jerry/contracts';
+import type { ApprovalRecord, ArtifactDecision, CoreStatus, FinalChecksRerun, FinalReport,EvalRunDetail, EvalRunSummary, EvalStatus, Finding, Plan, PlanDrift, ReviewState, ProjectProfile, ProjectAddResult, ProjectRemoveResult, ProjectSummary, DataUsage, PruneOptions, PrunePreview, PruneResult, ForgetPreview, ForgetResult, RepositorySummary, SkillChangeResult, SkillDetail, SkillPreview, SkillsList, StoredEvent, Task, TaskSummary, WorkflowState, WorkflowTransition, WorkspaceGraph } from '@jerry/contracts';
+
+import type { ProjectReviewMode, SettingsUpdate, WorkflowSettings } from './settings.js';
 
 export type TaskControlEvent = 'task.paused' | 'task.resumed' | 'task.cancelled';
 
@@ -10,6 +12,16 @@ export type TaskControlEvent = 'task.paused' | 'task.resumed' | 'task.cancelled'
 export class SignedOutError extends Error {
   constructor() {
     super('The dashboard session ended.');
+  }
+}
+
+/** Core answered, but not with success; `status` tells a route an older Core lacks (404) apart. */
+export class HttpError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
   }
 }
 
@@ -27,7 +39,7 @@ async function request<T>(method: 'GET' | 'POST', path: string, body?: unknown):
   });
   if (response.status === 401) throw new SignedOutError();
   const data = (await response.json().catch(() => ({}))) as { error?: string };
-  if (!response.ok) throw new Error(data.error ?? `JERRY Core answered HTTP ${response.status}`);
+  if (!response.ok) throw new HttpError(data.error ?? `JERRY Core answered HTTP ${response.status}`, response.status);
   return data as T;
 }
 
@@ -64,13 +76,15 @@ export const api = {
       confirmTaskId,
     }),
   /** Accept the latest implementation report, or send it back with what should change. */
-  decideReport: (task: TaskSummary, reportVersion: number, decision: 'APPROVED' | 'REJECTED', confirmTaskId: string, comment: string) =>
+  decideReport: (task: TaskSummary, reportVersion: number, decision: 'APPROVED' | 'REJECTED', confirmTaskId: string, comment: string, review?: boolean) =>
     request<ApprovalRecord>('POST', `/api/v1/tasks/${encodeURIComponent(task.taskId)}/approvals`, {
       stage: 'IMPLEMENTATION',
       version: reportVersion,
       decision,
       comment,
       confirmTaskId,
+      // Accepting only, and only when Core knows review modes: whether the task goes to independent review.
+      ...(decision === 'APPROVED' && review !== undefined ? { review } : {}),
     }),
   transitions: (taskId: string) => request<WorkflowTransition[]>('GET', `/api/v1/tasks/${encodeURIComponent(taskId)}/transitions`),
   /** Every plan version, oldest first. */
@@ -92,6 +106,8 @@ export const api = {
     request<ApprovalRecord>('POST', `/api/v1/tasks/${encodeURIComponent(taskId)}/approvals`, { stage: 'REVIEW_FIX', version: round, decision, comment, confirmTaskId }),
   /** The user waives the review, with a reason and the typed task ID. */
   skipReview: (taskId: string, reason: string, confirmTaskId: string) => request<ReviewState>('POST', `/api/v1/tasks/${encodeURIComponent(taskId)}/review/skip`, { reason, confirmTaskId }),
+  /** The user re-runs the final checks of a task waiting in FINAL_REPORT; Core sets DONE if they pass. */
+  rerunFinalChecks: (taskId: string, confirmTaskId: string) => request<FinalChecksRerun>('POST', `/api/v1/tasks/${encodeURIComponent(taskId)}/final-checks`, { confirmTaskId }),
   /** Plan drift, step order and implementer assignments. */
   drift: (taskId: string) => request<PlanDrift>('GET', `/api/v1/tasks/${encodeURIComponent(taskId)}/drift`),
   /** Quality findings of a task, all statuses. */
@@ -111,6 +127,15 @@ export const api = {
   addProject: (path: string, confirmation: string) => request<ProjectAddResult>('POST', '/api/v1/projects', { path, confirmation }),
   /** Removes a project; its open tasks stay, and the answer warns about them. */
   removeProject: (path: string, confirmation: string) => request<ProjectRemoveResult>('POST', '/api/v1/projects/remove', { path, confirmation }),
+  /** The project's own review setting; null inherits the global one. */
+  setProjectReviewMode: (path: string, reviewMode: ProjectReviewMode) => request<ProjectSummary>('POST', '/api/v1/projects/settings', { path, reviewMode }),
+  /** The user's workflow settings: the review mode and the language of QA scenarios. */
+  settings: () => request<WorkflowSettings>('GET', '/api/v1/settings'),
+  saveSettings: (update: SettingsUpdate) => request<WorkflowSettings>('POST', '/api/v1/settings', update),
+  /** Claude Code usage as Core collected it; raw, read with readUsage (an older Core answers 404). */
+  usage: () => request<unknown>('GET', '/api/v1/usage'),
+  /** Turns collecting usage from Claude Code on or off; answers the new collection status (raw). */
+  setUsageCollection: (enabled: boolean) => request<unknown>('POST', '/api/v1/usage/collection', { enabled }),
   /** What JERRY stores on this computer. */
   dataUsage: () => request<DataUsage>('GET', '/api/v1/data/usage'),
   /** Exactly what a prune with these options would delete; nothing is deleted. */
@@ -122,4 +147,23 @@ export const api = {
   /** Deletes everything about one repository after a backup; needs its root typed. */
   forget: (path: string, confirmation: string) => request<ForgetResult>('POST', '/api/v1/data/forget', { path, confirmation }),
   signOut: () => request<{ signedOut: true }>('POST', '/ui/logout', {}),
+  /** Skills: JERRY's own (read-only), the ones added through JERRY, and the user's others. */
+  skills: () => request<SkillsList>('GET', '/api/v1/skills'),
+  skill: (name: string) => request<SkillDetail>('GET', `/api/v1/skills/${encodeURIComponent(name)}`),
+  /** Reads, validates, scans and stages a skill; installs nothing. */
+  previewSkill: (input: SkillPreviewInput) => request<SkillPreview>('POST', '/api/v1/skills/preview', input),
+  /** Installs a previewed skill; needs its name typed. */
+  installSkill: (previewId: string, confirmation: string) => request<SkillChangeResult>('POST', '/api/v1/skills/install', { previewId, confirmation }),
+  /** Switches a skill on or off in Claude Code's settings (skillOverrides). */
+  setSkillEnabled: (name: string, enabled: boolean) => request<SkillChangeResult>('POST', `/api/v1/skills/${encodeURIComponent(name)}/${enabled ? 'enable' : 'disable'}`, {}),
+  /** The task states in which JERRY tells Claude to use the skill (empty: never). */
+  setSkillStates: (name: string, states: readonly WorkflowState[], confirmation: string) => request<SkillChangeResult>('POST', `/api/v1/skills/${encodeURIComponent(name)}/states`, { states, confirmation }),
+  /** The new version of a skill, from its source or from an uploaded file. */
+  previewSkillUpdate: (name: string, input: SkillPreviewInput = {}) => request<SkillPreview>('POST', `/api/v1/skills/${encodeURIComponent(name)}/update/preview`, input),
+  applySkillUpdate: (name: string, previewId: string, confirmation: string) => request<SkillChangeResult>('POST', `/api/v1/skills/${encodeURIComponent(name)}/update/apply`, { previewId, confirmation }),
+  /** Moves the skill's folder to JERRY's backups; needs its name typed. */
+  removeSkill: (name: string, confirmation: string) => request<SkillChangeResult>('POST', `/api/v1/skills/${encodeURIComponent(name)}/remove`, { confirmation }),
 };
+
+/** A GitHub URL or local path, or a zip chosen in the browser (base64). */
+export type SkillPreviewInput = { source?: string; upload?: { fileName: string; dataBase64: string } };

@@ -5,9 +5,26 @@ description: Run JERRY's independent code review of an accepted implementation w
 
 # Independent code review with JERRY
 
-When the user accepts an implementation, the task goes to code review. Three read-only reviewers check every
-changed file. You orchestrate: you do not review your own work, and you do not decide what is good enough.
-Only the user approves fixes or waives the review.
+Independent review is optional, unless the review mode is `required` (`get_state` → `preferences.reviewMode`,
+set by the user globally or per project). The user asks for it when accepting an implementation (the
+dashboard, or `jerry approve … --review`), or runs `/jerry:review`; in `required` mode every acceptance goes to
+review. An accepted implementation without review goes straight to JERRY's final checks.
+
+A task in code review is checked by three read-only reviewers, on every changed file. You orchestrate: you do
+not review your own work, and you do not decide what is good enough. Only the user approves fixes or waives the
+review.
+
+## 0. Is the task in review?
+
+- Call `get_state`. Continue only with a task in code review, review report, fix implementation or
+  re-verification.
+- A task waiting for acceptance is not in review yet: tell the user that they choose review when they accept it
+  (dashboard, or `jerry approve <taskId> --stage implementation --version <n> --review`). Never accept it
+  yourself.
+- A task already accepted without review, or finished, has no review round: say so, and do not start the
+  reviewers on it.
+- A task that is already in review stays there until the review ends or the user waives it. If the user no
+  longer wants it, they finish it with the waiver: "Skip review" in the dashboard, or `jerry review skip <taskId>`.
 
 ## 1. Start the round
 
@@ -36,8 +53,15 @@ Only the user approves fixes or waives the review.
   - items, each with the finding IDs it fixes, the change, and its files (inside the approved scope);
   - the tests;
   - `notFixed`, each with the reason.
-- Tell the user it waits for their decision: the dashboard, or
+- Tell the user in one line that it waits for their decision: one click in the dashboard, or
   `jerry approve <taskId> --stage review-fix --version <round>`.
+- Do not end your turn. Call `wait_for_decision` (`taskId`, `stage: review-fix`, `version`: the round). It
+  waits up to 90 seconds for the user's decision and only reads it:
+  - `approved`: continue at once with step 4;
+  - `rejected`: read the user's comment (ask if it is empty or unclear), revise the fix plan, submit it again
+    with `submit_fix_plan`, and wait again;
+  - `pending`: call it again, at most 4 calls in a row (about six minutes). After that, end your turn and
+    tell the user you will continue as soon as they decide and write to you.
 - Do not change code before the approval. Edits made earlier are deviations, and they keep the task from DONE.
 
 ## 4. Fix and re-review

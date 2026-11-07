@@ -22,6 +22,9 @@ export async function buildFinalReport(store: StateStore, task: Task, now: Date 
   const plan = task.plan.document;
   const finalCheck = checks.get(task.taskId) ?? null;
   const done = transitions.findLast((step) => step.to === 'DONE');
+  // The user accepted the latest report without independent review.
+  const acceptance = report === null ? null : store.reportDecision(report);
+  const notRequested = acceptance?.decision === 'APPROVED' && acceptance.review === false;
 
   // Changes per repository ('' is the task's own repository).
   const byRepository = new Map<string, Array<{ path: string; kind: string; description: string }>>();
@@ -67,10 +70,12 @@ export async function buildFinalReport(store: StateStore, task: Task, now: Date 
       openFindings: openFindings.filter((finding) => finding.severity === 'P1' || finding.severity === 'P2').map(line),
       securityFindings: findings.filter((finding) => finding.category === 'security').map((finding) => `${line(finding)} [${finding.status}]`),
     },
-    review:
-      review.rounds.length === 0
+    review: notRequested
+      ? { requested: false, outcome: 'not requested', rounds: 0, reviewers: [], findings: { total: 0, fixed: 0, open: [] }, uncovered: [] }
+      : review.rounds.length === 0
         ? null
         : {
+            requested: true,
             outcome: review.outcome ?? 'not finished',
             rounds: review.rounds.length,
             reviewers: (lastRound?.submissions ?? []).map((submission) => ({ role: submission.role, independent: submission.independent, note: submission.independenceNote })),
@@ -97,10 +102,12 @@ export async function buildFinalReport(store: StateStore, task: Task, now: Date 
     },
     coverage: {
       reviewedFiles: reviewed,
-      notReviewed: lastRound?.uncovered ?? [],
+      notReviewed: notRequested ? [] : (lastRound?.uncovered ?? []),
       checksNotRun: (document?.checks ?? []).filter((check) => check.result === 'NOT_RUN').map((check) => `${check.command}: ${check.details}`),
     },
     limitations,
+    // Changed later by other tasks: their approved work after this report, which did not block DONE.
+    laterWork: finalCheck?.laterWork ?? [],
     decisions: [
       ...transitions.filter((step) => step.actor === 'user').map((step) => `${step.at} ${step.event}${step.reason === '' ? '' : `: ${step.reason}`}`),
       ...(plan?.openQuestions ?? []).map((question) => `open question in the plan: ${question}`),

@@ -1,4 +1,4 @@
-import type { Generated } from 'kysely';
+import type { ColumnType, Generated } from 'kysely';
 
 /**
  * Tables of the JERRY database. Timestamps are ISO-8601 strings; JSON values are text.
@@ -64,6 +64,8 @@ export interface ApprovalsTable {
   approved_at: string;
   comment: string;
   created_at: string;
+  /** Accepting an implementation: 1 when the user sent it to review, 0 when not; null otherwise and for older acceptances. */
+  review: ColumnType<number | null, number | null | undefined, number | null>;
 }
 
 export interface SessionsTable {
@@ -75,6 +77,8 @@ export interface SessionsTable {
   /** Set by SessionEnd; cleared when the same session starts again. */
   ended_at: string | null;
   end_reason: string | null;
+  /** CLAUDE_CODE_ENTRYPOINT at registration (cli, claude-vscode, …); null when unknown (0021). */
+  entrypoint: ColumnType<string | null, string | null | undefined, string | null>;
   created_at: string;
   updated_at: string;
 }
@@ -408,9 +412,110 @@ export interface ProjectsTable {
   /** Who added it: the CLI user, the dashboard, or the migration that introduced projects. */
   added_by: string;
   note: string | null;
+  /** The project's own review mode ('optional' or 'required'); null follows the global setting. */
+  review_mode: ColumnType<string | null, string | null | undefined, string | null>;
+}
+
+/**
+ * Claude Code's OpenTelemetry metrics of project sessions, summed per minute. token_type is input,
+ * output, cacheRead, cacheCreation, or 'cost' (tokens 0); '' stands for an unknown text value.
+ */
+export interface UsageTokensTable {
+  /** Start of the minute, ISO 8601 (UTC). */
+  bucket_minute: string;
+  session_id: string;
+  repo_root: string;
+  model: string;
+  token_type: string;
+  query_source: string;
+  tokens: number;
+  cost_usd: number;
+  entrypoint: string;
+  updated_at: string;
+}
+
+/** Plan limits as the status line read them: account-wide, no session or path. */
+export interface UsageLimitsTable {
+  id: Generated<number>;
+  at: string;
+  five_hour_pct: number | null;
+  five_hour_resets_at: string | null;
+  seven_day_pct: number | null;
+  seven_day_resets_at: string | null;
+  entrypoint: string | null;
+}
+
+/** The status line's snapshot of a project session; the latest per session and minute. Amounts are the session's totals so far. */
+export interface UsageSnapshotsTable {
+  bucket_minute: string;
+  at: string;
+  session_id: string;
+  repo_root: string;
+  model: string | null;
+  cost_usd: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  context_used_pct: number | null;
+  entrypoint: string | null;
+  version: string | null;
+}
+
+/** A Claude Code skill JERRY installed into CLAUDE_CONFIG_DIR/skills/<name>; no row means JERRY did not install it. */
+export interface SkillsTable {
+  name: string;
+  /** From SKILL.md, as installed. */
+  description: string;
+  /** github, zip or folder. */
+  source_kind: string;
+  /** The GitHub URL, or the path of the zip file or folder, as the user gave it. */
+  source: string;
+  /** GitHub: the branch, tag or commit the URL named (null: the default branch). */
+  ref: string | null;
+  /** GitHub: the commit SHA the files came from. */
+  commit_sha: string | null;
+  /** sha256 over the sorted file paths and their hashes. */
+  content_hash: string;
+  /** [{ path, size, sha256 }]. */
+  files_json: string;
+  /** The scan of the installed version (findings with level, rule, file, line, excerpt). */
+  scan_json: string;
+  enabled: number;
+  /** The workflow states the user assigned the skill to, as a JSON array; JERRY starts it only there. */
+  states_json: Generated<string>;
+  /** 1 when SKILL.md carries JERRY's "user-invocable: false" (Claude uses it only when JERRY says so). */
+  jerry_triggered: Generated<number>;
+  installed_at: string;
+  updated_at: string;
+}
+
+/** History of a skill: installed, updated, enabled, disabled, removed, states-set. */
+export interface SkillEventsTable {
+  id: Generated<number>;
+  name: string;
+  action: string;
+  /** cli or dashboard. */
+  channel: string;
+  details_json: string;
+  at: string;
+}
+
+/** Characters JERRY put into Claude's context per minute, session and kind (sessionStart, warnings, mcp). */
+export interface UsageJerryShareTable {
+  bucket_minute: string;
+  session_id: string;
+  repo_root: string;
+  kind: string;
+  chars: number;
+  count: number;
 }
 
 export interface JerrySchema {
+  skills: SkillsTable;
+  skill_events: SkillEventsTable;
+  usage_tokens: UsageTokensTable;
+  usage_limits: UsageLimitsTable;
+  usage_snapshots: UsageSnapshotsTable;
+  usage_jerry_share: UsageJerryShareTable;
   projects: ProjectsTable;
   hook_events: HookEventsTable;
   repositories: RepositoriesTable;

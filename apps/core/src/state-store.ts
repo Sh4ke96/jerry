@@ -9,6 +9,7 @@ import {
   type Checkpoint,
   type CoreState,
   type CompletionCheck,
+  type LaterWork,
   type AgentRun,
   type AnalysisReport,
   type AnalysisReportRecord,
@@ -61,11 +62,21 @@ import {
   taskSchema,
   workflowStateSchema,
   workflowTransitionSchema,
+  DEFAULT_QA_LANGUAGE,
+  DEFAULT_REVIEW_MODE,
+  DEFAULT_USAGE_SHOW_BAR,
+  DEFAULT_DECISION_CONFIRMATION,
+  decisionConfirmationSchema,
+  qaLanguageSchema,
+  type ReviewMode,
+  reviewModeSchema,
+  type Settings,
+  type SettingsUpdateRequest,
 } from '@jerry/contracts';
 import { backupDatabase, openJerryDatabase, type JerryDatabase, type JerrySchema } from '@jerry/database';
 import { absolutePath, comparablePath, computePlanHash, computeReportHash, currentPlanDecision, decisionFor, isComparableInside, matchesAnyGlob, relativeInside } from '@jerry/policy-engine';
 import { writeFileAtomic } from '@jerry/platform';
-import { applyEvent, evaluateCompletion, globsOverlap, isTerminal, planLayers, WORK_STATES } from '@jerry/workflow';
+import { applyEvent, effectiveReviewMode, evaluateCompletion, globsOverlap, isTerminal, planLayers, resolveReviewChoice, WORK_STATES, type TransitionContext } from '@jerry/workflow';
 import { MAX_SUBAGENTS } from '@jerry/contracts/agents';
 import type { ProfileFingerprints } from '@jerry/discovery';
 import type { DetectedFinding } from '@jerry/quality';
@@ -75,7 +86,13 @@ import { z } from 'zod';
 
 /** Sessions kept in the in-memory snapshot; older ones stay in the database. */
 const SNAPSHOT_SESSIONS = 200;
+/** A session's entrypoint is a short name (cli, claude-vscode, …); anything longer is cut. */
+const MAX_ENTRYPOINT_LENGTH = 100;
 const NEXT_TASK_NUMBER = 'next_task_number';
+const REVIEW_MODE_SETTING = 'review_mode';
+const QA_LANGUAGE_SETTING = 'qa_language';
+const USAGE_SHOW_BAR_SETTING = 'usage_show_bar';
+const DECISION_CONFIRMATION_SETTING = 'decision_confirmation';
 
 /** Where a user decision came from; recorded in the audit log. */
 export type Channel = 'cli' | 'dashboard';
@@ -165,6 +182,13 @@ export class StateStore {
   private readonly recentWriters = new Map<string, { agentId: string; at: number }>();
   /** The projects the user added: the only repositories JERRY monitors. */
   private projectList: Project[] = [];
+  /** The user's global settings, read with every reload. */
+  private settingValues: Settings = {
+    reviewMode: DEFAULT_REVIEW_MODE,
+    qaLanguage: DEFAULT_QA_LANGUAGE,
+    usageShowBar: DEFAULT_USAGE_SHOW_BAR,
+    decisionConfirmation: DEFAULT_DECISION_CONFIRMATION,
+  };
 
   private constructor(
     private readonly database: JerryDatabase,
@@ -214,6 +238,20 @@ export class StateStore {
 
   planDecision(taskId: string): ApprovalRecord | null {
     return currentPlanDecision(this.requireTask(taskId), this.state.approvals);
+  }
+
+  /**
+   * The user's latest decision on one stage and version of a task (null while there is none) and the
+   * task's state. Read-only: Claude waits on it after a submission. Plan and report versions never
+   * change; a fix plan resubmitted in the same review round does, so a fix plan decision must also
+   * match that round's current fix plan hash.
+   */
+  async decisionOn(taskId: string, stage: ApprovalRecord['stage'], version: number): Promise<{ decision: ApprovalRecord | null; state: Task['state'] }> {
+    const task = this.requireTask(taskId);
+    const matching = this.state.approvals.filter((approval) => approval.taskId === taskId && approval.stage === stage && approval.version === version);
+    if (stage !== 'REVIEW_FIX' || matching.length === 0) return { decision: matching.at(-1) ?? null, state: task.state };
+    const round = await this.database.db.selectFrom('review_rounds').select('fix_plan_hash').where('task_id', '=', taskId).where('round', '=', version).executeTakeFirst();
+    return { decision: matching.filter((approval) => approval.contentHash === round?.fix_plan_hash).at(-1) ?? null, state: task.state };
   }
 
   async createTask(input: { repoRoot: string; title: string; scope: string[]; document?: PlanDocument; submittedBy?: 'user' | 'claude'; sessionId?: string | null }, now: Date): Promise<Task> {
@@ -287,9 +325,18 @@ export class StateStore {
     // work at that moment); an acceptance compares the repository with the report's snapshot.
     const approvingPlan = request.stage === 'PLAN' && request.decision === 'APPROVED';
     const accepting = request.stage === 'IMPLEMENTATION' && request.decision === 'APPROVED';
-    const gitNow = approvingPlan ? await this.prepareSnapshot(task, 'plan.approved') : null;
+    if (request.review !== undefined && !accepting) throw new StateError(400, 'review applies only to accepting an implementation (stage IMPLEMENTATION, decision APPROVED)');
+    // Review is the user's choice at acceptance, within the review mode of the task's project.
+    let review: boolean | null = null;
+    if (accepting) {
+      const choice = resolveReviewChoice(this.effectiveReviewModeAt(task.repoRoot), request.review);
+      if (!choice.ok) throw new StateError(400, choice.reason);
+      review = choice.review;
+    }
+    // Without review the final checks run at once and compare the repository with the report's snapshot.
+    const gitNow = approvingPlan ? await this.prepareSnapshot(task, 'plan.approved') : review === false ? await this.prepareSnapshot(task, 'report') : null;
     // The first review round covers every file changed since the plan was approved.
-    const toReview = accepting ? await this.changesSincePlanApproval(task) : [];
+    const toReview = review === true ? await this.changesSincePlanApproval(task) : [];
     const record = await this.database.db.transaction().execute(async (trx) => {
       const label = request.stage === 'PLAN' ? 'plan' : request.stage === 'IMPLEMENTATION' ? 'implementation report' : 'review fix plan';
       const subject =
@@ -312,11 +359,13 @@ export class StateStore {
         approvedBy: 'local-user',
         approvedAt: at,
         comment: request.comment,
+        ...(review === null ? {} : { review }),
       };
       const approved = record.decision === 'APPROVED';
       const event: WorkflowEvent =
         request.stage === 'PLAN' ? (approved ? 'plan.approved' : 'plan.rejected') : request.stage === 'IMPLEMENTATION' ? (approved ? 'implementation.accepted' : 'changes.requested') : approved ? 'fixes.approved' : 'fixes.rejected';
-      await this.transition(trx, taskId, event, 'user', record.comment === '' ? `${label} version ${record.version}` : record.comment, at);
+      const reason = record.comment === '' ? `${label} version ${record.version}${review === null ? '' : review ? ', with independent review' : ', without review'}` : record.comment;
+      await this.transition(trx, taskId, event, 'user', reason, at, review === null ? {} : { review });
       await trx
         .insertInto('approvals')
         .values({
@@ -330,15 +379,18 @@ export class StateStore {
           approved_at: at,
           comment: record.comment,
           created_at: at,
+          review: review === null ? null : review ? 1 : 0,
         })
         .execute();
-      await audit(trx, at, `approval.${record.decision.toLowerCase()}`, taskId, { stage: record.stage, version: record.version, contentHash: record.contentHash, channel });
+      await audit(trx, at, `approval.${record.decision.toLowerCase()}`, taskId, { stage: record.stage, version: record.version, contentHash: record.contentHash, channel, ...(review === null ? {} : { review }) });
       if (event === 'plan.approved' && gitNow !== null) await insertSnapshot(trx, task, 'plan.approved', gitNow, at);
-      // Accepting the implementation starts the independent review; its end runs the final checks.
-      if (event === 'implementation.accepted') {
+      // Accepting the implementation with review starts the independent review, whose end runs the
+      // final checks; without review the final checks run now.
+      if (event === 'implementation.accepted' && review === true) {
         const previous = await trx.selectFrom('review_rounds').select((eb) => eb.fn.max('round').as('round')).where('task_id', '=', taskId).executeTakeFirst();
         await trx.insertInto('review_rounds').values({ task_id: taskId, round: Number(previous?.round ?? 0) + 1, started_at: at, changed_files_json: JSON.stringify(toReview) }).execute();
       }
+      if (event === 'implementation.accepted' && review === false) await this.runFinalChecks(trx, task, at, gitNow);
       if (event === 'fixes.approved') await trx.updateTable('review_rounds').set({ fixes_approved_at: at }).where('task_id', '=', taskId).where('round', '=', record.version).execute();
       return record;
     });
@@ -427,13 +479,21 @@ export class StateStore {
     // made between the user's approval of a fix plan and the fixes report are the approved fixes;
     // the re-review covered them. Everything else after the report still counts.
     const fixWindows = rounds.filter((round) => round.fixes_approved_at !== null).map((round) => ({ from: round.fixes_approved_at!, until: round.fixes_reported_at ?? at }));
-    const hookEdits = report === null ? [] : await editsInScopeBetween(trx, task, report.createdAt, at, fixWindows);
+    const hookEdits = report === null ? [] : await fileEditsInScopeBetween(trx, task, report.createdAt, at, fixWindows);
     const lastFixes = rounds.map((round) => round.fixes_reported_at).filter((value): value is string => value !== null).sort().at(-1) ?? null;
     const reviewSnapshot = lastFixes === null ? null : await latestSnapshot(trx, task.taskId, 'review');
     const baselineSnapshot = reviewSnapshot !== null && reviewSnapshot.createdAt >= lastFixes! ? reviewSnapshot : await latestSnapshot(trx, task.taskId, 'report');
     const gitEdits = report === null || baselineSnapshot === null || gitNow === null || gitNow.snapshot === null ? [] : changedInScope(task, baselineSnapshot.fingerprints, gitNow.fingerprints);
+    // Later approved work of other tasks on the same files does not hold this task back.
+    const { remaining, laterWork } = await attributeEditsSinceReport(trx, task, hookEdits, gitEdits);
+    const decisions = await trx.selectFrom('approvals').selectAll().where('task_id', '=', task.taskId).orderBy('approved_at').orderBy(sql`rowid`).execute();
+    const approvals = decisions.map(approvalFromRow);
+    const acceptance = report === null ? null : decisionFor(approvals, { taskId: task.taskId, stage: 'IMPLEMENTATION', version: report.version, contentHash: report.contentHash });
     let review: Parameters<typeof evaluateCompletion>[0]['review'];
-    if (lastRound !== undefined) {
+    // Accepted without review: earlier rounds (of reports sent back since) do not apply.
+    if (acceptance?.decision === 'APPROVED' && acceptance.review === false) {
+      review = { requested: false };
+    } else if (lastRound !== undefined) {
       const submissions = await trx.selectFrom('review_submissions').selectAll().where('task_id', '=', task.taskId).execute();
       const own = submissions.filter((submission) => submission.round === lastRound.round);
       const reviewed = new Set(own.flatMap((submission) => (JSON.parse(submission.files_reviewed_json) as string[]).map(fileKey)));
@@ -447,18 +507,17 @@ export class StateStore {
         openFindings: openReview.map((finding) => `FND-${finding.id} ${finding.severity} ${finding.file}:${finding.line_start} ${finding.title}`),
       };
     }
-    const decisions = await trx.selectFrom('approvals').selectAll().where('task_id', '=', task.taskId).orderBy('approved_at').orderBy(sql`rowid`).execute();
-    const approvals = decisions.map((row) => approvalRecordSchema.parse({ approvalId: row.approval_id, taskId: row.task_id, stage: row.stage, version: row.version, contentHash: row.content_hash, decision: row.decision, approvedBy: row.approved_by, approvedAt: row.approved_at, comment: row.comment }));
     const result = evaluateCompletion({
       currentPlanVersion: task.plan.version,
       planApproved: currentPlanDecision(task, approvals)?.decision === 'APPROVED',
       report,
-      reportAccepted: report !== null && decisionFor(approvals, { taskId: task.taskId, stage: 'IMPLEMENTATION', version: report.version, contentHash: report.contentHash })?.decision === 'APPROVED',
-      editsSinceReport: [...new Set([...hookEdits, ...gitEdits])].sort(),
+      reportAccepted: acceptance?.decision === 'APPROVED',
+      editsSinceReport: remaining,
+      laterWork,
       definitionOfDone: task.plan.document?.definitionOfDone ?? [],
       ...(review === undefined ? {} : { review }),
     });
-    const check: CompletionCheck = { taskId: task.taskId, reportVersion: report?.version ?? null, at, passed: result.passed, conditions: result.conditions, definitionOfDone: task.plan.document?.definitionOfDone ?? [] };
+    const check: CompletionCheck = { taskId: task.taskId, reportVersion: report?.version ?? null, at, passed: result.passed, conditions: result.conditions, definitionOfDone: task.plan.document?.definitionOfDone ?? [], laterWork };
     await trx
       .insertInto('task_completion_checks')
       .values({ task_id: task.taskId, report_version: check.reportVersion, passed: check.passed ? 1 : 0, conditions_json: JSON.stringify(check.conditions), definition_of_done_json: JSON.stringify(check.definitionOfDone), created_at: at })
@@ -478,12 +537,27 @@ export class StateStore {
       .selectAll()
       .where('c.id', '=', (eb) => eb.selectFrom('task_completion_checks as latest').select((inner) => inner.fn.max('latest.id').as('id')).whereRef('latest.task_id', '=', 'c.task_id'))
       .execute();
-    return new Map(
-      rows.map((row) => [
-        row.task_id,
-        completionCheckSchema.parse({ taskId: row.task_id, reportVersion: row.report_version, at: row.created_at, passed: row.passed === 1, conditions: JSON.parse(row.conditions_json), definitionOfDone: JSON.parse(row.definition_of_done_json) }),
-      ]),
-    );
+    return new Map(rows.map((row) => [row.task_id, completionCheckFromRow(row)]));
+  }
+
+  /**
+   * The user re-runs the final checks of a task Core held in FINAL_REPORT, for example after the
+   * later task that changed its files reported. DONE follows through the same path when they pass.
+   */
+  async rerunFinalChecks(taskId: string, now: Date, channel: Channel): Promise<{ check: CompletionCheck; state: WorkflowState }> {
+    const task = this.requireTask(taskId);
+    if (task.state !== 'FINAL_REPORT') throw new StateError(409, `${taskId} is ${task.state}; final checks can be re-run only while the task is waiting in FINAL_REPORT`);
+    const gitNow = await this.prepareSnapshot(task, 'report');
+    const at = now.toISOString();
+    const check = await this.database.db.transaction().execute(async (trx) => {
+      // The state is read again inside the transaction: a concurrent request may have moved the task on.
+      const row = await trx.selectFrom('tasks').select('state').where('task_id', '=', taskId).executeTakeFirst();
+      if (row?.state !== 'FINAL_REPORT') throw new StateError(409, `${taskId} is ${row?.state ?? 'unknown'}; final checks can be re-run only while the task is waiting in FINAL_REPORT`);
+      await audit(trx, at, 'task.final-checks-rerun', taskId, { channel });
+      return this.runFinalChecks(trx, task, at, gitNow);
+    });
+    await this.reload();
+    return { check, state: this.requireTask(taskId).state };
   }
 
   /**
@@ -578,11 +652,15 @@ export class StateStore {
 
   async registerSession(registration: SessionRegistration, now: Date): Promise<void> {
     const at = now.toISOString();
+    const entrypoint = registration.entrypoint?.trim().slice(0, MAX_ENTRYPOINT_LENGTH) || null;
     await this.database.db
       .insertInto('sessions')
-      .values({ session_id: registration.sessionId, cwd: registration.cwd, source: registration.source, first_seen_at: at, last_seen_at: at, created_at: at, updated_at: at })
-      // A session that starts again (resume, compaction) is running again.
-      .onConflict((conflict) => conflict.column('session_id').doUpdateSet({ cwd: registration.cwd, source: registration.source, last_seen_at: at, ended_at: null, end_reason: null, updated_at: at }))
+      .values({ session_id: registration.sessionId, cwd: registration.cwd, source: registration.source, entrypoint, first_seen_at: at, last_seen_at: at, created_at: at, updated_at: at })
+      // A session that starts again (resume, compaction) is running again. A registration without
+      // an entrypoint (an older bridge) keeps the one already known.
+      .onConflict((conflict) =>
+        conflict.column('session_id').doUpdateSet({ cwd: registration.cwd, source: registration.source, entrypoint: sql`COALESCE(excluded.entrypoint, entrypoint)`, last_seen_at: at, ended_at: null, end_reason: null, updated_at: at }),
+      )
       .execute();
     await this.reload();
   }
@@ -1546,6 +1624,58 @@ export class StateStore {
     return { repoRoot: existing.repoRoot, removed: true };
   }
 
+  /** The user's global settings. */
+  settings(): Settings {
+    return { ...this.settingValues };
+  }
+
+  /** The review mode that applies at a path: its project's own, else the global one. */
+  effectiveReviewModeAt(target: string): ReviewMode {
+    return effectiveReviewMode(this.settingValues.reviewMode, this.projectOf(target)?.reviewMode);
+  }
+
+  /** Changes global settings; only the user does this (CLI in a terminal, or the dashboard). */
+  async updateSettings(update: SettingsUpdateRequest, now: Date, channel: Channel): Promise<Settings> {
+    const at = now.toISOString();
+    const before = this.settings();
+    const changes: Array<[string, string | boolean]> = [];
+    if (update.reviewMode !== undefined) changes.push([REVIEW_MODE_SETTING, update.reviewMode]);
+    if (update.qaLanguage !== undefined) changes.push([QA_LANGUAGE_SETTING, update.qaLanguage]);
+    if (update.usageShowBar !== undefined) changes.push([USAGE_SHOW_BAR_SETTING, update.usageShowBar]);
+    if (update.decisionConfirmation !== undefined) changes.push([DECISION_CONFIRMATION_SETTING, update.decisionConfirmation]);
+    await this.database.db.transaction().execute(async (trx) => {
+      for (const [key, value] of changes) {
+        await trx
+          .insertInto('settings')
+          .values({ key, value_json: JSON.stringify(value), created_at: at, updated_at: at })
+          .onConflict((conflict) => conflict.column('key').doUpdateSet({ value_json: JSON.stringify(value), updated_at: at }))
+          .execute();
+      }
+      await audit(trx, at, 'settings.update', null, { before, update, channel });
+    });
+    await this.reload();
+    return this.settings();
+  }
+
+  /** An audit row for a user decision made outside the database (e.g. Claude usage collection in Claude Code's settings). */
+  async recordAudit(action: string, details: Record<string, unknown>, now: Date): Promise<void> {
+    const at = now.toISOString();
+    await this.database.db.insertInto('audit_log').values({ at, actor: 'local-user', action, subject: null, details_json: JSON.stringify(details), created_at: at }).execute();
+  }
+
+  /** A project's own review mode; null follows the global setting. Only the user does this. */
+  async setProjectReviewMode(repoRoot: string, reviewMode: ReviewMode | null, now: Date, channel: Channel): Promise<Project> {
+    const existing = this.projectList.find((project) => sameRoot(project.repoRoot, repoRoot));
+    if (existing === undefined) throw new StateError(404, `${repoRoot} is not a JERRY project (see "jerry project list")`);
+    const at = now.toISOString();
+    await this.database.db.transaction().execute(async (trx) => {
+      await trx.updateTable('projects').set({ review_mode: reviewMode }).where('repo_root', '=', existing.repoRoot).execute();
+      await audit(trx, at, 'project.settings', existing.repoRoot, { before: existing.reviewMode, reviewMode, channel });
+    });
+    await this.reload();
+    return { ...this.projectList.find((project) => sameRoot(project.repoRoot, existing.repoRoot))! };
+  }
+
   /**
    * Writes JERRY_HOME/run/projects.json for the hook bridge (atomically). Called at start and after
    * every change; without a configured file (tests of the store alone) it does nothing.
@@ -1719,12 +1849,20 @@ export class StateStore {
    * Retention: events and sessions older than `days` are deleted. Governance records
    * (tasks, plans, approvals, audit log) are kept. The database file shrinks after large deletions.
    */
-  async applyRetention(now: Date, days: number): Promise<{ events: number; sessions: number }> {
+  async applyRetention(now: Date, days: number): Promise<{ events: number; sessions: number; usage: number }> {
     const cutoff = new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString();
-    const events = await this.database.db.deleteFrom('hook_events').where('occurred_at', '<', cutoff).executeTakeFirst();
-    const sessions = await this.database.db.deleteFrom('sessions').where('last_seen_at', '<', cutoff).executeTakeFirst();
-    const removed = { events: Number(events.numDeletedRows), sessions: Number(sessions.numDeletedRows) };
-    if (removed.events + removed.sessions > 0) {
+    const { db } = this.database;
+    const events = await db.deleteFrom('hook_events').where('occurred_at', '<', cutoff).executeTakeFirst();
+    const sessions = await db.deleteFrom('sessions').where('last_seen_at', '<', cutoff).executeTakeFirst();
+    // Claude usage is kept as long as events.
+    const usage = [
+      await db.deleteFrom('usage_tokens').where('bucket_minute', '<', cutoff).executeTakeFirst(),
+      await db.deleteFrom('usage_snapshots').where('at', '<', cutoff).executeTakeFirst(),
+      await db.deleteFrom('usage_limits').where('at', '<', cutoff).executeTakeFirst(),
+      await db.deleteFrom('usage_jerry_share').where('bucket_minute', '<', cutoff).executeTakeFirst(),
+    ].reduce((sum, result) => sum + Number(result.numDeletedRows), 0);
+    const removed = { events: Number(events.numDeletedRows), sessions: Number(sessions.numDeletedRows), usage };
+    if (removed.events + removed.sessions + removed.usage > 0) {
       await sql`INSERT INTO audit_log (at, actor, action, subject, details_json, created_at) VALUES (${now.toISOString()}, 'jerry-core', 'retention.apply', NULL, ${JSON.stringify({ days, ...removed })}, ${now.toISOString()})`.execute(this.database.db);
       if (removed.events > 5000) this.database.raw.exec('VACUUM');
       else this.database.raw.exec('PRAGMA wal_checkpoint(TRUNCATE)');
@@ -1758,7 +1896,7 @@ export class StateStore {
    * Validates and applies one workflow transition inside the caller's transaction. The current state
    * is read from the database, not the snapshot, so two concurrent requests cannot both pass the check.
    */
-  private async transition(trx: Transaction<JerrySchema>, taskId: string, event: WorkflowEvent, actor: WorkflowActor, reason: string, at: string): Promise<WorkflowState> {
+  private async transition(trx: Transaction<JerrySchema>, taskId: string, event: WorkflowEvent, actor: WorkflowActor, reason: string, at: string, context: Pick<TransitionContext, 'review'> = {}): Promise<WorkflowState> {
     const row = await trx.selectFrom('tasks').select('state').where('task_id', '=', taskId).executeTakeFirst();
     if (row === undefined) throw new StateError(404, `Unknown task ${taskId}`);
     const from = workflowStateSchema.parse(row.state);
@@ -1767,7 +1905,7 @@ export class StateStore {
       const paused = await trx.selectFrom('workflow_transitions').select('from_state').where('task_id', '=', taskId).where('to_state', '=', 'PAUSED').orderBy('id', 'desc').limit(1).executeTakeFirst();
       pausedFrom = paused === undefined || paused.from_state === null ? null : workflowStateSchema.parse(paused.from_state);
     }
-    const to = validTransition(taskId, from, event, actor, pausedFrom);
+    const to = validTransition(taskId, from, event, actor, { ...context, pausedFrom });
     await trx.updateTable('tasks').set({ state: to, updated_at: at }).where('task_id', '=', taskId).execute();
     await recordTransition(trx, { taskId, from, to, event, actor, reason, at });
     return to;
@@ -1788,7 +1926,21 @@ export class StateStore {
     const sessionTotal = await db.selectFrom('sessions').select((eb) => eb.fn.countAll<number>().as('count')).executeTakeFirstOrThrow();
     const nextTaskNumber = await db.selectFrom('settings').select('value_json').where('key', '=', NEXT_TASK_NUMBER).executeTakeFirst();
     const projects = await db.selectFrom('projects').selectAll().orderBy('repo_root').execute();
-    this.projectList = projects.map((row) => projectSchema.parse({ repoRoot: row.repo_root, addedAt: row.added_at, addedBy: row.added_by, note: row.note }));
+    this.projectList = projects.map((row) => {
+      const reviewMode = reviewModeSchema.safeParse(row.review_mode);
+      return projectSchema.parse({ repoRoot: row.repo_root, addedAt: row.added_at, addedBy: row.added_by, note: row.note, reviewMode: reviewMode.success ? reviewMode.data : null });
+    });
+    const settings = await db
+      .selectFrom('settings')
+      .select(['key', 'value_json'])
+      .where('key', 'in', [REVIEW_MODE_SETTING, QA_LANGUAGE_SETTING, USAGE_SHOW_BAR_SETTING, DECISION_CONFIRMATION_SETTING])
+      .execute();
+    this.settingValues = {
+      reviewMode: storedSetting(settings, REVIEW_MODE_SETTING, reviewModeSchema, DEFAULT_REVIEW_MODE),
+      qaLanguage: storedSetting(settings, QA_LANGUAGE_SETTING, qaLanguageSchema, DEFAULT_QA_LANGUAGE),
+      usageShowBar: storedSetting(settings, USAGE_SHOW_BAR_SETTING, z.boolean(), DEFAULT_USAGE_SHOW_BAR),
+      decisionConfirmation: storedSetting(settings, DECISION_CONFIRMATION_SETTING, decisionConfirmationSchema, DEFAULT_DECISION_CONFIRMATION),
+    };
 
     this.state = coreStateSchema.parse({
       schemaVersion: 1,
@@ -1802,17 +1954,7 @@ export class StateStore {
         ...(row.goal === null ? {} : { goal: row.goal }),
         plan: { version: row.version, contentHash: row.content_hash, scope: JSON.parse(row.scope_json), createdAt: row.plan_created_at, ...(row.document_json === null ? {} : { document: JSON.parse(row.document_json) }) },
       })),
-      approvals: approvals.map((row) => ({
-        approvalId: row.approval_id,
-        taskId: row.task_id,
-        stage: row.stage,
-        version: row.version,
-        contentHash: row.content_hash,
-        decision: row.decision,
-        approvedBy: row.approved_by,
-        approvedAt: row.approved_at,
-        comment: row.comment,
-      })),
+      approvals: approvals.map(approvalFromRow),
       sessions: sessions.reverse().map((row) => ({ sessionId: row.session_id, cwd: row.cwd, source: row.source, firstSeenAt: row.first_seen_at, lastSeenAt: row.last_seen_at })),
       excludedRepos: excluded.map((row) => ({ repoRoot: row.root_path, excludedAt: row.excluded_at! })),
     });
@@ -1983,6 +2125,40 @@ async function latestReportSubject(trx: Transaction<JerrySchema>, taskId: string
   return row === undefined ? null : { version: row.version, contentHash: row.content_hash };
 }
 
+function approvalFromRow(row: Selectable<JerrySchema['approvals']>): ApprovalRecord {
+  return approvalRecordSchema.parse({
+    approvalId: row.approval_id,
+    taskId: row.task_id,
+    stage: row.stage,
+    version: row.version,
+    contentHash: row.content_hash,
+    decision: row.decision,
+    approvedBy: row.approved_by,
+    approvedAt: row.approved_at,
+    comment: row.comment,
+    ...(row.review === null ? {} : { review: row.review === 1 }),
+  });
+}
+
+/** A stored setting, or the default when it is missing or not a valid value. */
+function storedSetting<T>(rows: readonly { key: string; value_json: string }[], key: string, schema: z.ZodType<T>, fallback: T): T {
+  const row = rows.find((candidate) => candidate.key === key);
+  if (row === undefined) return fallback;
+  try {
+    const parsed = schema.safeParse(JSON.parse(row.value_json));
+    return parsed.success ? parsed.data : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+/** Stored final checks; the later-work list lives on its condition, so older rows read without one. */
+function completionCheckFromRow(row: Selectable<JerrySchema['task_completion_checks']>): CompletionCheck {
+  const conditions = JSON.parse(row.conditions_json) as Array<{ id: string; laterWork?: unknown }>;
+  const laterWork = conditions.find((condition) => condition.id === 'code.later-work')?.laterWork ?? [];
+  return completionCheckSchema.parse({ taskId: row.task_id, reportVersion: row.report_version, at: row.created_at, passed: row.passed === 1, conditions, definitionOfDone: JSON.parse(row.definition_of_done_json), laterWork });
+}
+
 function reportFromRow(row: Selectable<JerrySchema['implementation_reports']>): ImplementationReportRecord {
   return implementationReportRecordSchema.parse({
     taskId: row.task_id,
@@ -2112,24 +2288,147 @@ async function collectEvidence(trx: Transaction<JerrySchema>, task: Task, docume
 
 /** Files in the plan's scope edited with the file tools in the repository during (from, until]. */
 async function editsInScopeBetween(trx: Transaction<JerrySchema>, task: Task, from: string, until: string, excluded: ReadonlyArray<{ from: string; until: string }> = []): Promise<string[]> {
+  return [...new Set((await fileEditsInScopeBetween(trx, task, from, until, excluded)).map((edit) => edit.file))].sort();
+}
+
+/** One file-tool edit in a task's scope, with the gate decision recorded on its event. */
+interface ScopedEdit {
+  file: string;
+  at: string;
+  /** The task the gate decision named; null when no plan was involved, and on events from before decisions carried it. */
+  taskId: string | null;
+  ruleId: string | null;
+}
+
+/** Each file-tool edit in the plan's scope in the repository during (from, until], oldest first. */
+async function fileEditsInScopeBetween(trx: Transaction<JerrySchema>, task: Task, from: string, until: string, excluded: ReadonlyArray<{ from: string; until: string }> = []): Promise<ScopedEdit[]> {
   const platform = process.platform;
   let query = trx
     .selectFrom('hook_events')
-    .select(['tool_name', 'verdict', 'payload_json', 'cwd', 'occurred_at'])
+    .select(['tool_name', 'verdict', 'payload_json', 'cwd', 'occurred_at', 'task_id', 'rule_id'])
     .where('event_type', '=', 'PreToolUse')
     .where('occurred_at', '>', from)
     .where('occurred_at', '<=', until)
-    .where('tool_name', 'in', [...FILE_TOOLS]);
+    .where('tool_name', 'in', [...FILE_TOOLS])
+    .orderBy('occurred_at');
   query = platform === 'win32' ? query.where(sql`lower(repo_root)`, '=', task.repoRoot.toLowerCase()) : query.where('repo_root', '=', task.repoRoot);
-  const edited = new Set<string>();
+  const edits: ScopedEdit[] = [];
   for (const event of await query.execute()) {
     if (event.verdict === 'DENY' || excluded.some((window) => event.occurred_at > window.from && event.occurred_at <= window.until)) continue;
     const input = ((JSON.parse(event.payload_json) as Record<string, unknown>)['input'] ?? {}) as Record<string, unknown>;
     if (typeof input['path'] !== 'string') continue;
     const relative = relativeInside(absolutePath(input['path'], event.cwd ?? task.repoRoot, platform), task.repoRoot, platform);
-    if (relative !== null && relative !== '' && matchesAnyGlob(relative, task.plan.scope, platform === 'win32')) edited.add(relative);
+    if (relative !== null && relative !== '' && matchesAnyGlob(relative, task.plan.scope, platform === 'win32')) edits.push({ file: relative, at: event.occurred_at, taskId: event.task_id, ruleId: event.rule_id });
   }
-  return [...edited].sort();
+  return edits;
+}
+
+/**
+ * Gate decisions that name the approved plan covering the edited file; the event's task is that plan's
+ * task. Out-of-scope warnings also carry a task, but no plan covered the file, so they are not here.
+ */
+const COVERING_RULES: ReadonlySet<string> = new Set(['monitor.in-approved-scope', 'monitor.user-uncommitted-file', 'monitor.implementer-scope', 'monitor.concurrent-write']);
+
+/**
+ * Splits what changed after a task's report into later approved work of other tasks and the rest.
+ *
+ * A file-tool edit is later work of task B when its gate decision named B's approved plan and B was in
+ * implementation (IMPLEMENTATION or FIX_IMPLEMENTATION) when it was made. A change only Git saw is
+ * excused only when every file-tool edit of that file after the report is such later work and each of
+ * those tasks' latest reports lists the file. Everything else stays: edits with no plan, under this
+ * task itself, under another task outside its implementation, events without a task, and changes no
+ * hook saw (shell commands, generators).
+ */
+async function attributeEditsSinceReport(trx: Transaction<JerrySchema>, task: Task, hookEdits: readonly ScopedEdit[], gitEdits: readonly string[]): Promise<{ remaining: string[]; laterWork: LaterWork[] }> {
+  const candidate = (edit: ScopedEdit): edit is ScopedEdit & { taskId: string } => edit.taskId !== null && edit.taskId !== task.taskId && edit.ruleId !== null && COVERING_RULES.has(edit.ruleId);
+  const others = [...new Set(hookEdits.filter(candidate).map((edit) => edit.taskId))];
+  const windows = new Map<string, Array<{ from: string; until: string | null }>>();
+  const reported = new Map<string, (key: string) => boolean>();
+  for (const other of others) {
+    windows.set(other, await workWindows(trx, other));
+    reported.set(other, await reportedFiles(trx, task, other));
+  }
+  const laterTaskOf = (edit: ScopedEdit): string | null =>
+    candidate(edit) && (windows.get(edit.taskId) ?? []).some((window) => edit.at >= window.from && (window.until === null || edit.at <= window.until)) ? edit.taskId : null;
+
+  const remaining = new Map<string, string>();
+  const later = new Map<string, Map<string, string>>();
+  const ownersByFile = new Map<string, Array<string | null>>();
+  for (const edit of hookEdits) {
+    const key = fileKey(edit.file);
+    const owner = laterTaskOf(edit);
+    ownersByFile.set(key, [...(ownersByFile.get(key) ?? []), owner]);
+    if (owner === null) remaining.set(key, edit.file);
+    else later.set(owner, (later.get(owner) ?? new Map<string, string>()).set(key, edit.file));
+  }
+  for (const file of gitEdits) {
+    const key = fileKey(file);
+    const owners = ownersByFile.get(key) ?? [];
+    const excused = owners.length > 0 && owners.every((owner) => owner !== null && reported.get(owner)?.(key) === true);
+    if (!excused && !remaining.has(key)) remaining.set(key, file);
+  }
+  return {
+    remaining: [...remaining.values()].sort(),
+    laterWork: [...later]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([taskId, files]) => ({ taskId, files: [...files.values()].sort() })),
+  };
+}
+
+/** When a task was in implementation: from entering a work state until its next transition (open while it still is). */
+async function workWindows(trx: Transaction<JerrySchema>, taskId: string): Promise<Array<{ from: string; until: string | null }>> {
+  const transitions = await trx.selectFrom('workflow_transitions').select(['to_state', 'at']).where('task_id', '=', taskId).orderBy('id').execute();
+  return transitions.flatMap((transition, index) => (WORK_STATES.has(transition.to_state as WorkflowState) ? [{ from: transition.at, until: transitions[index + 1]?.at ?? null }] : []));
+}
+
+/** Files the latest report of another task lists in the given task's repository, as comparable keys. */
+/**
+ * Whether the latest report of another task lists a file. Reports name files exactly, or summarise
+ * several in one entry: globs ('apps/cli/src/*.ts', 'packages/x/**'), braces
+ * ('src/{a,b}.ts'), comma-separated paths, or a path followed by a note in parentheses. All of
+ * these count, so a task that reported its files in a summarised form still excuses them.
+ */
+async function reportedFiles(trx: Transaction<JerrySchema>, task: Task, otherTaskId: string): Promise<(key: string) => boolean> {
+  const row = await trx.selectFrom('implementation_reports').selectAll().where('task_id', '=', otherTaskId).orderBy('version', 'desc').limit(1).executeTakeFirst();
+  if (row === undefined) return () => false;
+  const platform = process.platform;
+  const sameRepo = (repository: string): boolean => repository.trim() === '' || comparablePath(repository, task.repoRoot, platform) === comparablePath(task.repoRoot, task.repoRoot, platform);
+  const exact = new Set<string>();
+  const globs: string[] = [];
+  for (const change of reportFromRow(row).document.changes.filter((entry) => sameRepo(entry.repository))) {
+    for (const entry of reportedPathPatterns(change.path)) {
+      const key = fileKey(repoRelative(task, entry));
+      if (/[*?]/.test(key)) globs.push(key);
+      else exact.add(key);
+    }
+  }
+  return (key) => exact.has(key) || (globs.length > 0 && matchesAnyGlob(key, globs, platform === 'win32'));
+}
+
+/** 'src/{a,b}.ts, README.md (note)' -> ['src/a.ts', 'src/b.ts', 'README.md']. */
+export function reportedPathPatterns(raw: string): string[] {
+  const withoutNote = raw.replace(/\s+\([^)]*\)\s*$/, '');
+  const parts: string[] = [];
+  // Split on commas outside braces.
+  let depth = 0;
+  let current = '';
+  for (const char of withoutNote) {
+    if (char === '{') depth += 1;
+    if (char === '}') depth = Math.max(0, depth - 1);
+    if (char === ',' && depth === 0) {
+      parts.push(current);
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  parts.push(current);
+  const expand = (pattern: string): string[] => {
+    const match = /\{([^{}]*)\}/.exec(pattern);
+    if (match === null) return [pattern];
+    return match[1]!.split(',').flatMap((option) => expand(`${pattern.slice(0, match.index)}${option.trim()}${pattern.slice(match.index + match[0].length)}`));
+  };
+  return parts.map((part) => part.trim()).filter((part) => part !== '').flatMap(expand);
 }
 
 function artifactDecisionFromRow(row: Selectable<JerrySchema['artifact_decisions']>): ArtifactDecision {
@@ -2191,8 +2490,8 @@ function checkpointFromRow(row: { task_id: string; session_id: string | null; su
 }
 
 /** The target state, or a 409 explaining why the workflow does not allow the step. */
-function validTransition(taskId: string, from: WorkflowState | null, event: WorkflowEvent, actor: WorkflowActor, pausedFrom: WorkflowState | null = null): WorkflowState {
-  const result = applyEvent(from, event, actor, pausedFrom);
+function validTransition(taskId: string, from: WorkflowState | null, event: WorkflowEvent, actor: WorkflowActor, context: TransitionContext = {}): WorkflowState {
+  const result = applyEvent(from, event, actor, context);
   if (!result.ok) throw new StateError(409, `${taskId}: ${result.reason}`);
   return result.to;
 }

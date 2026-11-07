@@ -1,7 +1,7 @@
 [package]
 name = "jerry-desktop"
 version = "0.1.0"
-description = "JERRY Desktop: the JERRY dashboard in its own window, with a tray icon and notifications"
+description = "Jerry: the JERRY dashboard in its own window, with a tray icon and notifications"
 edition = "2021"
 publish = false
 
@@ -22,6 +22,12 @@ tauri-plugin-dialog = "=2.8.4"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
 ureq = { version = "=3.5.1", default-features = false }
+
+# Already in the tree through tauri's WebView2 runtime (same versions); used directly only to read
+# WebView2's own user agent and append the app's marker to it (tray.rs, mark_user_agent).
+[target.'cfg(windows)'.dependencies]
+webview2-com = "=0.39.1"
+windows-core = "=0.62.2"
 
 [dev-dependencies]
 tempfile = "=3.27.0"

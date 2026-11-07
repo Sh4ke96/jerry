@@ -76,5 +76,19 @@ Tell the user the task ID and plan version, summarise the plan in a few lines (g
 questions), and say how to approve it: in the JERRY dashboard (Tasks tab, `jerry ui`) or with
 `jerry approve <taskId> --stage plan --version <n>`.
 
-Then wait for the user. Never approve a plan yourself, and never run `jerry approve`. Edits made before
-approval are not blocked, but JERRY records them as deviations. Git operations stay with the user.
+Keep it short: one line on what waits (`<taskId>` plan v`<n>`) and where (one click in the dashboard).
+
+## 5. Wait for the decision and continue
+
+Do not end your turn. Call `wait_for_decision` (`taskId`, `stage: plan`, `version`: the plan version). It
+waits up to 90 seconds for the user's decision and only reads it:
+
+- `approved`: continue at once in the same turn. Implement the plan as `/jerry:implement` describes, within
+  its scope.
+- `rejected`: read the user's comment, revise the plan accordingly (ask the user if the comment is empty or
+  unclear), submit the new version with `submit_plan` and the same `taskId`, and wait again for that version.
+- `pending`: call `wait_for_decision` again, at most 4 calls in a row (about six minutes). After that, end
+  your turn and tell the user you will continue as soon as they decide and write to you.
+
+Never approve a plan yourself, and never run `jerry approve`. Edits made before approval are not blocked, but
+JERRY records them as deviations. Git operations stay with the user.

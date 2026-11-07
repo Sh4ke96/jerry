@@ -1,17 +1,48 @@
 import { WORKFLOW_EVENTS, WORKFLOW_STATES, type WorkflowActor, type WorkflowEvent, type WorkflowState } from '@jerry/contracts';
 import { describe, expect, it } from 'vitest';
-import { applyEvent, availableEvents, isTerminal } from '../src/index.js';
+import { applyEvent, availableEvents, effectiveReviewMode, isTerminal, resolveReviewChoice } from '../src/index.js';
 
-const go = (current: WorkflowState | null, event: WorkflowEvent, actor: WorkflowActor = 'user', pausedFrom: WorkflowState | null = null) => applyEvent(current, event, actor, pausedFrom);
+const go = (current: WorkflowState | null, event: WorkflowEvent, actor: WorkflowActor = 'user', pausedFrom: WorkflowState | null = null, review?: boolean) =>
+  applyEvent(current, event, actor, { pausedFrom, ...(review === undefined ? {} : { review }) });
 
 describe('workflow transitions', () => {
   it('walks the happy path from plan to done', () => {
     expect(go(null, 'plan.submitted', 'claude')).toEqual({ ok: true, to: 'WAIT_PLAN_APPROVAL' });
     expect(go('WAIT_PLAN_APPROVAL', 'plan.approved')).toEqual({ ok: true, to: 'IMPLEMENTATION' });
     expect(go('IMPLEMENTATION', 'report.submitted', 'claude')).toEqual({ ok: true, to: 'WAIT_IMPLEMENTATION_ACCEPTANCE' });
-    expect(go('WAIT_IMPLEMENTATION_ACCEPTANCE', 'implementation.accepted')).toEqual({ ok: true, to: 'CODE_REVIEW' });
+    expect(go('WAIT_IMPLEMENTATION_ACCEPTANCE', 'implementation.accepted', 'user', null, false)).toEqual({ ok: true, to: 'FINAL_REPORT' });
+    expect(go('FINAL_REPORT', 'task.completed', 'core')).toEqual({ ok: true, to: 'DONE' });
+  });
+
+  it('walks the path with review when the user asks for it at acceptance', () => {
+    expect(go('WAIT_IMPLEMENTATION_ACCEPTANCE', 'implementation.accepted', 'user', null, true)).toEqual({ ok: true, to: 'CODE_REVIEW' });
     expect(go('CODE_REVIEW', 'review.reported', 'core')).toEqual({ ok: true, to: 'REVIEW_REPORT' });
     expect(go('REVIEW_REPORT', 'review.passed', 'core')).toEqual({ ok: true, to: 'FINAL_REPORT' });
+    expect(go('FINAL_REPORT', 'task.completed', 'core')).toEqual({ ok: true, to: 'DONE' });
+  });
+
+  it('refuses an acceptance that does not say whether it goes to review', () => {
+    expect(go('WAIT_IMPLEMENTATION_ACCEPTANCE', 'implementation.accepted')).toMatchObject({ ok: false, reason: expect.stringMatching(/independent review/) });
+  });
+
+  it('decides review from the choice and the effective review mode', () => {
+    // Optional by default: no review unless the user asks for it.
+    expect(resolveReviewChoice('optional', undefined)).toEqual({ ok: true, review: false });
+    expect(resolveReviewChoice('optional', true)).toEqual({ ok: true, review: true });
+    expect(resolveReviewChoice('optional', false)).toEqual({ ok: true, review: false });
+    // Required forces review; declining it is refused with a reason.
+    expect(resolveReviewChoice('required', undefined)).toEqual({ ok: true, review: true });
+    expect(resolveReviewChoice('required', true)).toEqual({ ok: true, review: true });
+    expect(resolveReviewChoice('required', false)).toMatchObject({ ok: false, reason: expect.stringMatching(/required/) });
+    // A project's own mode wins over the global one; null follows the global one.
+    expect(effectiveReviewMode('optional', 'required')).toBe('required');
+    expect(effectiveReviewMode('required', 'optional')).toBe('optional');
+    expect(effectiveReviewMode('required', null)).toBe('required');
+    expect(effectiveReviewMode('optional', undefined)).toBe('optional');
+  });
+
+  it('lets a task that is already in review finish through the user waiver', () => {
+    expect(go('CODE_REVIEW', 'review.skipped')).toEqual({ ok: true, to: 'FINAL_REPORT' });
     expect(go('FINAL_REPORT', 'task.completed', 'core')).toEqual({ ok: true, to: 'DONE' });
   });
 
@@ -35,14 +66,16 @@ describe('workflow transitions', () => {
     expect(go('IMPLEMENTATION', 'plan.approved')).toMatchObject({ ok: false });
     // When Core refuses DONE, the user sends the work back from the final checks.
     expect(go('FINAL_REPORT', 'changes.requested')).toEqual({ ok: true, to: 'IMPLEMENTATION' });
-    expect(go('FINAL_REPORT', 'implementation.accepted')).toMatchObject({ ok: false });
+    expect(go('FINAL_REPORT', 'implementation.accepted', 'user', null, false)).toMatchObject({ ok: false });
   });
 
   it('keeps every user decision with the user', () => {
     for (const event of ['plan.approved', 'plan.rejected', 'changes.requested', 'implementation.accepted', 'task.paused', 'task.resumed', 'task.cancelled'] as const) {
       const from: WorkflowState = event === 'task.resumed' ? 'PAUSED' : event === 'plan.rejected' || event === 'plan.approved' ? 'WAIT_PLAN_APPROVAL' : event === 'changes.requested' || event === 'implementation.accepted' ? 'WAIT_IMPLEMENTATION_ACCEPTANCE' : 'IMPLEMENTATION';
-      expect(go(from, event, 'claude', 'IMPLEMENTATION').ok, event).toBe(false);
-      expect(go(from, event, 'core', 'IMPLEMENTATION').ok, event).toBe(false);
+      for (const review of [true, false]) {
+        expect(go(from, event, 'claude', 'IMPLEMENTATION', review).ok, event).toBe(false);
+        expect(go(from, event, 'core', 'IMPLEMENTATION', review).ok, event).toBe(false);
+      }
     }
   });
 
@@ -64,7 +97,7 @@ describe('workflow transitions', () => {
       expect(isTerminal(state)).toBe(true);
       for (const event of WORKFLOW_EVENTS) {
         for (const actor of ['user', 'claude', 'core'] as const) {
-          expect(go(state, event, actor, 'IMPLEMENTATION').ok, `${state} ${event} ${actor}`).toBe(false);
+          expect(go(state, event, actor, 'IMPLEMENTATION', true).ok, `${state} ${event} ${actor}`).toBe(false);
         }
       }
     }
@@ -84,7 +117,7 @@ describe('workflow transitions', () => {
   });
 
   it('runs the independent review loop between acceptance and the final checks', () => {
-    expect(go('WAIT_IMPLEMENTATION_ACCEPTANCE', 'implementation.accepted')).toEqual({ ok: true, to: 'CODE_REVIEW' });
+    expect(go('WAIT_IMPLEMENTATION_ACCEPTANCE', 'implementation.accepted', 'user', null, true)).toEqual({ ok: true, to: 'CODE_REVIEW' });
     expect(go('CODE_REVIEW', 'review.reported', 'core')).toEqual({ ok: true, to: 'REVIEW_REPORT' });
     expect(go('REVIEW_REPORT', 'review.passed', 'core')).toEqual({ ok: true, to: 'FINAL_REPORT' });
     expect(go('REVIEW_REPORT', 'fixes.proposed', 'claude')).toEqual({ ok: true, to: 'WAIT_REVIEW_FIX_APPROVAL' });

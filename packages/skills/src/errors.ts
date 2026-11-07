@@ -1,0 +1,16 @@
+/**
+ * A refusal with the HTTP status Core answers with (Core's error handler uses statusCode). The
+ * message is shown to the user as it is, so it says what to do.
+ */
+export class SkillError extends Error {
+  constructor(
+    readonly statusCode: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'SkillError';
+  }
+}
+
+/** The skill content is not acceptable (validation). */
+export const invalid = (message: string): SkillError => new SkillError(400, message);

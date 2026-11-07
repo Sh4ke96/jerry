@@ -12,9 +12,13 @@ import { excludeRepository, includeRepository, listRepositories } from './repo-c
 import { addProject, listProjects, removeProject } from './project-commands.js';
 import { forgetRepository, pruneData, showDataUsage } from './data-commands.js';
 import { graphCommand, profileCommand, scanCommand } from './scan-command.js';
+import { setSetting, showSettings } from './settings-commands.js';
+import { addSkill, listSkills, removeSkill, setSkillEnabled, setSkillStates, showSkill, updateSkill } from './skill-commands.js';
 import { showStatus } from './status-command.js';
-import { controlTask, createTask, decide, listTasks, revisePlan, showFinalReport, showPlanDiff, showReview, showTask, skipReview } from './task-commands.js';
+import { disableStatusline, enableStatusline, statuslineStatus } from './statusline-commands.js';
+import { controlTask, createTask, decide, listTasks, recheckTask, revisePlan, showFinalReport, showPlanDiff, showReview, showTask, skipReview } from './task-commands.js';
 import { openDashboard } from './ui-command.js';
+import { disableUsageCommand, enableUsageCommand, usageStatus } from './usage-commands.js';
 
 /** Repeatable option without a default, so a required one is really required. */
 const collect = (value: string, previous: string[] | undefined): string[] => [...(previous ?? []), value];
@@ -49,7 +53,12 @@ const program = new Command()
 
 program.command('status').description('Short summary: guard state, plans, today\'s deviations').action(() => showStatus());
 program.command('doctor').description('Full diagnostics of the installation, hooks, Core, database and settings').action(() => doctor());
-program.command('install').description('Install or update the JERRY plugin and Core runtime (Claude Code user scope)').action(() => install());
+program
+  .command('install')
+  .description('Install or update the JERRY plugin, Core runtime and Claude usage collection (Claude Code user scope)')
+  .option('--no-usage', "leave Claude Code's status line and telemetry as they are (no Claude usage in JERRY)")
+  .option('--no-statusline', "leave Claude Code's status line as it is (telemetry is still turned on unless --no-usage)")
+  .action((options: { statusline: boolean; usage: boolean }) => install({ statusline: options.statusline, usage: options.usage }));
 program
   .command('uninstall')
   .description('Remove the plugin, marketplace and Core runtime; keep data unless --purge-data')
@@ -71,6 +80,53 @@ core
     const { info, status } = await getCoreStatus();
     console.log(`${mark('jerry', `JERRY Core ${status.version}`)}: pid ${info.pid}, 127.0.0.1:${info.port}, started ${status.startedAt}, home ${status.jerryHome}, ${status.taskCount} task(s), ${status.sessionCount} session(s)`);
   });
+
+const statusline = program.command('statusline').description("JERRY's Claude Code status line: plan usage (5-hour, weekly) and session cost");
+statusline
+  .command('status', { isDefault: true })
+  .description('Show whether it is on, the chained previous status line and what it saw last (read-only)')
+  .option('--json', 'print the state as JSON', false)
+  .action((options: { json: boolean }) => statuslineStatus(options));
+statusline.command('enable').description('Make it the Claude Code status line; yours stays and shows above it (interactive: y/N)').action(() => enableStatusline());
+statusline.command('disable').description('Put back the status line you had before (interactive: y/N)').action(() => disableStatusline());
+
+const usage = program.command('usage').description('Claude usage in JERRY: plan limits (status line) and tokens and cost (Claude Code telemetry)');
+usage
+  .command('status', { isDefault: true })
+  .description('Show whether both sources are on, when each last delivered (per client) and the last limits (read-only)')
+  .option('--json', 'print the state as JSON', false)
+  .action((options: { json: boolean }) => usageStatus(options));
+usage.command('enable').description("Turn both sources on in Claude Code's settings (a backup first; interactive: y/N)").action(() => enableUsageCommand());
+usage.command('disable').description("Turn both sources off and put back what you had (a backup first; interactive: y/N)").action(() => disableUsageCommand());
+
+const skill = program.command('skill').description('Claude Code skills added through JERRY (CLAUDE_CONFIG_DIR/skills): preview, install, switch, update, remove');
+skill
+  .command('list', { isDefault: true })
+  .description("List the skills JERRY added, JERRY's own (read-only) and your other skills (read-only)")
+  .option('--json', 'print the list as JSON', false)
+  .action((options: { json: boolean }) => listSkills(options));
+skill
+  .command('show <name>')
+  .description('Show a skill: SKILL.md, files, scan findings and history (read-only)')
+  .option('--json', 'print it as JSON', false)
+  .action((name: string, options: { json: boolean }) => showSkill(name, options));
+skill
+  .command('add <source>')
+  .description('Add a skill from a GitHub URL, a folder or a .zip/.skill file (interactive: a preview, then you type its name)')
+  .action((source: string) => addSkill(source));
+skill.command('enable <name>').description("Switch a skill on again in Claude Code's settings (interactive: y/N)").action((name: string) => setSkillEnabled(name, true));
+skill.command('disable <name>').description("Switch a skill off with Claude Code's skillOverrides; the folder stays (interactive: y/N)").action((name: string) => setSkillEnabled(name, false));
+skill
+  .command('update <name>')
+  .description('Update a skill from its source, or from --from (interactive: the changes, then y/N; the old version is backed up)')
+  .option('--from <source>', 'a new GitHub URL, folder or zip file to update from')
+  .action((name: string, options: { from?: string }) => updateSkill(name, options));
+skill
+  .command('states <name> [states...]')
+  .description('Assign a skill to the task states in which JERRY tells Claude to use it, e.g. CODE_REVIEW REVERIFICATION (interactive: y/N)')
+  .option('--clear', 'assign no state: Claude does not use the skill', false)
+  .action((name: string, states: string[], options: { clear: boolean }) => setSkillStates(name, states, options));
+skill.command('remove <name>').description("Remove a skill JERRY installed into JERRY's backups (interactive: you type its name)").action((name: string) => removeSkill(name));
 
 const task = program.command('task').description('Tasks and their plans');
 task
@@ -98,6 +154,10 @@ for (const [verb, event, description] of controls) {
     .option('--reason <text>', 'note stored in the task history', '')
     .action((taskId: string, options: { reason: string }) => controlTask(taskId, event, options.reason));
 }
+task
+  .command('recheck <taskId>')
+  .description('Re-run the final checks of a task waiting in final checks; DONE follows if they pass (interactive)')
+  .action((taskId: string) => recheckTask(taskId));
 
 const plan = program.command('plan').description('Revise or compare plans');
 plan
@@ -113,7 +173,7 @@ plan
   .action((taskId: string, options: { from?: string; to?: string }) => showPlanDiff(taskId, options));
 
 for (const decision of ['approve', 'reject'] as const) {
-  program
+  const command = program
     .command(`${decision} <taskId>`)
     .description(
       decision === 'approve'
@@ -122,11 +182,27 @@ for (const decision of ['approve', 'reject'] as const) {
     )
     .requiredOption('--stage <stage>', 'what is decided: plan or implementation', stage)
     .requiredOption('--version <n>', 'the plan or report version you reviewed', positiveInteger)
-    .option('--comment <text>', decision === 'approve' ? 'note stored with the decision' : 'what should change (stored with the decision and shown to Claude)', '')
-    .action((taskId: string, options: { stage: 'PLAN' | 'IMPLEMENTATION' | 'REVIEW_FIX'; version: number; comment: string }) =>
-      decide({ taskId, stage: options.stage, version: options.version, decision: decision === 'approve' ? 'APPROVED' : 'REJECTED', comment: options.comment }),
-    );
+    .option('--comment <text>', decision === 'approve' ? 'note stored with the decision' : 'what should change (stored with the decision and shown to Claude)', '');
+  if (decision === 'approve') {
+    // Neither flag: the review mode decides, and in optional mode you are asked.
+    command.option('--review', 'accepting an implementation: send it to independent code review').option('--no-review', 'accepting an implementation: finish without review (refused when review is required)');
+  }
+  command.action((taskId: string, options: { stage: 'PLAN' | 'IMPLEMENTATION' | 'REVIEW_FIX'; version: number; comment: string; review?: boolean }) =>
+    decide({ taskId, stage: options.stage, version: options.version, decision: decision === 'approve' ? 'APPROVED' : 'REJECTED', comment: options.comment, ...(options.review === undefined ? {} : { review: options.review }) }),
+  );
 }
+
+const settings = program.command('settings').description('Workflow settings: review mode and QA language (changing one is interactive)');
+settings
+  .command('show', { isDefault: true })
+  .description('Show the settings and the projects with their own review mode')
+  .option('--json', 'print the settings as JSON', false)
+  .action((options: { json: boolean }) => showSettings(options));
+settings
+  .command('set <key> <value>')
+  .description('Change a setting (interactive: y/N): review.mode optional|required, qa.language pl|en')
+  .option('--project <path>', 'review.mode of one project only; "inherit" follows the global setting again')
+  .action((key: string, value: string, options: { project?: string }) => setSetting(key, value, options));
 
 const project = program.command('project').description('Projects: the repositories JERRY monitors (elsewhere only hard rules apply)');
 project
@@ -245,7 +321,7 @@ data
   .command('prune')
   .description('Delete old data (interactive: a preview, then you type "delete"; a backup is taken first)')
   .option('--done-older-than <days>', 'finished and cancelled tasks last changed more than <days> ago, with everything tied to them', nonNegativeInteger)
-  .option('--events-older-than <days>', 'events, sessions and subagent runs older than <days>', nonNegativeInteger)
+  .option('--events-older-than <days>', 'events, sessions, subagent runs and Claude usage older than <days>', nonNegativeInteger)
   .option('--evals-older-than <days>', 'eval runs older than <days> (baseline runs stay)', nonNegativeInteger)
   .option('--backups-keep <n>', 'keep only the newest <n> backup files', nonNegativeInteger)
   .action((options: { doneOlderThan?: number; eventsOlderThan?: number; evalsOlderThan?: number; backupsKeep?: number }) =>

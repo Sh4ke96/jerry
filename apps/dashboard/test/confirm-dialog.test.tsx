@@ -5,10 +5,10 @@ import { ConfirmDialog } from '../src/components/ConfirmDialog';
 
 describe('ConfirmDialog', () => {
   const mounted: Array<ReturnType<typeof mount>> = [];
-  const mountDialog = async () => {
+  const mountDialog = async (extra: { mode?: 'click' | 'typed'; commentLabel?: string; commentRequired?: boolean } = {}) => {
     const wrapper = mount(ConfirmDialog, {
       attachTo: document.body,
-      props: { title: 'Approve JRY-0007 plan v2', expected: 'JRY-0007', confirmLabel: 'Approve plan' },
+      props: { title: 'Approve JRY-0007 plan v2', expected: 'JRY-0007', confirmLabel: 'Approve plan', ...extra },
       slots: { default: () => 'Scope: src/**' },
     });
     mounted.push(wrapper);
@@ -52,5 +52,44 @@ describe('ConfirmDialog', () => {
   it('shows the decision details passed in', async () => {
     const { dialog } = await mountDialog();
     expect(dialog.text()).toContain('Scope: src/**');
+  });
+
+  it('asks for the typed text unless told otherwise', async () => {
+    const { dialog } = await mountDialog();
+    expect(dialog.attributes('data-confirm-mode')).toBe('typed');
+    expect(dialog.find('#confirm-typed').exists()).toBe(true);
+  });
+
+  it('in click mode decides at once from the focused button, still emitting the expected text', async () => {
+    const { wrapper, dialog } = await mountDialog({ mode: 'click' });
+    expect(dialog.attributes('data-confirm-mode')).toBe('click');
+    expect(dialog.find('#confirm-typed').exists()).toBe(false);
+    expect(dialog.text()).toContain('Scope: src/**');
+    const confirm = dialog.get('button[type="submit"]');
+    expect(confirm.attributes('disabled')).toBeUndefined();
+    expect(document.activeElement).toBe(confirm.element);
+    await dialog.get('form').trigger('submit');
+    expect(wrapper.emitted('confirm')).toEqual([['JRY-0007', '']]);
+  });
+
+  it('in click mode still waits for a required comment, and passes it on', async () => {
+    const { wrapper, dialog } = await mountDialog({ mode: 'click', commentLabel: 'Reason (required)', commentRequired: true });
+    const confirm = dialog.get('button[type="submit"]');
+    expect(confirm.attributes('disabled')).toBeDefined();
+    expect(document.activeElement).toBe(dialog.get('textarea').element);
+    await dialog.get('form').trigger('submit');
+    expect(wrapper.emitted('confirm')).toBeUndefined();
+    await dialog.get('textarea').setValue('  prototype only ');
+    expect(confirm.attributes('disabled')).toBeUndefined();
+    await dialog.get('form').trigger('submit');
+    expect(wrapper.emitted('confirm')).toEqual([['JRY-0007', 'prototype only']]);
+  });
+
+  it('in click mode cancels with Escape', async () => {
+    const { wrapper } = await mountDialog({ mode: 'click' });
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await flushPromises();
+    expect(wrapper.emitted('cancel')).toHaveLength(1);
+    expect(wrapper.emitted('confirm')).toBeUndefined();
   });
 });

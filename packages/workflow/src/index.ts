@@ -1,4 +1,4 @@
-import type { ImplementationReportRecord, WorkflowActor, WorkflowEvent, WorkflowState } from '@jerry/contracts';
+import type { ImplementationReportRecord, ReviewMode, WorkflowActor, WorkflowEvent, WorkflowState } from '@jerry/contracts';
 
 /**
  * The task workflow as a pure transition table. Core applies every state change
@@ -37,8 +37,11 @@ const PAUSABLE: readonly WorkflowState[] = [
 
 interface Rule {
   from: readonly (WorkflowState | null)[];
-  /** Target state; `resume` returns to the state the task was paused in. */
-  to: WorkflowState | 'resume';
+  /**
+   * Target state; `resume` returns to the state the task was paused in, `acceptance` goes to code
+   * review or straight to the final checks, as the user chose at acceptance.
+   */
+  to: WorkflowState | 'resume' | 'acceptance';
   actors: readonly WorkflowActor[];
 }
 
@@ -62,8 +65,9 @@ const RULES: Readonly<Record<WorkflowEvent, Rule>> = {
   // Also from the final checks: when Core refuses DONE, the user sends the work back.
   // After a review the user may send it back too, instead of a fix plan.
   'changes.requested': { from: ['WAIT_IMPLEMENTATION_ACCEPTANCE', 'FINAL_REPORT', 'REVIEW_REPORT'], to: 'IMPLEMENTATION', actors: ['user'] },
-  // An accepted implementation goes to independent review.
-  'implementation.accepted': { from: ['WAIT_IMPLEMENTATION_ACCEPTANCE'], to: 'CODE_REVIEW', actors: ['user'] },
+  // An accepted implementation goes to independent review when the user asked for it (or the review
+  // mode requires it); otherwise straight to Core's final checks.
+  'implementation.accepted': { from: ['WAIT_IMPLEMENTATION_ACCEPTANCE'], to: 'acceptance', actors: ['user'] },
   // A review round is complete: all three reviewers submitted (Core), or Claude closed it with gaps.
   'review.reported': { from: ['CODE_REVIEW', 'REVERIFICATION'], to: 'REVIEW_REPORT', actors: ['core', 'claude'] },
   // No open P1–P3 review finding: Core moves on to the final checks.
@@ -84,11 +88,19 @@ const RULES: Readonly<Record<WorkflowEvent, Rule>> = {
 
 export type TransitionResult = { ok: true; to: WorkflowState } | { ok: false; reason: string };
 
+/** Facts of one transition the table alone does not hold. */
+export interface TransitionContext {
+  /** The state a PAUSED task returns to on resume (taken from its transition history by the caller). */
+  pausedFrom?: WorkflowState | null;
+  /** implementation.accepted: the user sent the work to independent review. */
+  review?: boolean;
+}
+
 /**
- * Validates one transition. `pausedFrom` is the state a PAUSED task returns to on resume (taken
- * from its transition history by the caller).
+ * Validates one transition. For implementation.accepted the caller says whether the user chose
+ * review (see resolveReviewChoice); it is required there, so no acceptance picks a path by default.
  */
-export function applyEvent(current: WorkflowState | null, event: WorkflowEvent, actor: WorkflowActor, pausedFrom: WorkflowState | null = null): TransitionResult {
+export function applyEvent(current: WorkflowState | null, event: WorkflowEvent, actor: WorkflowActor, context: TransitionContext = {}): TransitionResult {
   const rule = RULES[event];
   if (!rule.actors.includes(actor)) {
     return { ok: false, reason: `${event} can only be done by ${rule.actors.join(' or ')}, not by ${actor}` };
@@ -97,10 +109,33 @@ export function applyEvent(current: WorkflowState | null, event: WorkflowEvent, 
     return { ok: false, reason: `${event} is not possible while the task is ${current ?? 'new'}` };
   }
   if (rule.to === 'resume') {
+    const pausedFrom = context.pausedFrom ?? null;
     if (pausedFrom === null || pausedFrom === 'PAUSED') return { ok: false, reason: 'the state before the pause is unknown' };
     return { ok: true, to: pausedFrom };
   }
+  if (rule.to === 'acceptance') {
+    if (context.review === undefined) return { ok: false, reason: 'accepting an implementation needs the choice whether it goes to independent review' };
+    return { ok: true, to: context.review ? 'CODE_REVIEW' : 'FINAL_REPORT' };
+  }
   return { ok: true, to: rule.to };
+}
+
+/** The review mode that applies in a project: its own when set, else the global one. */
+export function effectiveReviewMode(global: ReviewMode, project: ReviewMode | null | undefined): ReviewMode {
+  return project ?? global;
+}
+
+export type ReviewChoice = { ok: true; review: boolean } | { ok: false; reason: string };
+
+/**
+ * Whether an acceptance goes to independent review. Without a choice the mode decides (optional: no,
+ * required: yes); declining review while it is required is refused.
+ */
+export function resolveReviewChoice(mode: ReviewMode, requested: boolean | undefined): ReviewChoice {
+  if (requested === false && mode === 'required') {
+    return { ok: false, reason: 'Independent review is required here (review mode "required"), so the implementation cannot be accepted without it. Accept it with review, or change the review mode first.' };
+  }
+  return { ok: true, review: requested ?? mode === 'required' };
 }
 
 /** Events the given actor may send now; used for buttons in the dashboard and hints to Claude. */
@@ -118,6 +153,14 @@ export interface CompletionCondition {
   blocking: boolean;
   passed: boolean;
   detail: string;
+  /** Only on code.later-work: which other task changed which files. */
+  laterWork?: LaterWork[];
+}
+
+/** Files another task changed after this task's report, under its own approved plan. */
+export interface LaterWork {
+  taskId: string;
+  files: string[];
 }
 
 export interface CompletionInput {
@@ -128,15 +171,31 @@ export interface CompletionInput {
   report: Pick<ImplementationReportRecord, 'version' | 'planVersion' | 'document' | 'evidence'> | null;
   /** The user accepted exactly that report version and hash. */
   reportAccepted: boolean;
-  /** In-scope files edited with the file tools after the report was submitted. */
+  /**
+   * In-scope files changed after the report was submitted that no later approved work explains:
+   * edits with no plan, under this task itself, or Git changes no other task reported.
+   */
   editsSinceReport: readonly string[];
+  /** Files changed after the report under other tasks' approved plans while those tasks were in implementation. */
+  laterWork: readonly LaterWork[];
   /** From the approved plan; the user's acceptance confirms it. */
   definitionOfDone: readonly string[];
   /**
-   * The independent review. Absent for tasks accepted before reviews existed.
-   * outcome: passed (no open P1–P3 review finding), skipped (the user waived it), or null.
+   * The independent review. Absent for tasks accepted before reviews existed; `requested: false` when
+   * the user accepted the implementation without review.
    */
-  review?: { outcome: 'passed' | 'skipped' | null; rounds: number; reason: string; uncovered: readonly string[]; notIndependent: readonly string[]; openFindings: readonly string[] };
+  review?: ReviewFacts | { requested: false };
+}
+
+/** A requested review: outcome passed (no open P1–P3 review finding), skipped (the user waived it), or null. */
+export interface ReviewFacts {
+  requested?: true;
+  outcome: 'passed' | 'skipped' | null;
+  rounds: number;
+  reason: string;
+  uncovered: readonly string[];
+  notIndependent: readonly string[];
+  openFindings: readonly string[];
 }
 
 const list = (items: readonly string[], max = 10): string => (items.length <= max ? items.join(', ') : `${items.slice(0, max).join(', ')} and ${items.length - max} more`);
@@ -173,8 +232,22 @@ export function evaluateCompletion(input: CompletionInput): { passed: boolean; c
     'code.unchanged-since-report',
     true,
     input.editsSinceReport.length === 0,
-    input.editsSinceReport.length === 0 ? 'no in-scope file was edited after the report' : `edited after report v${report.version} was submitted: ${list(input.editsSinceReport)}`,
+    input.editsSinceReport.length === 0
+      ? input.laterWork.length === 0
+        ? 'no in-scope file was edited after the report'
+        : 'no in-scope file was edited after the report other than by later approved tasks'
+      : `edited after report v${report.version} was submitted: ${list(input.editsSinceReport)}`,
   );
+  // Later approved work of other tasks on the same files: recorded, never a block.
+  if (input.laterWork.length > 0) {
+    conditions.push({
+      id: 'code.later-work',
+      blocking: false,
+      passed: true,
+      detail: `changed later by other tasks under their approved plans: ${input.laterWork.map((work) => `${work.taskId} (${list(work.files, 5)})`).join('; ')}`,
+      laterWork: input.laterWork.map((work) => ({ taskId: work.taskId, files: [...work.files] })),
+    });
+  }
 
   const ran = report.document.checks.some((check) => check.result === 'PASS');
   add('checks.ran', false, ran, ran ? 'at least one check ran and passed' : 'no check ran: recorded as a limitation');
@@ -182,9 +255,12 @@ export function evaluateCompletion(input: CompletionInput): { passed: boolean; c
   add('report.complete', false, unreportedEdits.length === 0, unreportedEdits.length === 0 ? 'every observed edit is in the report' : `edited but not in the report: ${list(unreportedEdits)}`);
   add('implementation.deviations', false, deviationCount === 0, deviationCount === 0 ? 'no deviation was recorded' : `${deviationCount} deviation(s) recorded during the implementation`);
 
-  // Independent review: it must have passed or been waived by the user.
+  // Independent review: when requested, it must have passed or been waived by the user. Not
+  // requesting it is the user's choice at acceptance, recorded but never a block.
   const review = input.review;
-  if (review !== undefined) {
+  if (review !== undefined && review.requested === false) {
+    add('review.done', false, true, 'review was not requested: the user accepted the implementation without independent review');
+  } else if (review !== undefined) {
     const outcome =
       review.outcome === 'passed'
         ? `review passed after ${review.rounds} round(s)`

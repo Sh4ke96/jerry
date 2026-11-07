@@ -4,6 +4,7 @@ import { defineComponent, type PropType } from 'vue';
 import { formatTime } from '../format';
 import { ATTENTION, CHIP, LIST, PREWRAP, STEPS } from '../lib/classes';
 import { cn } from '../lib/utils';
+import { QA_LANGUAGE_LABEL, reportQaLanguage } from '../settings';
 import { Emoji, resultEmoji } from './Emoji';
 import { Section } from './Section';
 import { StatusBadge, type Tone } from './StatusBadge';
@@ -17,14 +18,19 @@ const SEVERITY_TONE: Record<'low' | 'medium' | 'high' | 'critical', Tone> = { lo
  */
 export const ImplementationReportView = defineComponent({
   name: 'ImplementationReportView',
-  props: { report: { type: Object as PropType<ImplementationReportRecord>, required: true } },
+  props: {
+    report: { type: Object as PropType<ImplementationReportRecord>, required: true },
+    /** Without the separating line above it (on its own tab). */
+    bare: { type: Boolean, default: false },
+  },
   setup(props) {
     return () => {
       const { document, evidence } = props.report;
+      const qaLanguage = reportQaLanguage(props.report);
       const problems = document.checks.filter((check) => check.result !== 'PASS');
       const attention = evidence.unreportedEdits.length > 0 || evidence.deviationCount > 0 || problems.length > 0;
       return (
-        <div class="report grid gap-3 border-t pt-4">
+        <div class={cn('report grid gap-3', !props.bare && 'border-t pt-4')}>
           <h3 class="flex flex-wrap items-center gap-x-2 font-semibold">
             <Emoji symbol={EMOJI.report} class="mr-0" />
             Implementation report v{props.report.version}{' '}
@@ -142,33 +148,45 @@ export const ImplementationReportView = defineComponent({
                 </ul>
               </Section>
             )}
-            <Section title={`Manual QA (${document.qaScenarios.length})`} emoji={EMOJI.tests}>
-              <ul class="grid gap-3">
-                {document.qaScenarios.map((scenario) => (
-                  <li key={scenario.id}>
-                    <div class="flex flex-wrap items-center gap-2">
-                      <strong class="font-medium">
-                        {scenario.id} {scenario.title}
-                      </strong>{' '}
-                      <StatusBadge tone={scenario.priority === 'P1' ? 'warn' : 'neutral'}>{scenario.priority}</StatusBadge> <StatusBadge>{scenario.kind}</StatusBadge>
-                    </div>
-                    <div class="text-muted-foreground text-xs">
-                      {scenario.location}
-                      {scenario.roles.length > 0 && ` · roles: ${scenario.roles.join(', ')}`}
-                      {scenario.preconditions !== '' && ` · given: ${scenario.preconditions}`}
-                      {scenario.testData !== '' && ` · data: ${scenario.testData}`}
-                    </div>
-                    <ol class={[STEPS, 'my-1.5']}>
-                      {scenario.steps.map((step, stepIndex) => (
-                        <li key={stepIndex}>{step}</li>
-                      ))}
-                    </ol>
-                    <div class="text-muted-foreground">Expected: {scenario.expected}</div>
-                    {scenario.negative !== '' && <div class="text-muted-foreground">Negative: {scenario.negative}</div>}
-                    {scenario.related !== '' && <div class="text-muted-foreground">Related: {scenario.related}</div>}
-                  </li>
-                ))}
-              </ul>
+            <Section class="qa" emoji={EMOJI.tests}>
+              {{
+                title: () => [
+                  `Manual QA (${document.qaScenarios.length})`,
+                  qaLanguage !== null && (
+                    <StatusBadge key="language" class="qa-language" title={`The QA scenarios are written in ${QA_LANGUAGE_LABEL[qaLanguage]}`}>
+                      {qaLanguage.toUpperCase()}
+                    </StatusBadge>
+                  ),
+                ],
+                default: () => (
+                  <ul class="grid gap-3">
+                    {document.qaScenarios.map((scenario) => (
+                      <li key={scenario.id}>
+                        <div class="flex flex-wrap items-center gap-2">
+                          <strong class="font-medium">
+                            {scenario.id} {scenario.title}
+                          </strong>{' '}
+                          <StatusBadge tone={scenario.priority === 'P1' ? 'warn' : 'neutral'}>{scenario.priority}</StatusBadge> <StatusBadge>{scenario.kind}</StatusBadge>
+                        </div>
+                        <div class="text-muted-foreground text-xs">
+                          {scenario.location}
+                          {scenario.roles.length > 0 && ` · roles: ${scenario.roles.join(', ')}`}
+                          {scenario.preconditions !== '' && ` · given: ${scenario.preconditions}`}
+                          {scenario.testData !== '' && ` · data: ${scenario.testData}`}
+                        </div>
+                        <ol class={[STEPS, 'my-1.5']}>
+                          {scenario.steps.map((step, stepIndex) => (
+                            <li key={stepIndex}>{step}</li>
+                          ))}
+                        </ol>
+                        <div class="text-muted-foreground">Expected: {scenario.expected}</div>
+                        {scenario.negative !== '' && <div class="text-muted-foreground">Negative: {scenario.negative}</div>}
+                        {scenario.related !== '' && <div class="text-muted-foreground">Related: {scenario.related}</div>}
+                      </li>
+                    ))}
+                  </ul>
+                ),
+              }}
             </Section>
             {(document.agents.length > 0 || document.skills.length > 0) && (
               <Section title="Agents and skills" emoji={EMOJI.agent}>

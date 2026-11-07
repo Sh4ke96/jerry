@@ -138,9 +138,99 @@ describe('openJerryDatabase', () => {
     const upgraded = await openJerryDatabase(where);
     expect(upgraded.migration).toBe(LATEST);
     const projects = await upgraded.db.selectFrom('projects').selectAll().execute();
-    expect(projects).toEqual([{ repo_root: 'D:/Work/open', added_at: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/), added_by: 'migration', note: expect.any(String) }]);
+    expect(projects).toEqual([{ repo_root: 'D:/Work/open', added_at: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/), added_by: 'migration', note: expect.any(String), review_mode: null }]);
     // The upgrade itself was backed up first.
     expect(listBackups(where.backupsDir)).toHaveLength(1);
+    await upgraded.close();
+  });
+
+  it('keeps projects and earlier acceptances without a review choice (0019)', async () => {
+    const where = location();
+    const before = Object.fromEntries(Object.entries(MIGRATIONS).filter(([name]) => name < '0019'));
+    const old = await openJerryDatabase({ ...where, migrations: before });
+    const at = '2026-01-01T00:00:00.000Z';
+    await sql`INSERT INTO projects (repo_root, added_at, added_by, note) VALUES ('D:/Work/open', ${at}, 'cli', NULL)`.execute(old.db);
+    await sql`INSERT INTO repositories (repo_id, root_path, created_at, updated_at) VALUES ('repo_open', 'D:/Work/open', ${at}, ${at})`.execute(old.db);
+    await sql`INSERT INTO tasks (task_id, title, repo_id, current_plan_version, state, created_at, updated_at) VALUES ('JRY-0001', 't', 'repo_open', 1, 'CODE_REVIEW', ${at}, ${at})`.execute(old.db);
+    await sql`INSERT INTO plans (task_id, version, content_hash, scope_json, created_at) VALUES ('JRY-0001', 1, 'sha256:x', '[]', ${at})`.execute(old.db);
+    await sql`INSERT INTO approvals (approval_id, task_id, stage, version, content_hash, decision, approved_by, approved_at, comment, created_at) VALUES ('apr_1', 'JRY-0001', 'IMPLEMENTATION', 1, 'sha256:y', 'APPROVED', 'local-user', ${at}, '', ${at})`.execute(old.db);
+    await old.close();
+
+    const upgraded = await openJerryDatabase(where);
+    expect(upgraded.migration).toBe(LATEST);
+    expect(await upgraded.db.selectFrom('projects').select(['repo_root', 'review_mode']).execute()).toEqual([{ repo_root: 'D:/Work/open', review_mode: null }]);
+    expect(await upgraded.db.selectFrom('approvals').select(['approval_id', 'review']).execute()).toEqual([{ approval_id: 'apr_1', review: null }]);
+    // A task already in review keeps its state.
+    expect(await upgraded.db.selectFrom('tasks').select('state').execute()).toEqual([{ state: 'CODE_REVIEW' }]);
+    await upgraded.close();
+  });
+
+  it('adds the Claude usage tables (0020): one row per key, limits without session or path', async () => {
+    const where = location();
+    const before = Object.fromEntries(Object.entries(MIGRATIONS).filter(([name]) => name < '0020'));
+    await (await openJerryDatabase({ ...where, migrations: before })).close();
+    const upgraded = await openJerryDatabase(where);
+    expect(upgraded.migration).toBe(LATEST);
+    const row = { bucket_minute: '2026-11-07T10:37:00.000Z', session_id: 's', repo_root: 'D:/Work/open', model: 'm', token_type: 'input', query_source: '', tokens: 5, cost_usd: 0, entrypoint: 'cli', updated_at: 'a' };
+    await upgraded.db.insertInto('usage_tokens').values(row).execute();
+    await expect(upgraded.db.insertInto('usage_tokens').values(row).execute()).rejects.toThrow(/UNIQUE/);
+    await upgraded.db.insertInto('usage_tokens').values({ ...row, token_type: 'output' }).execute();
+    const snapshot = { bucket_minute: row.bucket_minute, at: '2026-11-07T10:37:10.000Z', session_id: 's', repo_root: 'D:/Work/open', model: null, cost_usd: 1, input_tokens: null, output_tokens: null, context_used_pct: null, entrypoint: null, version: null };
+    await upgraded.db.insertInto('usage_snapshots').values(snapshot).execute();
+    await expect(upgraded.db.insertInto('usage_snapshots').values(snapshot).execute()).rejects.toThrow(/UNIQUE/);
+    await upgraded.db.insertInto('usage_jerry_share').values({ bucket_minute: row.bucket_minute, session_id: 's', repo_root: 'D:/Work/open', kind: 'mcp', chars: 10, count: 1 }).execute();
+    const limits = await sql<{ name: string }>`SELECT name FROM pragma_table_info('usage_limits')`.execute(upgraded.db);
+    expect(limits.rows.map((column) => column.name)).toEqual(['id', 'at', 'five_hour_pct', 'five_hour_resets_at', 'seven_day_pct', 'seven_day_resets_at', 'entrypoint']);
+    await upgraded.close();
+  });
+
+  it('adds the session entrypoint (0021); sessions registered before keep null', async () => {
+    const where = location();
+    const before = Object.fromEntries(Object.entries(MIGRATIONS).filter(([name]) => name < '0021'));
+    const old = await openJerryDatabase({ ...where, migrations: before });
+    const at = '2026-01-01T00:00:00.000Z';
+    await sql`INSERT INTO sessions (session_id, cwd, source, first_seen_at, last_seen_at, created_at, updated_at) VALUES ('s-old', 'D:/Work/open', 'startup', ${at}, ${at}, ${at}, ${at})`.execute(old.db);
+    await old.close();
+
+    const upgraded = await openJerryDatabase(where);
+    expect(upgraded.migration).toBe(LATEST);
+    expect(await upgraded.db.selectFrom('sessions').select(['session_id', 'entrypoint']).execute()).toEqual([{ session_id: 's-old', entrypoint: null }]);
+    await upgraded.db.insertInto('sessions').values({ session_id: 's-new', cwd: 'D:/Work/open', source: null, first_seen_at: at, last_seen_at: at, ended_at: null, end_reason: null, entrypoint: 'claude-vscode', created_at: at, updated_at: at }).execute();
+    expect((await upgraded.db.selectFrom('sessions').select('entrypoint').where('session_id', '=', 's-new').executeTakeFirst())?.entrypoint).toBe('claude-vscode');
+    await upgraded.close();
+  });
+
+  it('adds the skills JERRY installs and their history (0022) to an existing database', async () => {
+    const where = location();
+    const before = Object.fromEntries(Object.entries(MIGRATIONS).filter(([name]) => name < '0022'));
+    const old = await openJerryDatabase({ ...where, migrations: before });
+    await old.close();
+
+    const upgraded = await openJerryDatabase(where);
+    const at = '2026-01-01T00:00:00.000Z';
+    await upgraded.db
+      .insertInto('skills')
+      .values({ name: 'pdf', description: 'Reads PDFs', source_kind: 'folder', source: 'D:/skills/pdf', ref: null, commit_sha: null, content_hash: 'h', files_json: '[]', scan_json: '[]', enabled: 1, installed_at: at, updated_at: at })
+      .execute();
+    await upgraded.db.insertInto('skill_events').values({ name: 'pdf', action: 'installed', channel: 'cli', details_json: '{}', at }).execute();
+    expect(await upgraded.db.selectFrom('skills').select(['name', 'enabled', 'ref']).execute()).toEqual([{ name: 'pdf', enabled: 1, ref: null }]);
+    expect(await upgraded.db.selectFrom('skill_events').select(['id', 'action']).execute()).toEqual([{ id: 1, action: 'installed' }]);
+    await upgraded.close();
+  });
+
+  it('gives skills installed before 0023 no states and leaves them unconverted', async () => {
+    const where = location();
+    const before = Object.fromEntries(Object.entries(MIGRATIONS).filter(([name]) => name < '0023'));
+    const old = await openJerryDatabase({ ...where, migrations: before });
+    const at = '2026-01-01T00:00:00.000Z';
+    await (old.db as unknown as Kysely<Record<string, Record<string, unknown>>>)
+      .insertInto('skills')
+      .values({ name: 'pdf', description: 'Reads PDFs', source_kind: 'folder', source: 'D:/skills/pdf', ref: null, commit_sha: null, content_hash: 'h', files_json: '[]', scan_json: '[]', enabled: 1, installed_at: at, updated_at: at })
+      .execute();
+    await old.close();
+
+    const upgraded = await openJerryDatabase(where);
+    expect(await upgraded.db.selectFrom('skills').select(['name', 'states_json', 'jerry_triggered']).execute()).toEqual([{ name: 'pdf', states_json: '[]', jerry_triggered: 0 }]);
     await upgraded.close();
   });
 

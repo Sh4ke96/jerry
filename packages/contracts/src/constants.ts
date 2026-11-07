@@ -45,6 +45,12 @@ export const WORKFLOW_STATES = [
   'CANCELLED',
 ] as const;
 
+/**
+ * The workflow states an added skill can be assigned to: the open states in which Claude works on a
+ * task. Terminal, paused and blocked tasks have no next step, so nothing would start a skill there.
+ */
+export const SKILL_TRIGGER_STATES: ReadonlyArray<(typeof WORKFLOW_STATES)[number]> = WORKFLOW_STATES.filter((state) => state !== 'DONE' && state !== 'CANCELLED' && state !== 'PAUSED' && state !== 'BLOCKED');
+
 /** What moves a task between states. */
 export const WORKFLOW_EVENTS = [
   'task.started',

@@ -558,4 +558,136 @@ export const MIGRATIONS: Readonly<Record<string, Migration>> = {
       `.execute(db);
     },
   },
+
+  '0019_optional_review': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // A project's own review mode ('optional' or 'required'); null follows the global setting.
+      await db.schema.alterTable('projects').addColumn('review_mode', 'text').execute();
+      // Accepting an implementation records whether the user sent it to review (1 or 0). Null on other
+      // decisions and on acceptances made before review became optional, which always went to review.
+      await db.schema.alterTable('approvals').addColumn('review', 'integer').execute();
+    },
+  },
+
+  '0020_usage': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Claude usage, kept only for sessions in projects (plan limits are account-wide and name no
+      // session or path). Text columns of the unique keys use '' for "unknown": SQLite treats NULLs
+      // as distinct, which would break the additive upserts.
+
+      // Claude Code's OpenTelemetry metrics, summed per minute: tokens per type, and the cost
+      // (token_type 'cost', tokens 0).
+      await db.schema
+        .createTable('usage_tokens')
+        .addColumn('bucket_minute', 'text', (column) => column.notNull())
+        .addColumn('session_id', 'text', (column) => column.notNull())
+        .addColumn('repo_root', 'text', (column) => column.notNull())
+        .addColumn('model', 'text', (column) => column.notNull())
+        .addColumn('token_type', 'text', (column) => column.notNull())
+        .addColumn('query_source', 'text', (column) => column.notNull())
+        .addColumn('tokens', 'real', (column) => column.notNull().defaultTo(0))
+        .addColumn('cost_usd', 'real', (column) => column.notNull().defaultTo(0))
+        .addColumn('entrypoint', 'text', (column) => column.notNull())
+        .addColumn('updated_at', 'text', (column) => column.notNull())
+        .execute();
+      await db.schema.createIndex('usage_tokens_key').unique().on('usage_tokens').columns(['bucket_minute', 'session_id', 'model', 'token_type', 'query_source']).execute();
+      await db.schema.createIndex('usage_tokens_session').on('usage_tokens').column('session_id').execute();
+
+      // Plan limits as the status line read them (account-wide: no session, no path).
+      await db.schema
+        .createTable('usage_limits')
+        .addColumn('id', 'integer', (column) => column.primaryKey().autoIncrement())
+        .addColumn('at', 'text', (column) => column.notNull())
+        .addColumn('five_hour_pct', 'real')
+        .addColumn('five_hour_resets_at', 'text')
+        .addColumn('seven_day_pct', 'real')
+        .addColumn('seven_day_resets_at', 'text')
+        .addColumn('entrypoint', 'text')
+        .execute();
+      await db.schema.createIndex('usage_limits_at').on('usage_limits').column('at').execute();
+
+      // The status line's snapshot of a project session: the latest per session and minute.
+      await db.schema
+        .createTable('usage_snapshots')
+        .addColumn('bucket_minute', 'text', (column) => column.notNull())
+        .addColumn('at', 'text', (column) => column.notNull())
+        .addColumn('session_id', 'text', (column) => column.notNull())
+        .addColumn('repo_root', 'text', (column) => column.notNull())
+        .addColumn('model', 'text')
+        .addColumn('cost_usd', 'real')
+        .addColumn('input_tokens', 'real')
+        .addColumn('output_tokens', 'real')
+        .addColumn('context_used_pct', 'real')
+        .addColumn('entrypoint', 'text')
+        .addColumn('version', 'text')
+        .execute();
+      await db.schema.createIndex('usage_snapshots_key').unique().on('usage_snapshots').columns(['session_id', 'bucket_minute']).execute();
+      await db.schema.createIndex('usage_snapshots_at').on('usage_snapshots').column('at').execute();
+
+      // Characters JERRY put into Claude's context (session start, warnings and feedback, MCP answers), per minute.
+      await db.schema
+        .createTable('usage_jerry_share')
+        .addColumn('bucket_minute', 'text', (column) => column.notNull())
+        .addColumn('session_id', 'text', (column) => column.notNull())
+        .addColumn('repo_root', 'text', (column) => column.notNull())
+        .addColumn('kind', 'text', (column) => column.notNull())
+        .addColumn('chars', 'integer', (column) => column.notNull().defaultTo(0))
+        .addColumn('count', 'integer', (column) => column.notNull().defaultTo(0))
+        .execute();
+      await db.schema.createIndex('usage_jerry_share_key').unique().on('usage_jerry_share').columns(['bucket_minute', 'session_id', 'kind']).execute();
+    },
+  },
+
+  '0021_session_entrypoint': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Where the session runs (cli, claude-vscode, …), as the bridge read it from Claude Code's
+      // environment at SessionStart. Null for sessions registered before, or without it.
+      await db.schema.alterTable('sessions').addColumn('entrypoint', 'text').execute();
+    },
+  },
+
+  '0022_skills': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Claude Code skills the user added through JERRY (CLAUDE_CONFIG_DIR/skills/<name>). A row
+      // means JERRY installed that folder, so it may update, switch or remove it; a folder without
+      // a row is the user's own and is never touched. Contents are not stored: only file hashes.
+      await db.schema
+        .createTable('skills')
+        .addColumn('name', 'text', (column) => column.primaryKey())
+        .addColumn('description', 'text', (column) => column.notNull())
+        .addColumn('source_kind', 'text', (column) => column.notNull())
+        .addColumn('source', 'text', (column) => column.notNull())
+        .addColumn('ref', 'text')
+        .addColumn('commit_sha', 'text')
+        .addColumn('content_hash', 'text', (column) => column.notNull())
+        .addColumn('files_json', 'text', (column) => column.notNull())
+        .addColumn('scan_json', 'text', (column) => column.notNull())
+        .addColumn('enabled', 'integer', (column) => column.notNull().defaultTo(1))
+        .addColumn('installed_at', 'text', (column) => column.notNull())
+        .addColumn('updated_at', 'text', (column) => column.notNull())
+        .execute();
+
+      // What happened to a skill (installed, updated, enabled, disabled, removed), kept after removal.
+      await db.schema
+        .createTable('skill_events')
+        .addColumn('id', 'integer', (column) => column.primaryKey().autoIncrement())
+        .addColumn('name', 'text', (column) => column.notNull())
+        .addColumn('action', 'text', (column) => column.notNull())
+        .addColumn('channel', 'text', (column) => column.notNull())
+        .addColumn('details_json', 'text', (column) => column.notNull())
+        .addColumn('at', 'text', (column) => column.notNull())
+        .execute();
+      await db.schema.createIndex('skill_events_name').on('skill_events').column('name').execute();
+    },
+  },
+
+  '0023_skill_states': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Added skills are started only by JERRY: the workflow states the user assigned a skill to
+      // (a JSON array), and whether its SKILL.md already carries JERRY's "user-invocable: false".
+      // Rows from before start with no states and unconverted; assigning states converts them.
+      await db.schema.alterTable('skills').addColumn('states_json', 'text', (column) => column.notNull().defaultTo('[]')).execute();
+      await db.schema.alterTable('skills').addColumn('jerry_triggered', 'integer', (column) => column.notNull().defaultTo(0)).execute();
+    },
+  },
 };

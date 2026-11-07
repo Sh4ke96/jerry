@@ -6,13 +6,13 @@ import { JERRY_VERSION } from '@jerry/contracts';
 import { afterEach, describe, expect, it } from 'vitest';
 
 /**
- * The release package carries the JERRY Desktop installer when one was built, with checksums like
+ * The release package carries the Jerry desktop app installer when one was built, with checksums like
  * every other file, and is built as before without one. A small fake installer stands in for the
  * real one, so these tests need no Rust toolchain.
  */
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const RELEASE_SCRIPT = path.join(ROOT, 'scripts', 'release.mjs');
-const INSTALLER = `JERRY-Desktop-${JERRY_VERSION}-x64-setup.exe`;
+const INSTALLER = `Jerry-${JERRY_VERSION}-x64-setup.exe`;
 
 const temps: string[] = [];
 afterEach(() => {
@@ -42,7 +42,7 @@ function release(dist: string): { status: number | null; output: string } {
 
 const stage = (dist: string): string => path.join(dist, 'release', `jerry-${JERRY_VERSION}`);
 
-describe('release package and JERRY Desktop', () => {
+describe('release package and Jerry desktop app', () => {
   it('includes a built installer with its checksum', () => {
     const dist = stagedDist();
     addInstaller(dist, INSTALLER);
@@ -52,7 +52,7 @@ describe('release package and JERRY Desktop', () => {
     const manifest = JSON.parse(fs.readFileSync(path.join(stage(dist), 'manifest.json'), 'utf8')) as { files: Array<{ path: string }> };
     expect(manifest.files.map((file) => file.path)).toContain(`desktop/${INSTALLER}`);
     expect(fs.readFileSync(path.join(stage(dist), 'SHA256SUMS'), 'utf8')).toContain(`  desktop/${INSTALLER}`);
-    expect(fs.readFileSync(path.join(stage(dist), 'RELEASE-NOTES.md'), 'utf8')).toContain('JERRY Desktop (optional)');
+    expect(fs.readFileSync(path.join(stage(dist), 'RELEASE-NOTES.md'), 'utf8')).toContain('Jerry, the desktop app (optional)');
     expect(fs.existsSync(path.join(dist, 'release', `jerry-${JERRY_VERSION}.tar.gz`))).toBe(true);
   });
 
@@ -66,7 +66,7 @@ describe('release package and JERRY Desktop', () => {
 
   it('refuses an installer of another version', () => {
     const dist = stagedDist();
-    addInstaller(dist, 'JERRY-Desktop-0.0.1-x64-setup.exe');
+    addInstaller(dist, 'Jerry-0.0.1-x64-setup.exe');
     const result = release(dist);
     expect(result.status).not.toBe(0);
     expect(result.output).toContain('installer of another version');

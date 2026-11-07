@@ -1,4 +1,4 @@
-//! JERRY Desktop: the JERRY dashboard in its own window, a tray icon and notifications.
+//! Jerry: the JERRY dashboard in its own window, a tray icon and notifications.
 //! The logic lives in the pure modules (core, notify, settings); this file wires them to Tauri:
 //! state, plugins, windows and the commands of the two local pages.
 
@@ -80,7 +80,7 @@ fn ensure_local(webview: &Webview, state: &AppState) -> Result<(), String> {
     if core::is_local_page(&url, &state.local_base) {
         Ok(())
     } else {
-        Err("This command is only available to JERRY Desktop's own pages.".to_owned())
+        Err("This command is only available to Jerry's own pages.".to_owned())
     }
 }
 
@@ -171,15 +171,21 @@ fn set_settings(app: tauri::AppHandle, webview: Webview, state: tauri::State<'_,
     Ok(next)
 }
 
+/// A test notification with `sound` (the one chosen on the settings page, also before it is saved)
+/// or, without one, the saved sound. A click on it shows the dashboard.
 #[tauri::command]
-fn send_test_notification(app: tauri::AppHandle, webview: Webview, state: tauri::State<'_, AppState>) -> Result<(), String> {
+fn send_test_notification(app: tauri::AppHandle, webview: Webview, state: tauri::State<'_, AppState>, sound: Option<String>) -> Result<(), String> {
     ensure_local(&webview, &state)?;
-    let sound = lock(&state.settings).sound;
+    let sound = match sound {
+        Some(name) => settings::normalize_sound(&serde_json::Value::String(name)),
+        None => lock(&state.settings).sound.clone(),
+    };
     tray::show_notification(
         &app,
-        "🛡️ JERRY Desktop test notification",
+        "🛡️ Jerry test notification",
         "Notifications work. Click one to open the dashboard.",
-        sound,
+        settings::toast_sound(&sound),
+        None,
     )
 }
 
@@ -227,7 +233,7 @@ pub fn run() {
             Ok(())
         })
         .build(context)
-        .expect("error while building JERRY Desktop");
+        .expect("error while building Jerry");
 
     app.run(|_app, event| {
         // Closing windows never ends the app; only Quit (an explicit exit code) does.

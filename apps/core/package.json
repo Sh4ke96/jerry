@@ -12,6 +12,7 @@
     "@jerry/platform": "workspace:*",
     "@jerry/policy-engine": "workspace:*",
     "@jerry/quality": "workspace:*",
+    "@jerry/skills": "workspace:*",
     "@jerry/trace-engine": "workspace:*",
     "@jerry/workflow": "workspace:*",
     "fastify": "5.12.8",

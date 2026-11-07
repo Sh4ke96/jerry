@@ -10,6 +10,7 @@
     "@jerry/discovery": "workspace:*",
     "@jerry/evals": "workspace:*",
     "@jerry/platform": "workspace:*",
+    "@jerry/skills": "workspace:*",
     "@jerry/workflow": "workspace:*",
     "commander": "15.0.0",
     "zod": "4.6.7"

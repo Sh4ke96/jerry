@@ -1,4 +1,5 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { loginCodeRequestSchema, loginNextSchema } from '@jerry/contracts';
 
 /**
  * Browser access to Core. The dashboard never sees the CLI/hook token. Instead:
@@ -91,6 +92,31 @@ export function readCookie(header: string | undefined, name: string): string | n
 export function sessionCookie(session: BrowserSession): string {
   const maxAge = Math.max(0, Math.floor((session.expiresAt - Date.now()) / 1000));
   return `${SESSION_COOKIE}=${session.id}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}`;
+}
+
+/**
+ * The dashboard route a login code request asks to land on ({ next: "#/tasks/JRY-0001" }); a
+ * missing body, a body that is not an object or an invalid route gives none.
+ */
+export function loginNextFromBody(body: unknown): string | undefined {
+  const parsed = loginCodeRequestSchema.safeParse(body ?? {});
+  return parsed.success ? parsed.data.next : undefined;
+}
+
+/** The address of a login link, with its landing route when there is a valid one. */
+export function loginUrl(origin: string, code: string, next: string | undefined): string {
+  const url = `${origin}/ui/login?code=${code}`;
+  return next === undefined ? url : `${url}&next=${encodeURIComponent(next)}`;
+}
+
+/**
+ * Where the browser goes once a login code is redeemed: "/" plus a valid dashboard route
+ * ("/#/tasks/JRY-0001"), otherwise the dashboard's root. Absolute or protocol-relative URLs,
+ * other paths, scripts and over-long or odd values all give the root.
+ */
+export function loginRedirectTarget(next: unknown): string {
+  const parsed = loginNextSchema.safeParse(next);
+  return parsed.success ? `/${parsed.data}` : '/';
 }
 
 export function clearedSessionCookie(): string {

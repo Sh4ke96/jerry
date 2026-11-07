@@ -12,6 +12,7 @@ the repository, not what the plan intended.
 
 - Call `get_state`. The task must be in implementation (`approved`). If the user requested changes to an
   earlier report, the next action says what they asked for: make sure those changes are done first.
+- Note `preferences.qaLanguage` from `get_state` (`pl` when it is missing): the QA language the user chose.
 - Read the approved plan of the task (dashboard or your earlier context) for its scope, steps, tests and
   Definition of Done.
 
@@ -49,12 +50,18 @@ the repository, not what the plan intended.
 | `risks` | open findings and risks: `risk`, `severity` (low / medium / high / critical), `mitigation` |
 | `commitSubjects` | proposed subjects in the repository's convention (`git log --oneline -20`); the user commits |
 | `qaScenarios` | manual QA scenarios (see below) |
+| `qaLanguage` | the language you wrote the QA scenarios in: `preferences.qaLanguage` from `get_state` (`pl` or `en`) |
 | `artifact` | leave empty: the optional Artifact is offered after DONE with `/jerry:artifact`, only if the user wants one |
 
 Each QA scenario has `id` (QA-1, QA-2…), `priority` (P1 / P2 / P3), `title`, `location` (screen,
 UI path, endpoint or command), `roles`, `preconditions`, `testData`, `steps`, `expected`, `negative` (what must
 not happen, or the negative variant), `related` (API calls or events), and `kind` (new / regression). Cover the
 main path, the error paths and at least one regression scenario for what could break nearby.
+
+Write the human text of the QA scenarios (`title`, `preconditions`, `testData`, `steps`, `expected`,
+`negative`) in the QA language: Polish for `pl` (the default), English for `en`. Set `qaLanguage` to that
+language. Field names, IDs, priorities, `kind`, paths, commands, UI labels and code stay as they are, and every
+other field of the report stays in English.
 
 ## 4. Submit and hand over
 
@@ -66,6 +73,25 @@ main path, the error paths and at least one regression scenario for what could b
   first), the deviations and the risks, and say how to decide: in the JERRY dashboard (Tasks tab, `jerry ui`),
   or `jerry approve <taskId> --stage implementation --version <n>` to accept, or
   `jerry reject <taskId> --stage implementation --version <n> --comment "…"` to request changes.
+- Independent code review is optional unless `preferences.reviewMode` is `required`: the user can send the
+  work to review when accepting (the dashboard, or `--review` with `jerry approve`). Without review JERRY runs
+  its final checks right after the acceptance.
 
-Then stop and wait. Never accept the report yourself or run `jerry approve`/`jerry reject`, and do not change
-code until the user decides. Git operations stay with the user; `/jerry:commit-message` proposes the message.
+Keep the hand-over short and end it with one line on what waits (`<taskId>` report v`<n>`) and where (one
+click in the dashboard).
+
+## 5. Wait for the decision and continue
+
+Do not end your turn. Call `wait_for_decision` (`taskId`, `stage: implementation`, `version`: the report
+version). It waits up to 90 seconds for the user's decision and only reads it:
+
+- `approved` without review (`review` is not `true`): JERRY ran its final checks. Summarise the task for the
+  user from the answer's `state`: done (`DONE`), or what JERRY still needs (`get_state` → `next`).
+- `approved` with `review: true`: continue at once with `/jerry:review`.
+- `rejected`: read the user's comment (ask if it is empty or unclear), make the requested changes within the
+  approved scope, run the checks again, submit the next report version, and wait again for that version.
+- `pending`: call `wait_for_decision` again, at most 4 calls in a row (about six minutes). After that, end
+  your turn and tell the user you will continue as soon as they decide and write to you.
+
+Never accept the report yourself or run `jerry approve`/`jerry reject`, and do not change code until the user
+decides. Git operations stay with the user; `/jerry:commit-message` proposes the message.

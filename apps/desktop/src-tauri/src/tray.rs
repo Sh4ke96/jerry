@@ -17,6 +17,7 @@ use tauri_plugin_opener::OpenerExt;
 
 use crate::core::{self, CoreClient, Navigation, REQUEST_TIMEOUT};
 use crate::notify::{self, Snapshot, TaskEntry};
+use crate::settings;
 use crate::{lock, AppState, CoreView};
 
 pub const MAIN: &str = "main";
@@ -54,8 +55,43 @@ fn filter_navigation(app: &AppHandle, url: &Url, allow_core: bool) -> bool {
             false
         }
         Navigation::Block => false,
+        Navigation::OpenSettings => {
+            open_settings(app);
+            false
+        }
     }
 }
+
+/// Appends " JerryDesktop/<version>" to WebView2's own user agent, so the dashboard knows it runs
+/// in the app (it then offers "Desktop app settings…"). Read from WebView2 rather than written
+/// out, so the browser's real user agent stays in front. Takes effect from the next navigation.
+#[cfg(windows)]
+fn mark_user_agent(window: &WebviewWindow, version: String) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings2;
+    use windows_core::{Interface, HSTRING, PWSTR};
+
+    let _ = window.with_webview(move |webview| {
+        // SAFETY: plain COM calls on the webview's own controller, on the thread Tauri runs this
+        // closure on (the webview's UI thread); the returned string is freed by take_pwstr.
+        unsafe {
+            let Ok(settings) = webview.controller().CoreWebView2().and_then(|core| core.Settings()) else {
+                return;
+            };
+            let Ok(settings) = settings.cast::<ICoreWebView2Settings2>() else {
+                return;
+            };
+            let mut current = PWSTR::null();
+            if settings.UserAgent(&mut current).is_err() {
+                return;
+            }
+            let marked = core::user_agent_with_marker(&webview2_com::take_pwstr(current), &version);
+            let _ = settings.SetUserAgent(&HSTRING::from(marked));
+        }
+    });
+}
+
+#[cfg(not(windows))]
+fn mark_user_agent(_window: &WebviewWindow, _version: String) {}
 
 fn build_window(app: &AppHandle, label: &str, allow_core: bool) -> tauri::Result<WebviewWindow> {
     let config = window_config(app, label)?;
@@ -76,6 +112,7 @@ fn build_window(app: &AppHandle, label: &str, allow_core: bool) -> tauri::Result
 /// The main window starts hidden on the local page; closing it only hides it.
 pub fn create_main_window(app: &AppHandle) -> tauri::Result<()> {
     let window = build_window(app, MAIN, true)?;
+    mark_user_agent(&window, app.package_info().version.to_string());
     let hide = window.clone();
     window.on_window_event(move |event| {
         if let WindowEvent::CloseRequested { api, .. } = event {
@@ -114,6 +151,12 @@ pub fn show_local_index(app: &AppHandle) {
 /// Opens the dashboard with a fresh one-time login link; when Core cannot be reached, the local
 /// page says why. Blocking: call it off the main thread.
 pub fn open_dashboard(app: &AppHandle) -> Result<(), String> {
+    open_dashboard_at(app, None)
+}
+
+/// Opens the dashboard with a fresh login link that lands on `route` ("#/tasks/JRY-0001") or,
+/// without one, on the dashboard's root. Blocking: call it off the main thread.
+pub fn open_dashboard_at(app: &AppHandle, route: Option<&str>) -> Result<(), String> {
     let state = app.state::<AppState>();
     let result = state
         .home
@@ -121,7 +164,7 @@ pub fn open_dashboard(app: &AppHandle) -> Result<(), String> {
         .and_then(|home| core::read_core_info(&home).map_err(|error| error.to_string()))
         .and_then(|info| {
             *lock(&state.core_port) = Some(info.port);
-            CoreClient::new(&info, REQUEST_TIMEOUT).login_url().map_err(|error| error.to_string())
+            CoreClient::new(&info, REQUEST_TIMEOUT).login_url_to(route).map_err(|error| error.to_string())
         })
         .and_then(|link| Url::parse(&link).map_err(|error| error.to_string()));
     match result {
@@ -245,7 +288,7 @@ pub fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     )?;
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(tray_icon_image()?)
-        .tooltip("🛡️ JERRY")
+        .tooltip("Jerry")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(on_menu_event)
@@ -356,6 +399,8 @@ fn gather(state: &AppState) -> CoreView {
                         .collect(),
                 );
             }
+            // The plan limits for the tooltip; a Core without usage (404) or a failed read adds none.
+            view.snapshot.usage = client.usage().ok().flatten();
         }
         Err(error) => view.reason = Some(error.to_string()),
     }
@@ -384,7 +429,7 @@ fn poll_once(app: &AppHandle) {
     let events = lock(&state.notifier).observe(&view.snapshot, &settings);
     *lock(&state.view) = view;
     for event in events {
-        let _ = show_notification(app, &event.title, &event.body, settings.sound);
+        let _ = show_notification(app, &event.title, &event.body, settings::toast_sound(&settings.sound), event.route().as_deref());
     }
 }
 
@@ -405,22 +450,56 @@ pub fn start_polling(app: &AppHandle) {
         .expect("cannot start the polling thread");
 }
 
-/// A click on a notification opens the dashboard (Windows reports it while the toast is on screen).
+/// The extra field of a notification that holds the dashboard route a click opens.
+const ROUTE_EXTRA: &str = "route";
+
+/// A click on a notification shows the main window at the notification's route (Windows reports
+/// it only while the toast is on screen, not from the Action Center).
 pub fn watch_notifications(app: &AppHandle) {
     let handle = app.clone();
     let _ = app.notification().on_action(move |performed| {
         if performed.action_id() == "tap" {
+            let route = performed
+                .notification()
+                .and_then(|notification| notification.extra().get(ROUTE_EXTRA))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
             let app = handle.clone();
-            std::thread::spawn(move || open_dashboard(&app));
+            std::thread::spawn(move || open_from_notification(&app, route.as_deref()));
         }
     });
 }
 
-/// Shows a toast; `sound` plays the default notification sound, otherwise it is silent.
-pub fn show_notification(app: &AppHandle, title: &str, body: &str, sound: bool) -> Result<(), String> {
+/// Shows and focuses the main window for a notification click: on the signed-in dashboard it goes
+/// to the route there; otherwise a fresh login link lands on it (or the fallback page says why
+/// Core cannot be reached). Blocking: call it off the main thread.
+fn open_from_notification(app: &AppHandle, route: Option<&str>) {
+    let port = *lock(&app.state::<AppState>().core_port);
+    let window = app.get_webview_window(MAIN);
+    let current = window.as_ref().and_then(|window| window.url().ok());
+    match core::click_target(current.as_ref(), port, route) {
+        core::ClickTarget::Show => show_main(app),
+        core::ClickTarget::Navigate(url) => {
+            if let Some(window) = window {
+                let _ = window.navigate(url);
+            }
+            show_main(app);
+        }
+        core::ClickTarget::Login(route) => {
+            let _ = open_dashboard_at(app, route.as_deref());
+        }
+    }
+}
+
+/// Shows a toast with `sound` (a name from settings::SOUNDS; `None` is silent). `route` is the
+/// dashboard route a click on it opens; without one a click shows the main window as it is.
+pub fn show_notification(app: &AppHandle, title: &str, body: &str, sound: Option<&str>, route: Option<&str>) -> Result<(), String> {
     let mut builder = app.notification().builder().title(title).body(body);
-    if sound {
-        builder = builder.sound("Default");
+    if let Some(sound) = sound {
+        builder = builder.sound(sound);
+    }
+    if let Some(route) = route {
+        builder = builder.extra(ROUTE_EXTRA, route);
     }
     builder.show().map_err(|error| error.to_string())
 }

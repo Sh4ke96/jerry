@@ -156,13 +156,18 @@ describe('Core API access control', () => {
     expect(status(await asBrowser(auth, 'POST', `/api/v1/tasks/${taskId}/approvals`, { origin: 'https://evil.example', payload: approve }))).toBe(403);
   });
 
-  it('approves from the dashboard only with the task ID typed as confirmation', async () => {
-    const auth = await signIn();
-    const without = await asBrowser(auth, 'POST', `/api/v1/tasks/${taskId}/approvals`, { payload: { stage: 'PLAN', version: 1, decision: 'APPROVED' } });
-    expect(without.statusCode).toBe(400);
-    const approved = await asBrowser(auth, 'POST', `/api/v1/tasks/${taskId}/approvals`, { payload: { stage: 'PLAN', version: 1, decision: 'APPROVED', confirmTaskId: taskId } });
-    expect(approved.statusCode).toBe(201);
-    expect(store.planDecision(taskId)?.decision).toBe('APPROVED');
+  it('approves from the dashboard only with the task ID typed as confirmation, when the user chose typed confirmations', async () => {
+    expect(status(await asCli('POST', '/api/v1/settings', { decisionConfirmation: 'typed' }))).toBe(200);
+    try {
+      const auth = await signIn();
+      const without = await asBrowser(auth, 'POST', `/api/v1/tasks/${taskId}/approvals`, { payload: { stage: 'PLAN', version: 1, decision: 'APPROVED' } });
+      expect(without.statusCode).toBe(400);
+      const approved = await asBrowser(auth, 'POST', `/api/v1/tasks/${taskId}/approvals`, { payload: { stage: 'PLAN', version: 1, decision: 'APPROVED', confirmTaskId: taskId } });
+      expect(approved.statusCode).toBe(201);
+      expect(store.planDecision(taskId)?.decision).toBe('APPROVED');
+    } finally {
+      await asCli('POST', '/api/v1/settings', { decisionConfirmation: 'click' });
+    }
   });
 
   it('pauses and resumes from the dashboard, cancels only with the typed task ID, and refuses steps the workflow does not allow', async () => {

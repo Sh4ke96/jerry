@@ -1,5 +1,5 @@
 // Fallback page of the main window: shown while JERRY Core cannot be reached.
-// It only calls JERRY Desktop's own commands; it never sees the Core token.
+// It only calls Jerry's own commands; it never sees the Core token.
 const { invoke } = window.__TAURI__.core;
 
 const $ = (id) => document.getElementById(id);

@@ -57,6 +57,11 @@ const TABLE_CATEGORY: Readonly<Record<string, DataCategory>> = {
   quality_batches: 'quality',
   test_runs: 'quality',
   hook_events: 'events',
+  // Claude usage is kept, and deleted, like events.
+  usage_tokens: 'events',
+  usage_snapshots: 'events',
+  usage_limits: 'events',
+  usage_jerry_share: 'events',
   sessions: 'sessions',
   git_snapshots: 'git',
   projects: 'projects',
@@ -191,6 +196,11 @@ function planPrune(raw: Raw, store: StateStore, options: PruneOptions, now: Date
       // Batches and test runs not tied to a task are telemetry like events.
       { table: 'quality_batches', where: 'started_at < ? AND task_id IS NULL', params: [cutoffs.events] },
       { table: 'test_runs', where: 'at < ? AND task_id IS NULL', params: [cutoffs.events] },
+      // Claude usage, like events.
+      { table: 'usage_tokens', where: 'bucket_minute < ?', params: [cutoffs.events] },
+      { table: 'usage_snapshots', where: 'at < ?', params: [cutoffs.events] },
+      { table: 'usage_limits', where: 'at < ?', params: [cutoffs.events] },
+      { table: 'usage_jerry_share', where: 'bucket_minute < ?', params: [cutoffs.events] },
     );
   }
   if (cutoffs.evals !== null) {
@@ -305,6 +315,10 @@ function planForget(raw: Raw, store: StateStore, repoRoot: string): ForgetPlan {
     { table: 'quality_batches', where: 'jerry_inside(repo_root, ?)', params: [repoRoot] },
     { table: 'test_runs', where: 'jerry_inside(repo_root, ?)', params: [repoRoot] },
     { table: 'git_snapshots', where: 'jerry_inside(repo_root, ?)', params: [repoRoot] },
+    // Claude usage of its sessions (plan limits name no repository and stay).
+    { table: 'usage_tokens', where: 'jerry_inside(repo_root, ?)', params: [repoRoot] },
+    { table: 'usage_snapshots', where: 'jerry_inside(repo_root, ?)', params: [repoRoot] },
+    { table: 'usage_jerry_share', where: 'jerry_inside(repo_root, ?)', params: [repoRoot] },
     { table: 'project_profiles', where: `repo_id ${IN_JSON}`, params: [repoIds] },
     { table: 'projects', where: 'jerry_inside(repo_root, ?)', params: [repoRoot] },
     { table: 'repositories', where: `repo_id ${IN_JSON}`, params: [repoIds] },
