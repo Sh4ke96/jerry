@@ -217,8 +217,10 @@ everything else stays until you prune it, which is fine: JERRY's data is usually
 - **Timeline:** session events;
 - **Skills:** JERRY's skills and the ones you added: add, preview, switch off, update, remove;
 - **Data:** what JERRY stores, with preview-first clean-up;
-- **Evals:** runs, regressions and calibration; **Run evals** starts `jerry eval run` in the background (after a
-  confirmation: it starts real Claude Code sessions), shows its output and the recorded run, and can stop it;
+- **Evals:** where things stand (baseline, what changed since it, calibration) and the runs as rows; a click opens a
+  run's own page with its cases against the baseline and **Make baseline**. **Run evals** starts `jerry eval run` in
+  the background (after a confirmation: it starts real Claude Code sessions); its closable progress panel shows the
+  output, can stop the run and opens the recorded run;
 - **⚙️ Settings** (bottom of the sidebar): review optional or required, QA language (Polish or English), how decisions
   are confirmed, Claude usage collection and the usage bar, theme; inside the Jerry app also its own settings (start
   with Windows, notifications).

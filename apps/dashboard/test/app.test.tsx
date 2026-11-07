@@ -1230,13 +1230,23 @@ describe('Dashboard app', () => {
       expect(wrapper.get('[data-run-evals]').attributes('disabled')).toBeDefined();
       expect(wrapper.find('[data-stop-evals]').exists()).toBe(true);
 
-      // It finishes: the page shows the run it recorded.
+      // The panel closes; a small "Show progress" stands in for it while the run runs.
+      await wrapper.get('[data-close-runner]').trigger('click');
+      expect(wrapper.find('.eval-runner').exists()).toBe(false);
+      await wrapper.get('[data-show-progress]').trigger('click');
+      expect(wrapper.find('.eval-runner').exists()).toBe(true);
+
+      // It finishes: the run joins the list, and the panel opens it.
       runner = { ...runner, state: 'finished', finishedAt: NOW, exitCode: 0, runId: 'EVR-3' };
       runs = [run];
       await vi.advanceTimersByTimeAsync(2100);
       await flushPromises();
       expect(wrapper.get('.eval-runner').attributes('data-runner-state')).toBe('finished');
-      expect(wrapper.text()).toContain('EVR-3 compared with no baseline');
+      expect(wrapper.findAll('.eval-runs [data-run-id]').map((row) => row.attributes('data-run-id'))).toEqual(['EVR-3']);
+      await wrapper.get('[data-open-run]').trigger('click');
+      await flushPromises();
+      expect(window.location.hash).toBe('#/evals/EVR-3');
+      expect(wrapper.get('[data-eval-run="EVR-3"]').text()).toContain('compared with no baseline');
       wrapper.unmount();
     } finally {
       vi.useRealTimers();
@@ -1284,12 +1294,28 @@ describe('Dashboard app', () => {
     expect(text).toContain('release blocked: critical regression');
     expect(text).toContain('Changed since the baseline: rules');
     expect(text).toContain('plan-quality 4 label(s), 75%');
-    expect(text).toContain('EVR-2 compared with EVR-1');
-    expect(text).toContain('REGRESSION');
-    expect(text).toContain('Git unchanged: HEAD moved');
+    // The list is an overview: runs as full-width rows, no run's cases under it, no runner panel while idle.
+    expect(wrapper.findAll('.eval-runs [data-run-id]').map((row) => row.attributes('data-run-id'))).toEqual(['EVR-2', 'EVR-1']);
+    expect(wrapper.get('.eval-runs').classes()).toContain('grid-cols-1');
+    expect(text).not.toContain('Git unchanged: HEAD moved');
+    expect(wrapper.find('.eval-runner').exists()).toBe(false);
+    expect(parseRoute('#/evals/EVR-12')).toEqual({ section: 'evals', runId: 'EVR-12' });
+    expect(parseRoute('#/evals/..%2Fx')).toBeNull();
+    expect(parseRoute('#/evals/abc')).toBeNull();
 
-    await wrapper.findAll('.evals button').find((candidate) => candidate.text() === 'Make baseline')!.trigger('click');
-    await body().get('form.dialog input').setValue('EVR-2');
+    // A click on the row opens the run's own page.
+    await wrapper.get('.eval-runs [data-run-id="EVR-2"]').trigger('click');
+    await flushPromises();
+    expect(window.location.hash).toBe('#/evals/EVR-2');
+    const page = wrapper.get('[data-eval-run="EVR-2"]');
+    expect(page.text()).toContain('compared with EVR-1');
+    expect(page.text()).toContain('REGRESSION');
+    expect(page.text()).toContain('Git unchanged: HEAD moved');
+    expect(page.text()).toContain('release blocked: critical regression');
+
+    await page.get('[data-make-baseline]').trigger('click');
+    await flushPromises();
+    if (body().find('form.dialog #confirm-typed').exists()) await body().get('form.dialog #confirm-typed').setValue('EVR-2');
     await body().get('form.dialog textarea').setValue('the regression is intended');
     await body().get('form.dialog').trigger('submit');
     await flushPromises();

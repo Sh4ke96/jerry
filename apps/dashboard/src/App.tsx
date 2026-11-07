@@ -34,6 +34,7 @@ import { projectName } from './lib/tasks';
 import { linkTo, route, startRouter, type Section } from './router';
 import { signOut, state } from './state';
 import { Data } from './views/Data';
+import { EvalRunPage } from './views/EvalRunPage';
 import { Evals } from './views/Evals';
 import { Overview } from './views/Overview';
 import { ProjectPage } from './views/ProjectPage';
@@ -154,6 +155,7 @@ export const App = defineComponent({
       if (current.section === 'tasks' && current.taskId !== undefined) return current.taskId;
       if (current.section === 'projects' && current.repoRoot !== undefined) return projectName(current.repoRoot);
       if (current.section === 'skills' && current.name !== undefined) return current.name;
+      if (current.section === 'evals' && current.runId !== undefined) return current.runId;
       return null;
     });
 
@@ -173,7 +175,7 @@ export const App = defineComponent({
         case 'data':
           return <Data />;
         case 'evals':
-          return <Evals />;
+          return current.runId === undefined ? <Evals /> : <EvalRunPage key={current.runId} runId={current.runId} />;
         case 'settings':
           return <Settings />;
       }

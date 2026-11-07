@@ -8,10 +8,14 @@ import { ref } from 'vue';
 export type Section = 'overview' | 'tasks' | 'projects' | 'skills' | 'timeline' | 'data' | 'evals' | 'settings';
 
 export type Route =
-  | { section: 'overview' | 'timeline' | 'data' | 'evals' | 'settings' }
+  | { section: 'overview' | 'timeline' | 'data' | 'settings' }
   | { section: 'tasks'; taskId?: string }
   | { section: 'projects'; repoRoot?: string }
-  | { section: 'skills'; name?: string };
+  | { section: 'skills'; name?: string }
+  | { section: 'evals'; runId?: string };
+
+/** Eval run IDs as Core issues them. */
+const EVAL_RUN_ID = /^EVR-\d+$/;
 
 const SECTIONS: ReadonlySet<string> = new Set<Section>(['overview', 'tasks', 'projects', 'skills', 'timeline', 'data', 'evals', 'settings']);
 
@@ -50,6 +54,10 @@ export function parseRoute(hash: string): Route | null {
     const repoRoot = decode(rest);
     return repoRoot !== null && repoRoot.trim() !== '' ? { section: 'projects', repoRoot } : null;
   }
+  if (head === 'evals') {
+    const runId = decode(rest);
+    return runId !== null && EVAL_RUN_ID.test(runId) ? { section: 'evals', runId } : null;
+  }
   return null;
 }
 
@@ -58,12 +66,14 @@ export function hrefOf(route: Route): string {
   if (route.section === 'tasks' && route.taskId !== undefined) return `#/tasks/${encodeURIComponent(route.taskId)}`;
   if (route.section === 'projects' && route.repoRoot !== undefined) return `#/projects/${encodeURIComponent(route.repoRoot)}`;
   if (route.section === 'skills' && route.name !== undefined) return `#/skills/${encodeURIComponent(route.name)}`;
+  if (route.section === 'evals' && route.runId !== undefined) return `#/evals/${encodeURIComponent(route.runId)}`;
   return `#/${route.section}`;
 }
 
 export const taskHref = (taskId: string): string => hrefOf({ section: 'tasks', taskId });
 export const projectHref = (repoRoot: string): string => hrefOf({ section: 'projects', repoRoot });
 export const skillHref = (name: string): string => hrefOf({ section: 'skills', name });
+export const evalRunHref = (runId: string): string => hrefOf({ section: 'evals', runId });
 
 /** The current route; unknown addresses show the overview. */
 export const route = ref<Route>({ section: 'overview' });
