@@ -11,8 +11,14 @@ import { ask, callCore, formatBytes, requireTerminal } from './terminal.js';
  * blocked from these commands by JERRY's hard rules.
  */
 
-/** GitHub downloads and large folders take a while. */
-const PREVIEW_TIMEOUT_MS = 130_000;
+/** A skill folder from GitHub comes file by file, and large folders take a while (Core allows 300 s). */
+const PREVIEW_TIMEOUT_MS = 310_000;
+
+/** The skill folder URLs Core names when a repository holds several skills ("It holds skills in: …"). */
+export function candidateUrls(message: string): string[] {
+  const list = /It holds skills in: (.+?)\. Add one of them/.exec(message)?.[1];
+  return list === undefined ? [] : list.split(', ').filter((url) => url.startsWith('https://github.com/'));
+}
 const CHANGE_TIMEOUT_MS = 60_000;
 
 /** A URL stays as it is; a path becomes absolute (Core reads it). */
@@ -140,7 +146,19 @@ async function typedName(name: string, what: string): Promise<boolean> {
 
 export async function addSkill(source: string): Promise<void> {
   requireTerminal('Adding a skill');
-  const preview = skillPreviewSchema.parse(await callCore('POST', '/api/v1/skills/preview', { source: skillSourceArgument(source) }, PREVIEW_TIMEOUT_MS));
+  console.log(mark('info', 'Reading the skill (from GitHub only its folder is downloaded; a large skill takes a while)…'));
+  let answer: unknown;
+  try {
+    answer = await callCore('POST', '/api/v1/skills/preview', { source: skillSourceArgument(source) }, PREVIEW_TIMEOUT_MS);
+  } catch (error) {
+    const candidates = candidateUrls(error instanceof Error ? error.message : String(error));
+    if (candidates.length === 0) throw error;
+    console.log(mark('report', 'This repository holds several skills. Add one of them:'));
+    for (const url of candidates) console.log(`  jerry skill add ${url}`);
+    process.exitCode = 1;
+    return;
+  }
+  const preview = skillPreviewSchema.parse(answer);
   printPreview(preview);
   if (preview.blocked !== null) throw new Error(preview.blocked);
   console.log(flag('A skill gives Claude instructions in every session and may tell it to run its scripts. Install only what you have read and trust.'));

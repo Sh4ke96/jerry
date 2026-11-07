@@ -1,4 +1,4 @@
-import type { SkillScanFinding } from '@jerry/contracts';
+import { LARGE_SKILL_BYTES, LARGE_SKILL_FILES, type SkillScanFinding } from '@jerry/contracts';
 import { maskExcerpt, scanForInjection } from '@jerry/discovery';
 import type { SkillContentFile } from './content.js';
 import type { Frontmatter } from './frontmatter.js';
@@ -10,6 +10,7 @@ import type { Frontmatter } from './frontmatter.js';
  * never blocks: the user decides. Nothing is run.
  */
 
+/** Findings kept; the summary findings (large skill, scripts) come first so they always fit. */
 const MAX_FINDINGS = 200;
 /** Lines read per file for the pattern rules. */
 const MAX_LINES = 5000;
@@ -50,6 +51,22 @@ export function scanSkill(files: readonly SkillContentFile[], frontmatter: Front
     return findings.length < MAX_FINDINGS;
   };
   const texts = new Map(files.filter(isText).map((file) => [file.path, file.data.toString('utf8')]));
+
+  // A big skill first: hard to read through by hand, so the user sees it before anything else.
+  const bytes = files.reduce((sum, file) => sum + file.data.length, 0);
+  if (bytes > LARGE_SKILL_BYTES || files.length > LARGE_SKILL_FILES) {
+    add(finding('warning', 'large-skill', 'SKILL.md', null, `A large skill: ${files.length} files, ${(bytes / (1024 * 1024)).toFixed(1)} MB. Too much to read through by hand; install it only from a source you trust`));
+  }
+  const scripts = files.filter((file) => SCRIPT_EXTENSIONS.test(file.path));
+  if (scripts.length > 1) {
+    const byType = new Map<string, number>();
+    for (const file of scripts) {
+      const extension = file.path.slice(file.path.lastIndexOf('.')).toLowerCase();
+      byType.set(extension, (byType.get(extension) ?? 0) + 1);
+    }
+    const kinds = [...byType].sort((a, b) => b[1] - a[1]).map(([extension, count]) => `${count} ${extension}`).join(', ');
+    add(finding('warning', 'scripts', 'SKILL.md', null, `${scripts.length} scripts Claude may run when the skill tells it to: ${kinds}`));
+  }
 
   // Frontmatter that changes what Claude may do without asking.
   const allowed = frontmatter.fields['allowed-tools'];

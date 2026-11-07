@@ -1,9 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { MAX_SKILL_UPLOAD_BYTES, type SkillScanFinding, type SkillSource } from '@jerry/contracts';
+import { MAX_SKILL_ARCHIVE_BYTES, MAX_SKILL_UPLOAD_BYTES, type SkillScanFinding, type SkillSource } from '@jerry/contracts';
 import { contentFromFolder, contentFromZip, validateSkill, type SkillContent, type ValidatedSkill } from './content.js';
 import { invalid } from './errors.js';
-import { fetchGitHubArchive, gitHubFolderUrl, looksLikeUrl, MAX_ARCHIVE_BYTES, parseGitHubUrl, type GitHubFetchOptions } from './github.js';
+import { fetchGitHubFolder, looksLikeUrl, parseGitHubUrl, type GitHubFetchOptions } from './github.js';
 import { scanSkill } from './scan.js';
 
 /**
@@ -44,14 +44,10 @@ export async function loadSkill(input: SkillInput, options: LoadOptions = {}): P
     content = contentFromZip(data, { fileName });
     source = { kind: 'zip', source: path.basename(fileName.replaceAll('\\', '/')), ref: null, commit: null, path: null };
   } else if (looksLikeUrl(input.source)) {
+    // Only the skill's folder is downloaded, however big the repository is.
     const location = parseGitHubUrl(input.source);
-    const fetched = await fetchGitHubArchive(location, options.github);
-    content = contentFromZip(fetched.archive, {
-      fileName: `${location.repo}.zip`,
-      repoPath: location.path,
-      repoName: location.repo,
-      folderUrl: (folder) => gitHubFolderUrl(location, folder, fetched.resolvedRef),
-    });
+    const fetched = await fetchGitHubFolder(location, options.github);
+    content = { files: fetched.files, nameHint: fetched.nameHint };
     source = { kind: 'github', source: input.source.trim(), ref: location.ref, commit: fetched.commit, path: location.path };
   } else {
     const target = input.source.trim().replace(/^["']|["']$/g, '');
@@ -64,7 +60,7 @@ export async function loadSkill(input: SkillInput, options: LoadOptions = {}): P
     if (stat === undefined) throw invalid(`${resolved} does not exist.`);
     if (stat.isFile()) {
       if (!ARCHIVE.test(resolved)) throw invalid(`${resolved} is a file; give a skill folder, or a .zip or .skill file.`);
-      if (stat.size > MAX_ARCHIVE_BYTES) throw invalid(`${resolved} is larger than ${MAX_ARCHIVE_BYTES / (1024 * 1024)} MB.`);
+      if (stat.size > MAX_SKILL_ARCHIVE_BYTES) throw invalid(`${resolved} is larger than ${MAX_SKILL_ARCHIVE_BYTES / (1024 * 1024)} MB.`);
       content = contentFromZip(fs.readFileSync(resolved), { fileName: path.basename(resolved) });
       source = { kind: 'zip', source: resolved, ref: null, commit: null, path: null };
     } else {

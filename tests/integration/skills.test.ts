@@ -1,6 +1,5 @@
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
-import http from 'node:http';
-import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import type { EvalStatus, SkillChangeResult, SkillDetail, SkillPreview, SkillsList } from '@jerry/contracts';
 import type { FastifyInstance, InjectOptions, LightMyRequestResponse } from 'fastify';
@@ -9,6 +8,7 @@ import { buildCoreApp } from '../../apps/core/src/app.js';
 import { BrowserSessions } from '../../apps/core/src/auth.js';
 import { StateStore } from '../../apps/core/src/state-store.js';
 import { contentHashOf, listSkillFiles } from '../../packages/skills/src/index.js';
+import { fakeGitHub, type FakeGitHub } from '../../packages/skills/test/github-fixture.js';
 import { makeZip, skillMd } from '../../packages/skills/test/zip-fixture.js';
 import { tempDir } from '../helpers/harness.js';
 
@@ -30,12 +30,10 @@ describe('skills manager (Core API)', () => {
   const claudeConfigDir = path.join(base, 'claude');
   const dashboardDir = path.join(base, 'dist', 'core', 'dashboard');
   const sources = path.join(base, 'sources');
-  const sha = 'b'.repeat(40);
   let sessions: BrowserSessions;
   let store: StateStore;
   let app: FastifyInstance;
-  let github: http.Server;
-  let githubBase = '';
+  let github: FakeGitHub;
   let auth: { cookie: string; csrf: string };
 
   const writeFolder = (name: string, files: Record<string, string>): string => {
@@ -56,15 +54,15 @@ describe('skills manager (Core API)', () => {
     fs.writeFileSync(path.join(base, 'dist', 'plugin', 'skills', 'plan', 'SKILL.md'), skillMd('plan', 'Plan a task with JERRY.'));
     fs.mkdirSync(dashboardDir, { recursive: true });
 
-    const archive = makeZip([{ name: `skills-${sha}/` }, { name: `skills-${sha}/pdf/SKILL.md`, data: skillMd(null, 'PDF from GitHub.') }, { name: `skills-${sha}/pdf/run.py`, data: 'print(1)\n' }]);
-    github = http.createServer((request, response) => {
-      if (request.url === '/api/repos/acme/skills/commits/main') return response.end(sha);
-      if (request.url === `/codeload/acme/skills/zip/${sha}`) return response.end(archive);
-      response.writeHead(404);
-      response.end();
+    // A repository far bigger than the old 25 MB archive limit: only the skill folder may be downloaded.
+    github = await fakeGitHub({
+      files: {
+        'pdf/SKILL.md': skillMd(null, 'PDF from GitHub.'),
+        'pdf/run.py': 'print(1)\n',
+        'demo/film.mp4': Buffer.alloc(30 * 1024 * 1024),
+        'more/notes/SKILL.md': skillMd('more-notes'),
+      },
     });
-    await new Promise<void>((resolve) => github.listen(0, '127.0.0.1', resolve));
-    githubBase = `http://127.0.0.1:${(github.address() as AddressInfo).port}`;
 
     sessions = new BrowserSessions();
     store = await StateStore.open({ databaseFile: path.join(base, 'jerry.sqlite'), backupsDir: path.join(base, 'backups'), legacyStateFile: path.join(base, 'none.json') });
@@ -78,7 +76,7 @@ describe('skills manager (Core API)', () => {
       sessions,
       dashboardDir,
       claudeConfigDir,
-      skillsGitHub: { endpoints: { api: `${githubBase}/api`, codeload: `${githubBase}/codeload` } },
+      skillsGitHub: { endpoints: github.endpoints },
       onShutdownRequested: () => undefined,
     });
     auth = await signIn();
@@ -86,7 +84,7 @@ describe('skills manager (Core API)', () => {
   afterAll(async () => {
     await app.close();
     await store.close();
-    await new Promise<void>((resolve) => github.close(() => resolve()));
+    await github.close();
     fs.rmSync(base, { recursive: true, force: true });
   });
 
@@ -143,9 +141,12 @@ describe('skills manager (Core API)', () => {
     expect(fromPath).toMatchObject({ name: 'report-writer', source: { kind: 'zip', source: zipFile } });
     expect((await asCli('POST', '/api/v1/skills/install', { previewId: fromPath.previewId })).statusCode).toBe(201);
 
-    const upload = makeZip([{ name: 'SKILL.md', data: skillMd(null, 'Uploaded.') }]);
+    // Above the old 3 MB upload limit and the 2 MB "large" threshold: accepted, with an amber finding.
+    const upload = makeZip([{ name: 'SKILL.md', data: skillMd(null, 'Uploaded.') }, { name: 'assets/photo.jpg', data: randomBytes(4 * 1024 * 1024), stored: true }]);
+    expect(upload.length).toBeGreaterThan(4 * 1024 * 1024);
     const uploaded = await preview({ upload: { fileName: 'Uploaded Skill.skill', dataBase64: upload.toString('base64') } }, 'browser');
     expect(uploaded).toMatchObject({ name: 'uploaded-skill', source: { kind: 'zip', source: 'Uploaded Skill.skill' } });
+    expect(uploaded.scan[0]).toMatchObject({ level: 'warning', rule: 'large-skill' });
     // The dashboard types the name.
     expect((await asBrowser('POST', '/api/v1/skills/install', { previewId: uploaded.previewId })).statusCode).toBe(400);
     expect((await asBrowser('POST', '/api/v1/skills/install', { previewId: uploaded.previewId, confirmation: 'wrong' })).statusCode).toBe(400);
@@ -154,10 +155,19 @@ describe('skills manager (Core API)', () => {
     expect(fs.existsSync(path.join(claudeConfigDir, 'skills', 'uploaded-skill', 'SKILL.md'))).toBe(true);
   });
 
-  it('downloads from GitHub at a commit (fake GitHub on 127.0.0.1)', async () => {
+  it('downloads only the skill folder from GitHub at a commit, however big the repository (fake GitHub on 127.0.0.1)', async () => {
     const shown = await preview({ source: 'https://github.com/acme/skills/tree/main/pdf' });
-    expect(shown).toMatchObject({ name: 'pdf', source: { kind: 'github', ref: 'main', commit: sha, path: 'pdf' } });
+    expect(shown).toMatchObject({ name: 'pdf', source: { kind: 'github', ref: 'main', commit: github.commit, path: 'pdf' } });
+    expect(github.requests.some((request) => request.includes('film.mp4') || request.includes('zip'))).toBe(false);
     expect((await asCli('POST', '/api/v1/skills/install', { previewId: shown.previewId })).statusCode).toBe(201);
+
+    // A repository with skills in folders: the error names them, for the dashboard to offer.
+    const several = await asBrowser('POST', '/api/v1/skills/preview', { source: 'https://github.com/acme/skills' });
+    expect(several.statusCode).toBe(400);
+    expect(several.json()).toMatchObject({
+      error: expect.stringContaining('no SKILL.md in the root of the repository'),
+      details: { candidates: [{ folder: 'pdf', url: 'https://github.com/acme/skills/tree/main/pdf' }, { folder: 'more/notes', url: 'https://github.com/acme/skills/tree/main/more/notes' }] },
+    });
     const refused = await asCli('POST', '/api/v1/skills/preview', { source: 'https://example.test/acme/skills' });
     expect(refused.statusCode).toBe(400);
     expect(refused.json()).toMatchObject({ error: expect.stringMatching(/Only GitHub/) });

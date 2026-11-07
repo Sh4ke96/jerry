@@ -1,9 +1,9 @@
-import type { AddedSkill, SkillChangeResult, SkillPreview, SkillScanFinding, WorkflowState } from '@jerry/contracts';
+import type { AddedSkill, SkillCandidate, SkillChangeResult, SkillPreview, SkillScanFinding, WorkflowState } from '@jerry/contracts';
 import { SKILL_TRIGGER_STATES } from '@jerry/contracts/constants';
 import { EMOJI } from '@jerry/contracts/emoji';
 import { STATE_LABELS } from '@jerry/workflow';
 import { defineComponent, ref, watch, type PropType } from 'vue';
-import { api, type SkillPreviewInput } from '../api';
+import { api, HttpError, SignedOutError, type SkillPreviewInput } from '../api';
 import { formatBytes } from '../format';
 import { ATTENTION, CHIP } from '../lib/classes';
 import { decisionConfirmation } from '../settings';
@@ -148,6 +148,13 @@ export const SkillStates = defineComponent({
   },
 });
 
+/** The skill folders in a preview error's details; [] when there are none (no Zod in the dashboard). */
+export function candidatesOf(details: unknown): SkillCandidate[] {
+  const list = typeof details === 'object' && details !== null ? (details as { candidates?: unknown }).candidates : undefined;
+  if (!Array.isArray(list)) return [];
+  return list.filter((entry): entry is SkillCandidate => typeof entry === 'object' && entry !== null && typeof (entry as SkillCandidate).folder === 'string' && typeof (entry as SkillCandidate).url === 'string' && (entry as SkillCandidate).url.startsWith('https://github.com/'));
+}
+
 /** A file chosen in the browser as base64, in chunks (large files would overflow one call). */
 export async function fileToBase64(file: Blob): Promise<string> {
   const bytes = new Uint8Array(await file.arrayBuffer());
@@ -253,21 +260,47 @@ export function useSkillActions(afterChange: () => Promise<unknown> | void = () 
     return text === '' ? null : { source: text };
   };
 
+  /** Why the last preview failed, shown inside the dialog (the page's notice would sit behind it). */
+  const sourceError = ref<string | null>(null);
+  /** The skill folders of a repository that holds several, to pick one. */
+  const candidates = ref<SkillCandidate[]>([]);
+
   const openAdd = (): void => {
     source.value = '';
     file.value = null;
     updateFileFor.value = null;
+    sourceError.value = null;
+    candidates.value = [];
     asking.value = true;
+  };
+
+  const readPreview = async (): Promise<void> => {
+    const input = await inputOf();
+    if (input === null) return;
+    busy.value = true;
+    sourceError.value = null;
+    candidates.value = [];
+    try {
+      preview.value = updateFileFor.value === null ? await api.previewSkill(input) : await api.previewSkillUpdate(updateFileFor.value, input);
+      asking.value = false;
+    } catch (error) {
+      if (error instanceof SignedOutError) return handleError(error);
+      sourceError.value = error instanceof Error ? error.message : String(error);
+      candidates.value = error instanceof HttpError ? candidatesOf(error.details) : [];
+    } finally {
+      busy.value = false;
+    }
   };
 
   const submitSource = (event: Event): void => {
     event.preventDefault();
-    void run(async () => {
-      const input = await inputOf();
-      if (input === null) return;
-      preview.value = updateFileFor.value === null ? await api.previewSkill(input) : await api.previewSkillUpdate(updateFileFor.value, input);
-      asking.value = false;
-    });
+    void readPreview();
+  };
+
+  const pickCandidate = (candidate: SkillCandidate): void => {
+    sourceKind.value = 'url';
+    source.value = candidate.url;
+    void readPreview();
   };
 
   const checkUpdate = (name: string, fromUpload: boolean): void => {
@@ -276,6 +309,8 @@ export function useSkillActions(afterChange: () => Promise<unknown> | void = () 
       sourceKind.value = 'file';
       file.value = null;
       updateFileFor.value = name;
+      sourceError.value = null;
+      candidates.value = [];
       asking.value = true;
       return;
     }
@@ -334,6 +369,22 @@ export function useSkillActions(afterChange: () => Promise<unknown> | void = () 
               ))}
             </div>
           )}
+          {sourceError.value !== null && (
+            <Alert variant="destructive" class="skill-source-error" role="alert">
+              <AlertDescription>
+                <p class="break-words">{candidates.value.length > 0 ? 'This repository holds several skills. Pick one:' : sourceError.value}</p>
+                {candidates.value.length > 0 && (
+                  <div class="mt-2 flex flex-wrap gap-2">
+                    {candidates.value.map((candidate) => (
+                      <Button key={candidate.url} type="button" size="sm" variant="outline" data-skill-candidate={candidate.folder} disabled={busy.value} title={candidate.url} onClick={() => pickCandidate(candidate)}>
+                        {candidate.folder.slice(candidate.folder.lastIndexOf('/') + 1)}
+                      </Button>
+                    ))}
+                  </div>
+                )}
+              </AlertDescription>
+            </Alert>
+          )}
           {sourceKind.value === 'file' ? (
             <div class="grid gap-2">
               <Label for="skill-file">Zip or .skill file</Label>
@@ -358,7 +409,7 @@ export function useSkillActions(afterChange: () => Promise<unknown> | void = () 
               Cancel
             </Button>
             <Button type="submit" disabled={busy.value || (sourceKind.value === 'file' ? file.value === null : source.value.trim() === '')}>
-              {busy.value ? 'Reading…' : 'Preview'}
+              {busy.value ? (sourceKind.value === 'url' ? 'Reading the skill from GitHub…' : 'Reading…') : 'Preview'}
             </Button>
           </DialogFooter>
         </form>

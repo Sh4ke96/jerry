@@ -1,6 +1,4 @@
 import fs from 'node:fs';
-import http from 'node:http';
-import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { jerryFingerprint, changedComponents } from '@jerry/evals';
@@ -8,7 +6,6 @@ import { afterAll, describe, expect, it } from 'vitest';
 import {
   contentFromFolder,
   contentFromZip,
-  fetchGitHubArchive,
   folderContentHash,
   isJerryTriggered,
   jerryTriggeredFiles,
@@ -20,11 +17,14 @@ import {
   sanitizeSkillName,
   scanSkill,
   setSkillEnabled,
+  SkillError,
   skillOverride,
   validateSkill,
   withJerryTrigger,
   writeSkillFiles,
 } from '../src/index.js';
+import { MAX_SKILL_BYTES, MAX_SKILL_FILES } from '@jerry/contracts';
+import { fakeGitHub, type FakeEntry, type FakeGitHub, type FakeGitHubOptions } from './github-fixture.js';
 import { makeZip, skillMd } from './zip-fixture.js';
 
 const base = fs.mkdtempSync(path.join(os.tmpdir(), 'jerry-skills-'));
@@ -103,9 +103,9 @@ describe('validation', () => {
 
   it('refuses too many files and too many bytes', () => {
     const many: Record<string, string> = { 'SKILL.md': skillMd('x') };
-    for (let index = 0; index < 200; index += 1) many[`f${index}.txt`] = 'x';
-    expect(() => validateSkill(content(many))).toThrow(/at most 200 files/);
-    expect(() => validateSkill(content({ 'SKILL.md': skillMd('x'), 'big.txt': 'x'.repeat(2 * 1024 * 1024) }))).toThrow(/at most 2 MB/);
+    for (let index = 0; index < MAX_SKILL_FILES; index += 1) many[`f${index}.txt`] = 'x';
+    expect(() => validateSkill(content(many))).toThrow(/at most 5000 files/);
+    expect(() => validateSkill(content({ 'SKILL.md': skillMd('x'), 'big.txt': 'x'.repeat(MAX_SKILL_BYTES) }))).toThrow(/at most 50 MB/);
   });
 });
 
@@ -241,60 +241,102 @@ describe('GitHub', () => {
     expect(() => parseGitHubUrl('https://github.com/acme/skills/tree/main..x/pdf')).toThrow(/not valid/);
   });
 
-  /** A fake GitHub API and codeload on 127.0.0.1: no real network. */
-  async function fakeGitHub(options: { archive: Buffer; redirectTo?: string }): Promise<{ endpoints: { api: string; codeload: string }; requests: string[]; close(): Promise<void> }> {
-    const requests: string[] = [];
-    const sha = 'a'.repeat(40);
-    const server = http.createServer((request, response) => {
-      requests.push(request.url ?? '');
-      if (request.url === '/api/repos/acme/skills') return response.end(JSON.stringify({ default_branch: 'main' }));
-      if (request.url === '/api/repos/acme/skills/commits/main') return response.end(sha);
-      if (request.url === `/codeload/acme/skills/zip/${sha}`) {
-        if (options.redirectTo !== undefined) {
-          response.writeHead(302, { location: options.redirectTo });
-          return response.end();
-        }
-        return response.end(options.archive);
-      }
-      response.writeHead(404);
-      response.end();
-    });
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const { port } = server.address() as AddressInfo;
-    return { endpoints: { api: `http://127.0.0.1:${port}/api`, codeload: `http://127.0.0.1:${port}/codeload` }, requests, close: () => new Promise((resolve) => server.close(() => resolve())) };
-  }
-
-  const repoArchive = makeZip([
-    { name: 'skills-aaaa/' },
-    { name: 'skills-aaaa/README.md', data: '# skills' },
-    { name: 'skills-aaaa/tests/we?ird.txt', data: 'odd names elsewhere in the repository are ignored' },
-    { name: 'skills-aaaa/pdf/SKILL.md', data: skillMd(null) },
-    { name: 'skills-aaaa/pdf/scripts/x.py', data: 'print(1)' },
-  ]);
-
-  it('resolves the default branch to a commit, downloads its archive and takes the folder', async () => {
-    const github = await fakeGitHub({ archive: repoArchive });
+  /** A repository much bigger than its skills: the rest must never be downloaded. */
+  const repoFiles: Record<string, FakeEntry> = {
+    'README.md': '# skills',
+    'tests/we?ird.txt': 'odd names elsewhere in the repository are ignored',
+    'demo/film.mp4': Buffer.alloc(64 * 1024),
+    'skills/pdf/SKILL.md': skillMd(null),
+    'skills/pdf/scripts/x.py': 'print(1)',
+    'skills/pdf/.git/config': 'skipped',
+    'skills/notes/SKILL.md': skillMd('notes'),
+  };
+  const withGitHub = async (options: Omit<FakeGitHubOptions, 'files'> & { files?: Record<string, FakeEntry> }, run: (github: FakeGitHub) => Promise<void>): Promise<void> => {
+    const github = await fakeGitHub({ files: repoFiles, ...options });
     try {
-      const loaded = await loadSkill({ source: 'https://github.com/acme/skills/tree/main/pdf' }, { github: { endpoints: github.endpoints } });
-      expect(loaded.source).toEqual({ kind: 'github', source: 'https://github.com/acme/skills/tree/main/pdf', ref: 'main', commit: 'a'.repeat(40), path: 'pdf' });
+      await run(github);
+    } finally {
+      await github.close();
+    }
+  };
+
+  it('downloads only the skill folder at the resolved commit, never the repository', async () => {
+    await withGitHub({}, async (github) => {
+      const loaded = await loadSkill({ source: 'https://github.com/acme/skills/tree/main/skills/pdf' }, { github: { endpoints: github.endpoints } });
+      expect(loaded.source).toEqual({ kind: 'github', source: 'https://github.com/acme/skills/tree/main/skills/pdf', ref: 'main', commit: github.commit, path: 'skills/pdf' });
       expect(loaded.skill.name).toBe('pdf');
       expect(loaded.skill.files.map((file) => file.path)).toEqual(['SKILL.md', 'scripts/x.py']);
-      await expect(loadSkill({ source: 'https://github.com/acme/skills' }, { github: { endpoints: github.endpoints } })).rejects.toThrow(/holds skills in: https:\/\/github\.com\/acme\/skills\/tree\/main\/pdf/);
-      expect(github.requests).toContain('/api/repos/acme/skills');
-      const archive = await fetchGitHubArchive(parseGitHubUrl('https://github.com/acme/skills/tree/main/pdf'), { endpoints: github.endpoints, maxArchiveBytes: 100 }).catch((error: Error) => error);
-      expect(String(archive)).toMatch(/at most|larger than/);
-    } finally {
-      await github.close();
-    }
+      const raw = github.requests.filter((request) => request.startsWith('/raw/'));
+      expect(raw.sort()).toEqual([`/raw/acme/skills/${github.commit}/skills/pdf/SKILL.md`, `/raw/acme/skills/${github.commit}/skills/pdf/scripts/x.py`]);
+      // One plain listing per path segment, one recursive listing of the folder.
+      expect(github.requests.filter((request) => request.includes('/git/trees/'))).toHaveLength(3);
+      expect(github.requests.some((request) => request.includes('film.mp4') || request.includes('zip'))).toBe(false);
+    });
   });
 
-  it('refuses redirects to hosts outside the allow-list', async () => {
-    const github = await fakeGitHub({ archive: repoArchive, redirectTo: 'http://example.test/evil.zip' });
-    try {
-      await expect(loadSkill({ source: 'https://github.com/acme/skills/tree/main/pdf' }, { github: { endpoints: github.endpoints } })).rejects.toThrow(/does not download from http:\/\/example\.test/);
-    } finally {
-      await github.close();
-    }
+  it('accepts gzip answers where a tiny file is larger compressed than its listed size (as on real GitHub)', async () => {
+    await withGitHub({ gzip: true, files: { 'x/SKILL.md': skillMd('x'), 'x/tiny.js': 'export const a = 1;\n' } }, async (github) => {
+      const loaded = await loadSkill({ source: 'https://github.com/acme/skills/tree/main/x' }, { github: { endpoints: github.endpoints } });
+      expect(loaded.content.files.find((file) => file.path === 'tiny.js')?.data.toString()).toBe('export const a = 1;\n');
+    });
+  });
+
+  it('lists the skill folders of a repository without a root SKILL.md, and names a missing folder', async () => {
+    await withGitHub({}, async (github) => {
+      const error = (await loadSkill({ source: 'https://github.com/acme/skills' }, { github: { endpoints: github.endpoints } }).catch((caught: unknown) => caught)) as SkillError;
+      expect(error.message).toMatch(/no SKILL\.md in the root of the repository\. It holds skills in: https:\/\/github\.com\/acme\/skills\/tree\/main\/skills\/notes, https:\/\/github\.com\/acme\/skills\/tree\/main\/skills\/pdf/);
+      expect(error.details?.candidates).toEqual([
+        { folder: 'skills/notes', url: 'https://github.com/acme/skills/tree/main/skills/notes' },
+        { folder: 'skills/pdf', url: 'https://github.com/acme/skills/tree/main/skills/pdf' },
+      ]);
+      expect(github.requests).toContain('/api/repos/acme/skills');
+      await expect(loadSkill({ source: 'https://github.com/acme/skills/tree/main/skills/nope' }, { github: { endpoints: github.endpoints } })).rejects.toThrow(/no folder "skills\/nope"/);
+    });
+  });
+
+  it('checks the folder before downloading: links, submodules, unsafe names, file count, size', async () => {
+    const refused = async (files: Record<string, FakeEntry>, pattern: RegExp, extra: Omit<FakeGitHubOptions, 'files'> = {}): Promise<void> =>
+      withGitHub({ files: { 'x/SKILL.md': skillMd('x'), ...files }, ...extra }, async (github) => {
+        await expect(loadSkill({ source: 'https://github.com/acme/skills/tree/main/x' }, { github: { endpoints: github.endpoints } })).rejects.toThrow(pattern);
+        if (extra.truncated !== true) expect(github.requests.some((request) => request.startsWith('/raw/'))).toBe(false);
+      });
+    await refused({ 'x/link': { symlink: '/etc/passwd' } }, /symbolic link/);
+    await refused({ 'x/vendor': { submodule: true } }, /submodule/);
+    await refused({ 'x/a:b.txt': 'x' }, /cannot be installed safely/);
+    const many: Record<string, FakeEntry> = {};
+    for (let index = 0; index < MAX_SKILL_FILES; index += 1) many[`x/f${index}.txt`] = 'x';
+    await refused(many, /has 5001 files; a skill may have at most 5000/);
+    await refused({ 'x/big.bin': Buffer.alloc(MAX_SKILL_BYTES) }, /a skill may be at most 50 MB/);
+    await refused({}, /more files than GitHub lists at once/, { truncated: true });
+  });
+
+  it('stops on a size mismatch, a rate limit and redirects outside the allow-list', async () => {
+    const pdf = 'https://github.com/acme/skills/tree/main/skills/pdf';
+    await withGitHub({ rawSizeSkew: 5 }, async (github) => {
+      await expect(loadSkill({ source: pdf }, { github: { endpoints: github.endpoints } })).rejects.toThrow(/^(SKILL\.md|scripts\/x\.py): The download is \d+ bytes; at most \d+ bytes are accepted\. GitHub sent another size/);
+    });
+    await withGitHub({ rawSizeSkew: -2 }, async (github) => {
+      await expect(loadSkill({ source: pdf }, { github: { endpoints: github.endpoints } })).rejects.toThrow(/instead of/);
+    });
+    await withGitHub({ rateLimited: true }, async (github) => {
+      await expect(loadSkill({ source: pdf }, { github: { endpoints: github.endpoints } })).rejects.toThrow(/rate limit/);
+    });
+    await withGitHub({ rawRedirectTo: 'http://example.test/evil' }, async (github) => {
+      await expect(loadSkill({ source: pdf }, { github: { endpoints: github.endpoints } })).rejects.toThrow(/does not download from http:\/\/example\.test/);
+    });
+  });
+});
+
+describe('large skills', () => {
+  it('accepts a skill above the old 2 MB / 200 files with an amber large-skill finding and a script summary', () => {
+    const files = [{ path: 'SKILL.md', data: Buffer.from(skillMd('big')) }, { path: 'assets/photo.jpg', data: Buffer.alloc(3 * 1024 * 1024) }];
+    for (let index = 0; index < 250; index += 1) files.push({ path: `scripts/s${index}.${index % 2 === 0 ? 'py' : 'sh'}`, data: Buffer.from('echo') });
+    const skill = validateSkill({ files, nameHint: 'big' });
+    expect(skill.files).toHaveLength(252);
+    const findings = scanSkill(files, skill.frontmatter);
+    expect(findings[0]).toMatchObject({ level: 'warning', rule: 'large-skill', message: expect.stringContaining('252 files, 3.0 MB') });
+    expect(findings[1]).toMatchObject({ rule: 'scripts', message: expect.stringContaining('250 scripts Claude may run when the skill tells it to: 125 .py, 125 .sh') });
+    expect(scanSkill([files[0]!], skill.frontmatter).some((entry) => entry.rule === 'large-skill' || entry.rule === 'scripts')).toBe(false);
   });
 });
 

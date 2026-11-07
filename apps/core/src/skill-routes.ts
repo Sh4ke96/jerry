@@ -1,4 +1,4 @@
-import { skillApplyRequestSchema, skillConfirmRequestSchema, skillNameSchema, skillPreviewRequestSchema, skillStatesRequestSchema, type DecisionConfirmation, type SkillChangeResult, type SkillDetail, type SkillPreview, type SkillPreviewRequest, type SkillsList } from '@jerry/contracts';
+import { MAX_SKILL_UPLOAD_BYTES, skillApplyRequestSchema, skillConfirmRequestSchema, skillNameSchema, skillPreviewRequestSchema, skillStatesRequestSchema, type DecisionConfirmation, type SkillChangeResult, type SkillDetail, type SkillPreview, type SkillPreviewRequest, type SkillsList } from '@jerry/contracts';
 import { SkillError, type SkillInput } from '@jerry/skills';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { z } from 'zod';
@@ -13,10 +13,10 @@ import type { SkillChannel, SkillService } from './skill-service.js';
  */
 
 const TOKEN_OR_SESSION = { clients: ['token', 'session'] } as const;
-/** A zip from the dashboard arrives as base64 in JSON. */
-const PREVIEW_BODY_LIMIT = 5 * 1024 * 1024;
-/** GitHub downloads take a while; previews answer within this. */
-export const SKILL_PREVIEW_TIMEOUT_MS = 120_000;
+/** A zip from the dashboard arrives as base64 in JSON: 4/3 of the upload limit, plus room for the JSON. */
+const PREVIEW_BODY_LIMIT = Math.ceil((MAX_SKILL_UPLOAD_BYTES * 4) / 3) + 64 * 1024;
+/** A skill folder from GitHub comes file by file; previews answer within this. */
+export const SKILL_PREVIEW_TIMEOUT_MS = 300_000;
 
 function parse<T extends z.ZodType>(schema: T, value: unknown): z.infer<T> {
   const result = schema.safeParse(value);

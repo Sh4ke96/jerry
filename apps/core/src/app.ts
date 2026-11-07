@@ -89,7 +89,7 @@ import { OtlpError, parseOtlpMetrics } from './otlp.js';
 import { UsageStore } from './usage-store.js';
 import { registerSkillRoutes } from './skill-routes.js';
 import { SkillService } from './skill-service.js';
-import type { GitHubFetchOptions } from '@jerry/skills';
+import { SkillError, type GitHubFetchOptions } from '@jerry/skills';
 import { DASHBOARD_SECURITY_HEADERS, dashboardPlaceholderPage, HTML_SECURITY_HEADERS, signedOutPage } from './ui.js';
 
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -225,6 +225,8 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof HttpError) return reply.code(error.statusCode).send({ error: error.message, details: error.details });
     if (error instanceof StateError) return reply.code(error.statusCode).send({ error: error.message });
+    // A skill preview that names the skill folders to pick from.
+    if (error instanceof SkillError) return reply.code(error.statusCode).send({ error: error.message, ...(error.details === undefined ? {} : { details: error.details }) });
     // A gzip body that does not unpack (zlib errors: Z_DATA_ERROR, Z_BUF_ERROR, …).
     if (/^Z_/.test(String((error as { code?: unknown }).code))) return reply.code(400).send({ error: 'The request body is not valid gzip' });
     const statusCode = typeof (error as { statusCode?: unknown }).statusCode === 'number' ? (error as { statusCode: number }).statusCode : 500;

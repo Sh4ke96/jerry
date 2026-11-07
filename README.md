@@ -91,6 +91,13 @@ Besides JERRY's `/jerry:*` skills you can add any Claude Code skill, for example
 in the dashboard (or the Jerry app), click **Add skill** and give a GitHub URL (repository, folder or `SKILL.md`),
 a `.zip`/`.skill` file or a local folder.
 
+- 📂 From GitHub JERRY downloads only the skill's folder at one commit, never the whole repository, so a skill in a
+  big repository (e.g. `https://github.com/Leonxlnx/taste-skill/tree/main/skills/taste-skill`) installs fine.
+- 🧭 A repository URL with several skills lists them; pick one (in a terminal: one `jerry skill add <folder URL>`
+  line per skill).
+- 📏 A skill may have up to 50 MB and 5000 files (an uploaded zip up to 50 MB). Above 2 MB or 200 files the preview
+  marks it as a large skill and sums up its scripts: read it with that in mind.
+
 Skills you add are started only by JERRY, by task state, and used by Claude:
 
 - 🎯 On the skill's page you tick the task states it belongs to (for example **Code review** and **Re-verification**).

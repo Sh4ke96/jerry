@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { skillsListSchema } from '@jerry/contracts';
 import { afterAll, describe, expect, it } from 'vitest';
-import { parseSkillStates, triggerText } from '../../apps/cli/src/skill-commands.js';
+import { candidateUrls, parseSkillStates, triggerText } from '../../apps/cli/src/skill-commands.js';
 import { skillMd } from '../../packages/skills/test/zip-fixture.js';
 import { ROOT, startCore, tempDir, TEST_CORE_ENV } from '../helpers/harness.js';
 
@@ -56,5 +56,11 @@ describe('jerry skill (CLI)', () => {
     expect(triggerText({ states: [], jerryTriggered: true })).toContain('Claude does not use it');
     expect(triggerText({ states: ['CODE_REVIEW'], jerryTriggered: true })).toBe('Started by JERRY in: CODE_REVIEW.');
     expect(triggerText({ states: ['CODE_REVIEW'], jerryTriggered: false })).toContain('Claude may still pick it on its own');
+  });
+
+  it('turns a multi-skill repository refusal into one "jerry skill add" line per skill folder', () => {
+    const message = 'There is no SKILL.md in the root of the repository. It holds skills in: https://github.com/acme/s/tree/main/skills/a, https://github.com/acme/s/tree/main/skills/b. Add one of them by its folder URL.';
+    expect(candidateUrls(message)).toEqual(['https://github.com/acme/s/tree/main/skills/a', 'https://github.com/acme/s/tree/main/skills/b']);
+    expect(candidateUrls('GitHub has no such repository.')).toEqual([]);
   });
 });

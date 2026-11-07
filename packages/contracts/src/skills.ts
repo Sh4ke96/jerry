@@ -20,11 +20,26 @@ export const SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export const SKILL_NAME_MAX_LENGTH = 64;
 export const skillNameSchema = z.string().min(1).max(SKILL_NAME_MAX_LENGTH).regex(SKILL_NAME_PATTERN);
 
-/** Limits of one skill: total size of its files and their number. */
-export const MAX_SKILL_BYTES = 2 * 1024 * 1024;
-export const MAX_SKILL_FILES = 200;
+/**
+ * Limits of one skill: total size of its files and their number. Real skills are often whole folders
+ * with scripts, references and assets, so the limits are generous; a skill above the "large"
+ * thresholds gets an amber finding in the preview so it is never installed unnoticed.
+ */
+export const MAX_SKILL_BYTES = 50 * 1024 * 1024;
+export const MAX_SKILL_FILES = 5000;
+export const LARGE_SKILL_BYTES = 2 * 1024 * 1024;
+export const LARGE_SKILL_FILES = 200;
 /** A zip or .skill file sent from the dashboard (before base64). */
-export const MAX_SKILL_UPLOAD_BYTES = 3 * 1024 * 1024;
+export const MAX_SKILL_UPLOAD_BYTES = 50 * 1024 * 1024;
+/** A local zip or .skill file read from disk (it may hold more than the skill). */
+export const MAX_SKILL_ARCHIVE_BYTES = 200 * 1024 * 1024;
+
+/** A folder of a repository that holds a SKILL.md: offered when the given URL holds several skills. */
+export const skillCandidateSchema = z.object({ folder: z.string(), url: z.string() });
+export type SkillCandidate = z.infer<typeof skillCandidateSchema>;
+/** The details of a preview refusal: the skill folders to pick from, when the source holds several. */
+export const skillErrorDetailsSchema = z.object({ candidates: z.array(skillCandidateSchema).default([]) });
+export type SkillErrorDetails = z.infer<typeof skillErrorDetailsSchema>;
 
 /** Shown after every change. */
 export const SKILL_CHANGE_NOTE = 'Applies to new Claude Code sessions.';

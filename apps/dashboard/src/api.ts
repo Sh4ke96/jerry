@@ -20,6 +20,8 @@ export class HttpError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    /** The error's details, as Core sent them (e.g. the skill folders to pick from). */
+    readonly details: unknown = undefined,
   ) {
     super(message);
   }
@@ -38,9 +40,9 @@ async function request<T>(method: 'GET' | 'POST', path: string, body?: unknown):
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   if (response.status === 401) throw new SignedOutError();
-  const data = (await response.json().catch(() => ({}))) as { error?: string };
-  if (!response.ok) throw new HttpError(data.error ?? `JERRY Core answered HTTP ${response.status}`, response.status);
-  return data as T;
+  const answer = (await response.json().catch(() => ({}))) as { error?: string; details?: unknown };
+  if (!response.ok) throw new HttpError(answer.error ?? `JERRY Core answered HTTP ${response.status}`, response.status, answer.details);
+  return answer as T;
 }
 
 export async function startSession(): Promise<{ expiresAt: string }> {

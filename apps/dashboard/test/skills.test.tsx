@@ -83,6 +83,16 @@ describe('Skills in the dashboard', () => {
       if (url === '/api/v1/usage') return json({ error: 'no usage' }, 404);
       if (url === '/api/v1/skills') return json(list);
       if (url === '/api/v1/skills/pdf') return json({ skill: pdf, skillMd: '# PDF', files: [{ path: 'SKILL.md', size: 10, sha256: 'x' }], scan: [], history: [{ action: 'installed', channel: 'cli', at: NOW, details: {} }] } satisfies SkillDetail);
+      if (url === '/api/v1/skills/preview' && body?.['source'] === 'https://github.com/acme/nope') return json({ error: 'GitHub has no such repository, branch, tag or commit (private repositories are not supported).' }, 404);
+      if (url === '/api/v1/skills/preview' && body?.['source'] === 'https://github.com/acme/many') {
+        return json(
+          {
+            error: 'There is no SKILL.md in the root of the repository. It holds skills in: …',
+            details: { candidates: [{ folder: 'skills/notes', url: 'https://github.com/acme/many/tree/main/skills/notes' }, { folder: 'skills/evil', url: 'javascript:alert(1)' }] },
+          },
+          400,
+        );
+      }
       if (url === '/api/v1/skills/preview') return json(preview);
       if (url === '/api/v1/skills/install') {
         const added: AddedSkill = { ...pdf, name: 'notes', description: 'Keeps notes.', scan: { warnings: 1, dangers: 1 } };
@@ -171,6 +181,31 @@ describe('Skills in the dashboard', () => {
     expect(posts('/api/v1/skills/install').map((call) => call.body)).toEqual([{ previewId: 'skp_1', confirmation: 'notes' }]);
     expect(state.notice).toBe('notes installed. Applies to new Claude Code sessions.');
     expect(wrapper.find('.added-skills [data-skill="notes"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it('shows a failed preview inside the Add-skill dialog, and offers the skills of a repository that holds several', async () => {
+    const wrapper = await mountApp();
+    await wrapper.get('[data-add-skill]').trigger('click');
+    await flushPromises();
+    await body().get('#skill-source').setValue('https://github.com/acme/nope');
+    await body().get('form.add-skill').trigger('submit');
+    await flushPromises();
+    // In the dialog, not behind it.
+    expect(body().get('form.add-skill [role="alert"]').text()).toContain('GitHub has no such repository');
+    expect(state.notice).toBeNull();
+
+    await body().get('#skill-source').setValue('https://github.com/acme/many');
+    await body().get('form.add-skill').trigger('submit');
+    await flushPromises();
+    const alert = body().get('form.add-skill [role="alert"]');
+    expect(alert.text()).toContain('This repository holds several skills. Pick one:');
+    // Only GitHub folder links are offered.
+    expect(alert.findAll('[data-skill-candidate]').map((button) => button.attributes('data-skill-candidate'))).toEqual(['skills/notes']);
+    await alert.get('[data-skill-candidate="skills/notes"]').trigger('click');
+    await flushPromises();
+    expect(posts('/api/v1/skills/preview').map((call) => call.body)).toEqual([{ source: 'https://github.com/acme/nope' }, { source: 'https://github.com/acme/many' }, { source: 'https://github.com/acme/many/tree/main/skills/notes' }]);
+    expect(body().find('[data-skill-preview="notes"]').exists()).toBe(true);
     wrapper.unmount();
   });
 

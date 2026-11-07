@@ -1,10 +1,14 @@
+import { MAX_SKILL_BYTES, MAX_SKILL_FILES } from '@jerry/contracts';
+import { isSkippedPath, type SkillContentFile } from './content.js';
 import { invalid, SkillError } from './errors.js';
+import { isSafeEntryName } from './zip.js';
 
 /**
  * Skills from GitHub: a repository, folder (tree/<ref>/<path>) or SKILL.md (blob/<ref>/…) URL is
- * resolved to a commit SHA through the GitHub API, then that commit's archive is downloaded from
- * codeload. HTTPS only, to the allow-listed GitHub hosts, with size and time limits; no
- * credentials are sent. Tests inject local endpoints.
+ * resolved to a commit SHA through the GitHub API; only the skill's folder at that commit is listed
+ * (Git Trees API) and downloaded file by file (raw.githubusercontent.com), so the size of the rest
+ * of the repository does not matter. HTTPS only, to the allow-listed GitHub hosts, with size and
+ * time limits; no credentials are sent. Tests inject local endpoints.
  */
 
 export interface GitHubLocation {
@@ -19,17 +23,21 @@ export interface GitHubLocation {
 export interface GitHubEndpoints {
   /** Default https://api.github.com. */
   api: string;
-  /** Default https://codeload.github.com. */
-  codeload: string;
+  /** Default https://raw.githubusercontent.com: the skill's files at a commit. */
+  raw: string;
 }
 
-export const GITHUB_ENDPOINTS: GitHubEndpoints = { api: 'https://api.github.com', codeload: 'https://codeload.github.com' };
+export const GITHUB_ENDPOINTS: GitHubEndpoints = { api: 'https://api.github.com', raw: 'https://raw.githubusercontent.com' };
 /** Hosts a download may go to (redirects included). */
-export const GITHUB_HOSTS: ReadonlySet<string> = new Set(['github.com', 'api.github.com', 'codeload.github.com']);
-/** A repository archive downloaded at most (the skill inside is limited separately). */
-export const MAX_ARCHIVE_BYTES = 25 * 1024 * 1024;
+export const GITHUB_HOSTS: ReadonlySet<string> = new Set(['github.com', 'api.github.com', 'raw.githubusercontent.com']);
 export const MAX_API_BYTES = 256 * 1024;
+/** A recursive folder listing read at most (GitHub itself stops at about 7 MB). */
+export const MAX_TREE_BYTES = 16 * 1024 * 1024;
 export const GITHUB_TIMEOUT_MS = 60_000;
+/** Files downloaded at once. */
+export const DOWNLOAD_CONCURRENCY = 8;
+/** Skill folders offered when a URL holds several. */
+export const MAX_CANDIDATES = 20;
 
 const NAME = /^[A-Za-z0-9_.-]{1,100}$/;
 
@@ -79,7 +87,7 @@ export interface DownloadLimits {
 
 /** Hosts of the endpoints in use plus GitHub's own; only these are fetched, also after a redirect. */
 function allowed(endpoints: GitHubEndpoints): (url: URL) => boolean {
-  const origins = new Set([new URL(endpoints.api).origin, new URL(endpoints.codeload).origin]);
+  const origins = new Set([new URL(endpoints.api).origin, new URL(endpoints.raw).origin]);
   return (url) => origins.has(url.origin) || (url.protocol === 'https:' && GITHUB_HOSTS.has(url.hostname.toLowerCase()) && url.port === '');
 }
 
@@ -115,13 +123,23 @@ async function download(start: string, endpoints: GitHubEndpoints, limits: Downl
       await response.body?.cancel();
       throw new SkillError(502, `GitHub answered ${response.status}.`);
     }
-    const declared = Number(response.headers.get('content-length') ?? '0');
+    // Content-Length is the size on the wire: with gzip a tiny file can be larger compressed, so it is
+    // only checked for an uncompressed answer; readLimited counts the unpacked bytes either way.
+    const encoding = (response.headers.get('content-encoding') ?? 'identity').trim().toLowerCase();
+    const declared = encoding === 'identity' ? Number(response.headers.get('content-length') ?? '0') : 0;
     if (declared > limits.maxBytes) {
       await response.body?.cancel();
-      throw new SkillError(413, `The download is ${Math.round(declared / 1024)} KiB; at most ${Math.round(limits.maxBytes / 1024)} KiB are accepted.`);
+      throw new SkillError(413, `The download is ${sizeText(declared)}; at most ${sizeText(limits.maxBytes)} are accepted.`);
     }
     return readLimited(response, limits.maxBytes);
   }
+}
+
+/** Bytes below 10 KiB, then KiB, then MB: "0 KiB" never hides a small size. */
+function sizeText(bytes: number): string {
+  if (bytes < 10 * 1024) return `${bytes} bytes`;
+  if (bytes < 10 * 1024 * 1024) return `${Math.round(bytes / 1024)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 async function readLimited(response: Response, maxBytes: number): Promise<Buffer> {
@@ -140,7 +158,7 @@ async function readLimited(response: Response, maxBytes: number): Promise<Buffer
     total += next.value.length;
     if (total > maxBytes) {
       await reader.cancel();
-      throw new SkillError(413, `The download is larger than ${Math.round(maxBytes / 1024)} KiB; JERRY stopped it.`);
+      throw new SkillError(413, `The download is larger than ${sizeText(maxBytes)}; JERRY stopped it.`);
     }
     chunks.push(Buffer.from(next.value));
   }
@@ -149,38 +167,146 @@ async function readLimited(response: Response, maxBytes: number): Promise<Buffer
 
 export interface GitHubFetchOptions {
   endpoints?: GitHubEndpoints;
-  maxArchiveBytes?: number;
   timeoutMs?: number;
+  /** Files downloaded at once. */
+  concurrency?: number;
 }
 
-export interface GitHubArchive {
+export interface GitHubFolder {
   location: GitHubLocation;
   commit: string;
   /** The ref the commit was resolved from (the default branch when the URL named none). */
   resolvedRef: string;
-  archive: Buffer;
+  /** The skill folder's files, relative to it. */
+  files: SkillContentFile[];
+  /** The folder's name, or the repository's for a skill at its root. */
+  nameHint: string;
 }
 
-/** Resolves the URL's ref (or the default branch) to a commit and downloads that commit's archive. */
-export async function fetchGitHubArchive(location: GitHubLocation, options: GitHubFetchOptions = {}): Promise<GitHubArchive> {
-  const endpoints = options.endpoints ?? GITHUB_ENDPOINTS;
-  const timeoutMs = options.timeoutMs ?? GITHUB_TIMEOUT_MS;
-  const repoPath = `${encodeURIComponent(location.owner)}/${encodeURIComponent(location.repo)}`;
+interface TreeEntry {
+  path: string;
+  mode: string;
+  type: string;
+  sha: string;
+  size?: number;
+}
+
+const TREE_ENTRY_TYPES = new Set(['blob', 'tree', 'commit']);
+
+async function getJson(url: string, endpoints: GitHubEndpoints, timeoutMs: number, maxBytes: number): Promise<unknown> {
+  const body = await download(url, endpoints, { maxBytes, timeoutMs, accept: 'application/vnd.github+json' });
+  try {
+    return JSON.parse(body.toString('utf8')) as unknown;
+  } catch {
+    throw new SkillError(502, 'GitHub sent an unreadable answer.');
+  }
+}
+
+/** One Git tree: its entries and whether GitHub cut the listing short. */
+async function getTree(endpoints: GitHubEndpoints, repoPath: string, sha: string, recursive: boolean, timeoutMs: number): Promise<{ entries: TreeEntry[]; truncated: boolean }> {
+  const parsed = await getJson(`${endpoints.api}/repos/${repoPath}/git/trees/${sha}${recursive ? '?recursive=1' : ''}`, endpoints, timeoutMs, MAX_TREE_BYTES);
+  const record = typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {};
+  const tree = record['tree'];
+  if (!Array.isArray(tree)) throw new SkillError(502, 'GitHub sent an unreadable folder listing.');
+  const entries = tree.filter(
+    (entry): entry is TreeEntry =>
+      typeof entry === 'object' && entry !== null && typeof (entry as TreeEntry).path === 'string' && typeof (entry as TreeEntry).sha === 'string' && typeof (entry as TreeEntry).mode === 'string' && TREE_ENTRY_TYPES.has((entry as TreeEntry).type),
+  );
+  return { entries, truncated: record['truncated'] === true };
+}
+
+/** The commit the URL's ref (or the default branch) points to. */
+async function resolveCommit(location: GitHubLocation, endpoints: GitHubEndpoints, repoPath: string, timeoutMs: number): Promise<{ ref: string; commit: string }> {
   let ref = location.ref;
   if (ref === null) {
-    const body = await download(`${endpoints.api}/repos/${repoPath}`, endpoints, { maxBytes: MAX_API_BYTES, timeoutMs, accept: 'application/vnd.github+json' });
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(body.toString('utf8'));
-    } catch {
-      throw new SkillError(502, 'GitHub sent an unreadable answer about the repository.');
-    }
+    const parsed = await getJson(`${endpoints.api}/repos/${repoPath}`, endpoints, timeoutMs, MAX_API_BYTES);
     const branch = typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>)['default_branch'] : undefined;
     if (typeof branch !== 'string' || branch === '') throw new SkillError(502, 'GitHub did not name the default branch.');
     ref = branch;
   }
-  const shaText = (await download(`${endpoints.api}/repos/${repoPath}/commits/${encodeURIComponent(ref)}`, endpoints, { maxBytes: 1024, timeoutMs, accept: 'application/vnd.github.sha' })).toString('utf8').trim();
-  if (!/^[0-9a-f]{40}$/.test(shaText)) throw new SkillError(502, 'GitHub did not answer with a commit SHA.');
-  const archive = await download(`${endpoints.codeload}/${repoPath}/zip/${shaText}`, endpoints, { maxBytes: options.maxArchiveBytes ?? MAX_ARCHIVE_BYTES, timeoutMs, accept: 'application/zip' });
-  return { location, commit: shaText, resolvedRef: ref, archive };
+  const commit = (await download(`${endpoints.api}/repos/${repoPath}/commits/${encodeURIComponent(ref)}`, endpoints, { maxBytes: 1024, timeoutMs, accept: 'application/vnd.github.sha' })).toString('utf8').trim();
+  if (!/^[0-9a-f]{40}$/.test(commit)) throw new SkillError(502, 'GitHub did not answer with a commit SHA.');
+  return { ref, commit };
+}
+
+const encodePath = (value: string): string => value.split('/').map(encodeURIComponent).join('/');
+const megabytes = (bytes: number): string => `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+
+/**
+ * Downloads only the skill's folder at a commit, never the whole repository: the folder is found
+ * with one non-recursive tree listing per path segment, listed recursively, checked against the
+ * skill limits (file count, size, links, submodules, names) BEFORE anything is downloaded, and its
+ * files are then fetched one by one from raw.githubusercontent.com at that commit, each at most the
+ * size the listing gave. A folder without SKILL.md answers with the folders below it that have one.
+ */
+export async function fetchGitHubFolder(location: GitHubLocation, options: GitHubFetchOptions = {}): Promise<GitHubFolder> {
+  const endpoints = options.endpoints ?? GITHUB_ENDPOINTS;
+  const timeoutMs = options.timeoutMs ?? GITHUB_TIMEOUT_MS;
+  const repoPath = `${encodeURIComponent(location.owner)}/${encodeURIComponent(location.repo)}`;
+  const { ref, commit } = await resolveCommit(location, endpoints, repoPath, timeoutMs);
+
+  // Walk down to the folder: one small listing per segment.
+  let folderSha = commit;
+  const segments = location.path === '' ? [] : location.path.split('/');
+  for (const [index, segment] of segments.entries()) {
+    const { entries } = await getTree(endpoints, repoPath, folderSha, false, timeoutMs);
+    const next = entries.find((entry) => entry.path === segment && entry.type === 'tree');
+    if (next === undefined) throw new SkillError(404, `The repository has no folder "${segments.slice(0, index + 1).join('/')}" at ${ref}.`);
+    folderSha = next.sha;
+  }
+
+  const listing = await getTree(endpoints, repoPath, folderSha, true, timeoutMs);
+  const where = location.path === '' ? 'the root of the repository' : `"${location.path}"`;
+  if (!listing.entries.some((entry) => entry.path === 'SKILL.md' && entry.type === 'blob')) {
+    const candidates = listing.entries
+      .filter((entry) => entry.type === 'blob' && entry.path.endsWith('/SKILL.md') && !isSkippedPath(entry.path))
+      .map((entry) => entry.path.slice(0, -'/SKILL.md'.length))
+      .sort((a, b) => a.split('/').length - b.split('/').length || a.localeCompare(b))
+      .slice(0, MAX_CANDIDATES)
+      .map((folder) => {
+        const full = location.path === '' ? folder : `${location.path}/${folder}`;
+        return { folder: full, url: gitHubFolderUrl(location, full, ref) };
+      });
+    const hint = candidates.length === 0 ? (listing.truncated ? ' The repository is too big to list completely; give the URL of the skill folder (…/tree/<branch>/<folder>).' : '') : ` It holds skills in: ${candidates.map((candidate) => candidate.url).join(', ')}. Add one of them by its folder URL.`;
+    throw new SkillError(400, `There is no SKILL.md in ${where}.${hint}`, { candidates });
+  }
+  if (listing.truncated) throw invalid(`The skill folder ${where} has more files than GitHub lists at once; a skill may have at most ${MAX_SKILL_FILES} files.`);
+
+  // Everything is checked before the first download.
+  const blobs: TreeEntry[] = [];
+  for (const entry of listing.entries) {
+    if (isSkippedPath(entry.path)) continue;
+    if (entry.type === 'commit') throw invalid(`${entry.path} is a Git submodule; JERRY installs only files that are in the skill's folder.`);
+    if (entry.type !== 'blob') continue;
+    if (entry.mode === '120000') throw invalid(`${entry.path} is a symbolic link; skills may not contain links.`);
+    if (!isSafeEntryName(entry.path)) throw invalid(`${entry.path} has a name that cannot be installed safely.`);
+    blobs.push(entry);
+  }
+  const total = blobs.reduce((sum, entry) => sum + (entry.size ?? 0), 0);
+  if (blobs.length > MAX_SKILL_FILES) throw invalid(`The skill folder has ${blobs.length} files; a skill may have at most ${MAX_SKILL_FILES} files.`);
+  if (total > MAX_SKILL_BYTES) throw invalid(`The skill folder is ${megabytes(total)}; a skill may be at most ${MAX_SKILL_BYTES / (1024 * 1024)} MB.`);
+
+  const files: SkillContentFile[] = new Array(blobs.length);
+  let next = 0;
+  let failed = false;
+  const worker = async (): Promise<void> => {
+    for (let index = next++; index < blobs.length && !failed; index = next++) {
+      const entry = blobs[index]!;
+      const size = entry.size ?? 0;
+      const full = location.path === '' ? entry.path : `${location.path}/${entry.path}`;
+      try {
+        const fileBytes = await download(`${endpoints.raw}/${repoPath}/${commit}/${encodePath(full)}`, endpoints, { maxBytes: size, timeoutMs });
+        if (fileBytes.length !== size) throw new SkillError(502, `GitHub sent ${fileBytes.length} bytes for ${entry.path} instead of ${size}; try again.`);
+        files[index] = { path: entry.path, data: fileBytes };
+      } catch (error) {
+        // The other downloads stop at their next file.
+        failed = true;
+        throw error instanceof SkillError && error.statusCode === 413 ? new SkillError(502, `${entry.path}: ${error.message} GitHub sent another size than it listed; try again.`) : error;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(options.concurrency ?? DOWNLOAD_CONCURRENCY, Math.max(blobs.length, 1)) }, worker));
+  files.sort((a, b) => (a.path < b.path ? -1 : 1));
+  const nameHint = segments.at(-1) ?? location.repo;
+  return { location, commit, resolvedRef: ref, files, nameHint };
 }

@@ -40,10 +40,12 @@ const SKIPPED_FILES = new Set(['.DS_Store', 'Thumbs.db']);
 /** Folder depth inside a skill. */
 const MAX_DEPTH = 12;
 
-const skipped = (relative: string): boolean => {
+/** Version control and OS metadata, never part of a skill (folders, zips and GitHub listings alike). */
+export const isSkippedPath = (relative: string): boolean => {
   const segments = relative.split('/');
   return segments.some((segment) => SKIPPED_SEGMENTS.has(segment)) || SKIPPED_FILES.has(segments.at(-1)!);
 };
+const skipped = isSkippedPath;
 
 const tooMany = (): Error => invalid(`A skill may have at most ${MAX_SKILL_FILES} files.`);
 const tooBig = (): Error => invalid(`A skill may be at most ${MAX_SKILL_BYTES / (1024 * 1024)} MB.`);
