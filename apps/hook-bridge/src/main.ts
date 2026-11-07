@@ -4,8 +4,8 @@ import fs from 'node:fs';
 import type { EventEnvelope, GateCheckRequest, GateDecision, OpenTask, SessionRegistrationResponse, SessionStartInput } from '@jerry/contracts';
 import { EMOJI, STATE_EMOJI, decorate } from '@jerry/contracts/emoji';
 import { isGateDecision, isPreToolUseInput, isSessionRegistrationResponse, isSessionStartInput } from '@jerry/contracts/guards';
-import { autostartCore, protectedRoots, readCoreRuntimeInfo, requestCore, resolveJerryHome, spoolEvent } from '@jerry/platform';
-import { classifyToolCall, evaluateHardRules } from '@jerry/policy-engine';
+import { autostartCore, protectedRoots, readCoreRuntimeInfo, readProjectsFile, requestCore, resolveJerryHome, spoolEvent } from '@jerry/platform';
+import { absolutePath, classifyToolCall, comparablePath, evaluateHardRules, isComparableInside } from '@jerry/policy-engine';
 import { buildEventEnvelope, newEventId, type EnvelopeOverrides } from '@jerry/trace-engine';
 import { STATE_LABELS } from '@jerry/workflow';
 
@@ -16,6 +16,8 @@ import { STATE_LABELS } from '@jerry/workflow';
  *   1. Parse stdin and evaluate the hard rules locally (Git state changes, .git, JERRY data).
  *      These need no Core, so they hold while Core is down. If the input cannot be parsed,
  *      the hard rules cannot be checked and the call is blocked.
+ *   Outside the projects the user added (JERRY_HOME/run/projects.json) that is all: no Core call,
+ *   no record, no Core start. Without that file Core decides, as it always did.
  *   2. Ask Core for the monitoring verdict (recorded in the gate log).
  *      Once the hard rules passed, any Core problem lets the call proceed: an outage costs
  *      monitoring, never Claude's ability to work.
@@ -101,6 +103,12 @@ async function preToolUse(raw: string): Promise<void> {
     protectedRoots: protectedRoots(),
     realPath: (target) => target,
   });
+  // Outside the projects the user added only the hard rules apply: no Core, no record, no autostart.
+  if (outsideProjects(toolTarget(input.tool_input), input.cwd)) {
+    if (hardRule !== null) block(`${hardRule.reason} [${hardRule.ruleId}]`);
+    hardRulesCleared = true;
+    proceed();
+  }
   if (hardRule !== null) {
     // Core records the blocked attempt; if it is down, the attempt is spooled instead.
     const recorded = await askCore(request).then(
@@ -144,7 +152,9 @@ async function recordEvent(raw: string): Promise<void> {
     proceed();
   }
   if (typeof input !== 'object' || input === null) proceed();
-  const event = buildEventEnvelope(input as Record<string, unknown>);
+  const fields = input as Record<string, unknown>;
+  if (typeof fields['cwd'] === 'string' && outsideProjects(toolTarget(fields['tool_input']), fields['cwd'])) proceed();
+  const event = buildEventEnvelope(fields);
   if (event === null) proceed();
   try {
     const info = readCoreRuntimeInfo(resolveJerryHome());
@@ -229,34 +239,89 @@ function emit(decision: GateDecision): never {
  * rules Claude is told about.
  */
 const HARD_RULES_TEXT =
-  'Hard rules, always enforced: you may not run any Git command that changes anything (commit, push, merge, rebase, checkout, switch, reset, restore, stash, fetch, pull, tag, branch changes, config changes, gh/npm version and similar), and you may not use MCP tools of Git servers that push, commit, create branches or files, or open or merge pull requests; the user does all Git operations manually. Read-only Git (status, diff, log, show, blame) is fine. You may not write inside .git, modify JERRY data or the Claude Code settings that enable JERRY, run "jerry approve/reject/install/uninstall/ui", "jerry repo exclude/include", "jerry core start/stop" or "jerry db restore", or call the JERRY API or dashboard.';
+  'Hard rules, always enforced: you may not run any Git command that changes anything (commit, push, merge, rebase, checkout, switch, reset, restore, stash, fetch, pull, tag, branch changes, config changes, gh/npm version and similar), and you may not use MCP tools of Git servers that push, commit, create branches or files, or open or merge pull requests; the user does all Git operations manually. Read-only Git (status, diff, log, show, blame) is fine. You may not write inside .git, modify JERRY data or the Claude Code settings that enable JERRY, run "jerry approve/reject/install/uninstall/ui", "jerry repo exclude/include", "jerry project add/remove", "jerry data prune/forget", "jerry core start/stop" or "jerry db restore", or call the JERRY API or dashboard.';
+
+/** The whole session context outside the projects the user added, followed by the hard rules. */
+const NOT_A_PROJECT_LINE = decorate(EMOJI.jerry, 'JERRY: this project is not added; only hard rules apply. The user can add it with jerry project add.');
+
+/** Project roots from JERRY_HOME/run/projects.json; null when unknown, and then Core decides as before. */
+function projectRoots(): string[] | null {
+  try {
+    return readProjectsFile(resolveJerryHome());
+  } catch {
+    return null;
+  }
+}
+
+/** The file a tool call targets, if it names one. */
+function toolTarget(toolInput: unknown): string | null {
+  if (typeof toolInput !== 'object' || toolInput === null) return null;
+  const fields = toolInput as Record<string, unknown>;
+  const target = fields['file_path'] ?? fields['notebook_path'];
+  return typeof target === 'string' && target !== '' ? target : null;
+}
+
+/** Resolves links of the nearest existing ancestor (missing trailing segments are kept as they are). */
+function nearestRealPath(target: string): string {
+  const missing: string[] = [];
+  let current = target;
+  for (;;) {
+    try {
+      const real = fs.realpathSync.native(current);
+      return missing.length === 0 ? real : `${real}/${missing.reverse().join('/')}`;
+    } catch {
+      const cut = Math.max(current.lastIndexOf('/'), current.lastIndexOf('\\'));
+      if (cut <= 0 || current.slice(0, cut).endsWith(':')) return target;
+      missing.push(current.slice(cut + 1));
+      current = current.slice(0, cut);
+    }
+  }
+}
+
+/**
+ * True only when projects.json lists the projects and the path (the tool's target, else the working
+ * directory) lies in none of them, by path boundaries and on Windows in any case.
+ */
+function outsideProjects(target: string | null, cwd: string): boolean {
+  const roots = projectRoots();
+  if (roots === null) return false;
+  const keys = roots.map((root) => comparablePath(root, root, process.platform));
+  const inside = (candidate: string): boolean => {
+    const key = comparablePath(candidate, cwd, process.platform);
+    return keys.some((root) => isComparableInside(key, root));
+  };
+  const requested = absolutePath(target ?? cwd, cwd, process.platform);
+  if (inside(requested)) return false;
+  // Reached through a link or junction: judged by where it really is.
+  return !inside(nearestRealPath(requested));
+}
 
 /**
  * Tells the model what is actually approved right now. A generic message made models refuse
  * even in-scope edits of an already approved plan.
  */
 function monitoredSessionContext(registration: SessionRegistrationResponse): string {
+  // Core says the directory is not in a project (the bridge could not tell without projects.json).
+  if (registration.monitored === false || registration.excluded) return `${NOT_A_PROJECT_LINE}\n${HARD_RULES_TEXT}`;
   const lines = [decorate(EMOJI.jerry, 'JERRY: monitoring this session; it never blocks edits, it records deviations from the approved plan and warns you.')];
   if (registration.repoRoot === null) {
     lines.push('Not inside a Git repository.');
-  } else if (registration.excluded) {
-    lines.push(`The user excluded ${registration.repoRoot} from monitoring.`);
   } else if (registration.approvedPlans.length === 0) {
     lines.push(`There is no approved JERRY plan for ${registration.repoRoot}.`);
   } else {
     const plans = registration.approvedPlans.map((plan) => `${plan.taskId} v${plan.planVersion} (scope: ${plan.scope.join(', ')})`).join('; ');
     lines.push(decorate(EMOJI.plan, `Approved plan: ${plans}.`));
   }
-  if (registration.repoRoot !== null && !registration.excluded) lines.push(...resumeContext(registration.openTasks ?? []));
+  if (registration.repoRoot !== null) lines.push(...resumeContext(registration.openTasks ?? []));
   lines.push(
-    'Mention JERRY warnings in your summary. If you need the current plan state (it can change mid-session), use the jerry MCP tools.',
+    'Mention JERRY warnings in your summary. If you need the current plan state (it can change mid-session), use the JERRY Guardian MCP tools (get_state).',
     decorate(EMOJI.security, HARD_RULES_TEXT),
     'If JERRY blocks an action, report the reason to the user instead of working around it.',
   );
   return lines.join(' ');
 }
 
-/** Open tasks shown in full at session start; the rest are counted (jerry_get_state lists them). */
+/** Open tasks shown in full at session start; the rest are counted (get_state lists them). */
 const OPEN_TASKS_IN_CONTEXT = 3;
 
 /** One line of text, at most `max` characters: titles and notes come from Claude, not from JERRY. */
@@ -293,7 +358,7 @@ function resumeContext(openTasks: readonly OpenTask[]): string[] {
   if (openTasks.slice(0, OPEN_TASKS_IN_CONTEXT).some((task) => task.checkpoint !== null)) {
     lines.push('Checkpoints are your notes from earlier sessions: check them against the current code (git status, git diff) before continuing.');
   }
-  if (openTasks.some((task) => task.coversEdits)) lines.push('Save progress with jerry_save_checkpoint at milestones and before you finish.');
+  if (openTasks.some((task) => task.coversEdits)) lines.push('Save progress with the save_checkpoint tool at milestones and before you finish.');
   return lines;
 }
 
@@ -302,6 +367,10 @@ async function sessionStart(raw: string): Promise<void> {
   try {
     const input: unknown = JSON.parse(raw);
     if (!isSessionStartInput(input)) throw new Error('unrecognised SessionStart input');
+    if (outsideProjects(null, input.cwd)) {
+      writeOut(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: `${NOT_A_PROJECT_LINE}\n${HARD_RULES_TEXT}` } }));
+      proceed();
+    }
     let registration: SessionRegistrationResponse;
     try {
       registration = await registerSession(input);

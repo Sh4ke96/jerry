@@ -50,10 +50,14 @@ export class McpClient {
   }
 
   /** `toolUseId` is sent the way Claude Code sends it: `_meta["claudecode/toolUseId"]`. */
-  async call(name: string, args: Record<string, unknown> = {}, toolUseId?: string): Promise<{ structured: Record<string, unknown>; text: string; isError: boolean }> {
+  /**
+   * A successful answer has two text blocks, the emoji summary line and the JSON; `summary` is the
+   * first, `text` all of them joined. An error has one block, which is both.
+   */
+  async call(name: string, args: Record<string, unknown> = {}, toolUseId?: string): Promise<{ structured: Record<string, unknown>; text: string; summary: string; isError: boolean }> {
     const response = await this.request('tools/call', { name, arguments: args, ...(toolUseId === undefined ? {} : { _meta: { 'claudecode/toolUseId': toolUseId, progressToken: 1 } }) });
     const result = response['result'] as { content: Array<{ text: string }>; structuredContent?: Record<string, unknown>; isError?: boolean };
-    return { structured: result.structuredContent ?? {}, text: result.content[0]?.text ?? '', isError: result.isError === true };
+    return { structured: result.structuredContent ?? {}, text: result.content.map((block) => block.text).join('\n'), summary: result.content[0]?.text ?? '', isError: result.isError === true };
   }
 
   close(): void {

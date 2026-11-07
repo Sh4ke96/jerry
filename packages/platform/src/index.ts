@@ -1,5 +1,6 @@
 export * from './jerry-home.js';
 export * from './fs-atomic.js';
+export * from './projects-file.js';
 export * from './home-safety.js';
 export * from './core-runtime.js';
 export * from './spool.js';

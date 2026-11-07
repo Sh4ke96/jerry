@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { JERRY_VERSION } from '@jerry/contracts';
 import { afterAll, describe, expect, it } from 'vitest';
-import { createFixtureRepo, ROOT, snapshotRepo, startCore, tempDir, TEST_CORE_ENV } from '../helpers/harness.js';
+import { addProject, createFixtureRepo, ROOT, snapshotRepo, startCore, tempDir, TEST_CORE_ENV } from '../helpers/harness.js';
 
 const CLI = path.join(ROOT, 'dist', 'cli', 'jerry.mjs');
 const base = tempDir('cli');
@@ -77,6 +77,7 @@ describe('jerry CLI (Commander)', () => {
     fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
     const core = await startCore(home);
     try {
+      await addProject(core, repo);
       const created = jerry(['task', 'create', '--repo', repo, '--title', 'CLI flow', '--scope', 'src/**'], { JERRY_HOME: home });
       expect(created.stdout).toContain('Created JRY-0001');
       expect(jerry(['task', 'list'], { JERRY_HOME: home }).stdout).toMatch(/JRY-0001\s+plan v1\s+Waiting for plan approval/);
@@ -98,12 +99,49 @@ describe('jerry CLI (Commander)', () => {
     }
   });
 
+  it('jerry project and jerry data: show without a terminal, change only in one', async () => {
+    const home = path.join(base, 'projects-home');
+    const repo = createFixtureRepo(path.join(base, 'projects-repo'));
+    const core = await startCore(home, {}, { projects: [] });
+    try {
+      const run = (args: string[]) => jerry(args, { JERRY_HOME: home, JERRY_NO_EMOJI: '1' });
+      expect(run(['project', 'list']).stdout).toContain('No projects yet');
+      // Adding, removing and deleting are the user's decisions: no terminal, no change.
+      for (const args of [['project', 'add', repo], ['project', 'remove', repo], ['repo', 'include', repo], ['repo', 'exclude', repo], ['data', 'prune', '--events-older-than', '30'], ['data', 'forget', repo]]) {
+        const refused = run(args);
+        expect(refused.exitCode, args.join(' ')).toBe(1);
+        expect(refused.stderr, args.join(' ')).toContain('interactive terminal');
+      }
+      expect(run(['data', 'prune', '--events-older-than', 'soon']).stderr).toContain('must be a whole number');
+      expect(run(['project', 'list']).stdout).toContain('No projects yet');
+
+      await addProject(core, repo);
+      const listed = run(['project', 'list']);
+      expect(listed.exitCode, listed.stderr).toBe(0);
+      expect(listed.stdout).toMatch(new RegExp(`${repo.replaceAll('\\', '\\\\')}  0 open task\\(s\\) of 0 · no activity yet · added \\d{4}-\\d{2}-\\d{2} \\(cli\\)`));
+      expect(run(['repo', 'list']).stdout).toBe(listed.stdout);
+      expect(JSON.parse(run(['project', 'list', '--json']).stdout)).toMatchObject([{ repoRoot: repo, openTasks: 0 }]);
+
+      const usage = run(['data']);
+      expect(usage.exitCode, usage.stderr).toBe(0);
+      expect(usage.stdout).toMatch(/^JERRY stores [\d.]+ (B|KiB|MiB) on this computer/);
+      expect(usage.stdout).toContain('Events and sessions older than 90 days are removed automatically.');
+      expect(usage.stdout).not.toMatch(/\p{Extended_Pictographic}/u);
+      const json = JSON.parse(run(['data', '--json']).stdout) as { totalBytes: number; categories: unknown[] };
+      expect(json.totalBytes).toBeGreaterThan(0);
+      expect(json.categories).toHaveLength(10);
+    } finally {
+      await core.stop();
+    }
+  });
+
   it('jerry plan diff: shows what changed between plan versions', async () => {
     const home = path.join(base, 'diff-home');
     const repo = path.join(base, 'diff-repo');
     fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
     const core = await startCore(home);
     try {
+      await addProject(core, repo);
       jerry(['task', 'create', '--repo', repo, '--title', 'Diff flow', '--scope', 'src/**'], { JERRY_HOME: home });
       expect(jerry(['plan', 'diff', 'JRY-0001'], { JERRY_HOME: home }).stdout).toContain('there is nothing to compare');
       expect(jerry(['plan', 'revise', 'JRY-0001', '--scope', 'src/**', '--scope', 'tests/**'], { JERRY_HOME: home }).exitCode).toBe(0);

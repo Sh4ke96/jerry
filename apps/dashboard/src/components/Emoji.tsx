@@ -1,5 +1,6 @@
 import { RESULT_EMOJI } from '@jerry/contracts/emoji';
 import { defineComponent } from 'vue';
+import { classProp, cn } from '../lib/utils';
 
 /**
  * An emoji from JERRY's shared vocabulary, always next to the text label that carries the same
@@ -8,10 +9,10 @@ import { defineComponent } from 'vue';
  */
 export const Emoji = defineComponent({
   name: 'Emoji',
-  props: { symbol: { type: String, required: true } },
+  props: { symbol: { type: String, required: true }, class: classProp },
   setup(props) {
     return () => (
-      <span class="emoji" aria-hidden="true">
+      <span class={cn('emoji mr-1.5 inline-block font-normal not-italic leading-none tracking-normal normal-case', props.class)} aria-hidden="true">
         {props.symbol}
       </span>
     );

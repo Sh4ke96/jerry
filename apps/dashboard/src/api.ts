@@ -1,4 +1,4 @@
-import type { ApprovalRecord, ArtifactDecision, CoreStatus, FinalReport, EvalRunDetail, EvalRunSummary, EvalStatus, Finding, Plan, PlanDrift, ReviewState, ProjectProfile, RepositoryExclusion, RepositorySummary, StoredEvent, Task, TaskSummary, WorkflowTransition, WorkspaceGraph } from '@jerry/contracts';
+import type { ApprovalRecord, ArtifactDecision, CoreStatus, FinalReport, EvalRunDetail, EvalRunSummary, EvalStatus, Finding, Plan, PlanDrift, ReviewState, ProjectProfile, ProjectAddResult, ProjectRemoveResult, ProjectSummary, DataUsage, PruneOptions, PrunePreview, PruneResult, ForgetPreview, ForgetResult, RepositorySummary, StoredEvent, Task, TaskSummary, WorkflowTransition, WorkspaceGraph } from '@jerry/contracts';
 
 export type TaskControlEvent = 'task.paused' | 'task.resumed' | 'task.cancelled';
 
@@ -46,7 +46,6 @@ export interface EventQuery {
 export const api = {
   status: () => request<CoreStatus>('GET', '/api/v1/status'),
   tasks: () => request<TaskSummary[]>('GET', '/api/v1/tasks'),
-  exclusions: () => request<RepositoryExclusion[]>('GET', '/api/v1/repositories/exclusions'),
   repositories: () => request<RepositorySummary[]>('GET', '/api/v1/repositories'),
   workspaceGraph: () => request<WorkspaceGraph>('GET', '/api/v1/workspace/graph'),
   /** Read-only rescan of a repository's profile. */
@@ -106,11 +105,21 @@ export const api = {
       event,
       ...(confirmTaskId === undefined ? {} : { confirmTaskId }),
     }),
-  setExcluded: (repoPath: string, excluded: boolean, confirmation?: string) =>
-    request<{ repoRoot: string; excluded: boolean }>('POST', '/api/v1/repositories/exclusions', {
-      repoPath,
-      excluded,
-      ...(confirmation === undefined ? {} : { confirmation }),
-    }),
+  /** The repositories the user added; JERRY monitors only these. */
+  projects: () => request<ProjectSummary[]>('GET', '/api/v1/projects'),
+  /** Adds the repository at `path`; the dashboard sends its root typed by the user. */
+  addProject: (path: string, confirmation: string) => request<ProjectAddResult>('POST', '/api/v1/projects', { path, confirmation }),
+  /** Removes a project; its open tasks stay, and the answer warns about them. */
+  removeProject: (path: string, confirmation: string) => request<ProjectRemoveResult>('POST', '/api/v1/projects/remove', { path, confirmation }),
+  /** What JERRY stores on this computer. */
+  dataUsage: () => request<DataUsage>('GET', '/api/v1/data/usage'),
+  /** Exactly what a prune with these options would delete; nothing is deleted. */
+  previewPrune: (options: PruneOptions) => request<PrunePreview>('POST', '/api/v1/data/prune/preview', options),
+  /** Deletes old data after a backup; needs the word "delete" typed. */
+  prune: (options: PruneOptions, confirmation: string) => request<PruneResult>('POST', '/api/v1/data/prune', { ...options, confirmation }),
+  /** Everything JERRY stores about one repository; nothing is deleted. */
+  previewForget: (path: string) => request<ForgetPreview>('POST', '/api/v1/data/forget/preview', { path }),
+  /** Deletes everything about one repository after a backup; needs its root typed. */
+  forget: (path: string, confirmation: string) => request<ForgetResult>('POST', '/api/v1/data/forget', { path, confirmation }),
   signOut: () => request<{ signedOut: true }>('POST', '/ui/logout', {}),
 };

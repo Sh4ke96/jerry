@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+import path from 'node:path';
 import { EVENT_SCHEMA_VERSION, eventEnvelopeSchema, gateVerdictSchema, type EventEnvelope, type GateCheckRequest, type GateDecision } from '@jerry/contracts';
 import { quarantineSpoolFile, readSpool } from '@jerry/platform';
 import { findGitRoot, realPathOfNearestExisting } from './repo-fs.js';
@@ -48,6 +49,18 @@ export function withRepoRoot(event: EventEnvelope): EventEnvelope {
   return { ...event, repoRoot: findGitRoot(realPathOfNearestExisting(event.cwd)) };
 }
 
+/**
+ * True when the event happened inside a project the user added: its target path if it has one,
+ * else its working directory. Events from anywhere else are not stored.
+ */
+export function isMonitoredEvent(store: StateStore, event: EventEnvelope): boolean {
+  const input = event.payload['input'];
+  const target = typeof input === 'object' && input !== null && typeof (input as Record<string, unknown>)['path'] === 'string' ? ((input as Record<string, unknown>)['path'] as string) : null;
+  const base = event.cwd ?? event.repoRoot;
+  if (base === null) return target !== null && path.isAbsolute(target) && store.isMonitored(realPathOfNearestExisting(target));
+  return store.isMonitored(realPathOfNearestExisting(target === null ? base : path.resolve(base, target)));
+}
+
 /** Moves events from the spool into the database. Returns how many files were processed. */
 export async function drainSpool(home: string, store: StateStore, evaluate: Evaluate, now: () => Date = () => new Date()): Promise<number> {
   const files = readSpool(home, SPOOL_BATCH);
@@ -67,7 +80,8 @@ export async function drainSpool(home: string, store: StateStore, evaluate: Eval
     }
     accepted.push({ file, event: withRepoRoot(evaluatePending(parsed.data, evaluate)) });
   }
-  const events = accepted.map((entry) => entry.event);
+  // Spooled events from outside the projects are dropped with their files, never stored.
+  const events = accepted.map((entry) => entry.event).filter((event) => isMonitoredEvent(store, event));
   await store.recordEvents(events, now(), true);
   for (const event of events) {
     if (event.eventType === 'SessionStart' && event.sessionId !== null && event.cwd !== null) {

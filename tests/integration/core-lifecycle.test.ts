@@ -101,6 +101,9 @@ describe('Core lifecycle: port, single instance, autostart', () => {
 
   it('SessionStart starts the installed Core and registers the session', async () => {
     const home = newHome();
+    // The repository is a project of this home (Core wrote projects.json); then Core is down.
+    await (await startCore(home)).stop();
+    fs.rmSync(jerryPaths(home).coreInfoFile, { force: true });
     installRuntimeCopy(home);
     const result = runBridge('session-start', { session_id: 'autostart-session', cwd: repo, hook_event_name: 'SessionStart', source: 'startup' }, { JERRY_HOME: home });
     expect(result.exitCode).toBe(0);

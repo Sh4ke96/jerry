@@ -1,12 +1,16 @@
 // @vitest-environment happy-dom
-import type { RepositorySummary, StoredEvent, TaskSummary, WorkflowTransition } from '@jerry/contracts';
+import type { DataUsage, ProjectSummary, RepositorySummary, StoredEvent, TaskSummary, WorkflowTransition } from '@jerry/contracts';
 import { EMOJI, STATE_EMOJI } from '@jerry/contracts/emoji';
-import { flushPromises, mount } from '@vue/test-utils';
+import { DOMWrapper, flushPromises, mount } from '@vue/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { samplePlan } from '../../../tests/helpers/plan-fixture';
 import { sampleReport } from '../../../tests/helpers/report-fixture';
 import { App } from '../src/App';
+import { setTheme, startTheme, THEME_STORAGE_KEY } from '../src/lib/theme';
 import { startDashboard, state } from '../src/state';
+
+/** Every TSX source of the dashboard, as text. */
+const SOURCES = import.meta.glob<string>('../src/**/*.tsx', { query: '?raw', import: 'default', eager: true });
 
 const CSRF = 'c'.repeat(64);
 const NOW = new Date().toISOString();
@@ -152,6 +156,25 @@ const shopRepository: RepositorySummary = {
   },
 };
 
+const shopProject: ProjectSummary = { repoRoot: 'D:\\Work\\shop', addedAt: NOW, addedBy: 'dashboard', note: null, tasks: 5, openTasks: 4, lastActivityAt: NOW, exists: true };
+
+const usage: DataUsage = {
+  at: NOW,
+  database: { file: 'C:\\J\\jerry.sqlite', bytes: 3 * 1024 * 1024 },
+  categories: [
+    { category: 'tasks', rows: 120, bytes: 512 * 1024, tables: [{ table: 'tasks', rows: 5, bytes: 4096 }] },
+    { category: 'events', rows: 4000, bytes: 2 * 1024 * 1024, tables: [{ table: 'hook_events', rows: 4000, bytes: 2 * 1024 * 1024 }] },
+  ],
+  projects: [
+    { repoRoot: 'D:\\Work\\shop', project: true, tasks: 5, openTasks: 4, events: 3900, lastActivityAt: NOW },
+    { repoRoot: 'D:\\Old\\site', project: false, tasks: 2, openTasks: 0, events: 100, lastActivityAt: null },
+  ],
+  backups: { dir: 'C:\\J\\backups', count: 7, bytes: 21 * 1024 * 1024, newestAt: NOW },
+  logs: { dir: 'C:\\J\\logs', bytes: 40 * 1024 },
+  totalBytes: 24 * 1024 * 1024 + 40 * 1024,
+  retentionDays: 90,
+};
+
 const history: WorkflowTransition[] = [
   { taskId: 'JRY-0001', from: null, to: 'WAIT_PLAN_APPROVAL', event: 'plan.submitted', actor: 'claude', reason: 'plan version 1', at: NOW },
   { taskId: 'JRY-0001', from: 'WAIT_PLAN_APPROVAL', to: 'IMPLEMENTATION', event: 'plan.approved', actor: 'user', reason: 'looks good', at: NOW },
@@ -186,7 +209,7 @@ describe('Dashboard app', () => {
 
   beforeEach(() => {
     calls = [];
-    Object.assign(state, { phase: 'loading', error: null, notice: null, status: null, tasks: [], events: [], exclusions: [], repositories: [], graph: { nodes: [], edges: [] }, refreshedAt: null });
+    Object.assign(state, { phase: 'loading', error: null, notice: null, status: null, tasks: [], events: [], projects: [], repositories: [], graph: { nodes: [], edges: [] }, refreshedAt: null });
     vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
       calls.push({ url, init });
       const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -195,7 +218,8 @@ describe('Dashboard app', () => {
       if (url === '/api/v1/tasks') return json([approvedTask, waitingTask, cancelledTask, reportedTask, refusedTask]);
       if (url === '/api/v1/tasks/JRY-0004/approvals') return json({ ...reportedTask.planDecision, stage: 'IMPLEMENTATION', version: 2 }, 201);
       if (url.startsWith('/api/v1/events')) return json([deviation]);
-      if (url === '/api/v1/repositories/exclusions') return json([]);
+      if (url === '/api/v1/projects' && init?.method === 'GET') return json([shopProject]);
+      if (url === '/api/v1/data/usage') return json(usage);
       if (url === '/api/v1/artifacts') return json([]);
       if (url === '/api/v1/repositories') return json([shopRepository]);
       if (url === '/api/v1/workspace/graph') {
@@ -208,7 +232,12 @@ describe('Dashboard app', () => {
       return json({ error: `unexpected ${url}` }, 404);
     });
   });
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    window.localStorage.clear();
+    document.documentElement.classList.remove('dark');
+  });
 
   async function mountApp() {
     const wrapper = mount(App, { attachTo: document.body });
@@ -216,6 +245,10 @@ describe('Dashboard app', () => {
     await flushPromises();
     return wrapper;
   }
+
+  /** Dialogs and menus open in a portal on <body>, outside the app's own element. */
+  const body = () => new DOMWrapper(document.body);
+  const nav = (wrapper: Awaited<ReturnType<typeof mountApp>>, label: string) => wrapper.findAll('[data-slot="sidebar-content"] [data-sidebar="menu-button"]').find((item) => item.text() === label)!;
 
   it('shows the overview: guard, plans waiting for a decision and the latest deviation', async () => {
     const wrapper = await mountApp();
@@ -229,39 +262,157 @@ describe('Dashboard app', () => {
   });
 
   const openTasks = async (wrapper: Awaited<ReturnType<typeof mountApp>>) => {
-    await wrapper.findAll('nav button').find((button) => button.text().includes('Tasks'))!.trigger('click');
+    await nav(wrapper, 'Tasks').trigger('click');
   };
   const button = (wrapper: Awaited<ReturnType<typeof mountApp>>, label: string, taskId?: string) => {
-    const scope = taskId === undefined ? wrapper : wrapper.findAll('article.task').find((card) => card.text().includes(taskId))!;
+    const scope = taskId === undefined ? wrapper : wrapper.findAll('.task').find((card) => card.text().includes(taskId))!;
     return scope.findAll('button').find((candidate) => candidate.text() === label);
   };
 
   it('offers only the steps the workflow allows in each state, and folds away finished tasks', async () => {
     const wrapper = await mountApp();
     await openTasks(wrapper);
-    expect(wrapper.findAll('article.task').find((card) => card.text().includes('JRY-0001'))!.text()).toContain('In implementation');
+    expect(wrapper.findAll('.task').find((card) => card.text().includes('JRY-0001'))!.text()).toContain('In implementation');
     expect(button(wrapper, 'Approve plan v1', 'JRY-0002')).toBeDefined();
     expect(button(wrapper, 'Approve plan v1', 'JRY-0001')).toBeUndefined();
     expect(button(wrapper, 'Withdraw approval', 'JRY-0001')).toBeDefined();
     expect(button(wrapper, 'Pause', 'JRY-0001')).toBeDefined();
     expect(button(wrapper, 'Resume', 'JRY-0001')).toBeUndefined();
-    expect(wrapper.get('details.panel summary').text()).toBe(`${EMOJI.done}Finished and cancelled (1)`);
+    expect(wrapper.get('.closed-tasks [data-slot="collapsible-trigger"]').text()).toBe(`${EMOJI.done}Finished and cancelled (1)`);
     expect(button(wrapper, 'Cancel task', 'JRY-0003')).toBeUndefined();
     wrapper.unmount();
   });
 
   it('shows emoji from the shared vocabulary next to their labels, hidden from assistive technology', async () => {
     const wrapper = await mountApp();
-    const tabs = wrapper.findAll('nav button');
-    expect(tabs.map((tab) => tab.get('.emoji').text())).toEqual([EMOJI.jerry, EMOJI.task, EMOJI.session, EMOJI.repository, EMOJI.evals]);
+    const titles = wrapper.findAll('[data-slot="card-description"]').filter((title) => title.find('.emoji').exists());
+    expect(titles.map((title) => title.text())).toEqual([`${EMOJI.jerry}Guard`, `${EMOJI.task}Tasks`, `${EMOJI.warning}Today`]);
+    const guard = wrapper.get('[data-guard] [data-slot="badge"]');
+    expect(guard.get('.emoji').text()).toBe(EMOJI.jerry);
     await openTasks(wrapper);
-    const card = wrapper.findAll('article.task').find((candidate) => candidate.text().includes('JRY-0001'))!;
-    const badge = card.get('.task__header .badge');
+    const card = wrapper.findAll('.task').find((candidate) => candidate.text().includes('JRY-0001'))!;
+    const badge = card.get('[data-slot="card-action"] [data-slot="badge"]');
     expect(badge.get('.emoji').text()).toBe(STATE_EMOJI.IMPLEMENTATION);
     expect(badge.text()).toContain('In implementation');
     const emoji = wrapper.findAll('.emoji');
-    expect(emoji.length).toBeGreaterThan(0);
-    for (const element of emoji) expect(element.attributes('aria-hidden')).toBe('true');
+    expect(emoji.length).toBeGreaterThan(10);
+    for (const element of emoji) {
+      expect(element.attributes('aria-hidden')).toBe('true');
+      // Never alone: the element around the emoji also carries a text label.
+      expect(element.element.parentElement!.textContent!.replace(element.text(), '').trim()).not.toBe('');
+    }
+    // The sidebar uses icons, which are hidden from assistive technology too.
+    for (const icon of wrapper.findAll('[data-sidebar="menu-button"] svg')) expect(icon.attributes('aria-hidden')).toBe('true');
+    wrapper.unmount();
+  });
+
+  it('switches views from the sidebar and names the current one in the top bar', async () => {
+    const wrapper = await mountApp();
+    expect(wrapper.get('header h1').text()).toBe('Overview');
+    expect(nav(wrapper, 'Overview').attributes('aria-current')).toBe('page');
+    expect(nav(wrapper, 'Overview').attributes('data-active')).toBe('true');
+    // Three tasks wait for the user: the count is next to "Tasks".
+    expect(wrapper.get('[data-sidebar="menu-badge"]').text()).toBe('3');
+    for (const [label, marker] of [
+      ['Tasks', '.task'],
+      ['Timeline', 'table'],
+      ['Repositories', '.repository'],
+      ['Data', '.data-usage'],
+      ['Evals', '.evals'],
+      ['Overview', 'section [data-slot="card"]'],
+    ] as const) {
+      await nav(wrapper, label).trigger('click');
+      await flushPromises();
+      expect(wrapper.get('header h1').text()).toBe(label);
+      expect(nav(wrapper, label).attributes('aria-current')).toBe('page');
+      expect(wrapper.get('[data-view]').attributes('data-view')).toBe(label.toLowerCase());
+      expect(wrapper.find(`[data-view] ${marker}`).exists(), label).toBe(true);
+    }
+    wrapper.unmount();
+  });
+
+  it('switches between light, dark and the system theme and remembers the choice', async () => {
+    let systemDark = true;
+    const listeners = new Set<(event: MediaQueryListEvent) => void>();
+    vi.spyOn(window, 'matchMedia').mockImplementation(
+      (query: string) =>
+        ({
+          media: query,
+          get matches() {
+            return query.includes('prefers-color-scheme: dark') ? systemDark : false;
+          },
+          addEventListener: (_type: string, listener: (event: MediaQueryListEvent) => void) => listeners.add(listener),
+          removeEventListener: (_type: string, listener: (event: MediaQueryListEvent) => void) => listeners.delete(listener),
+        }) as unknown as MediaQueryList,
+    );
+    startTheme();
+    // Nothing stored: the system decides, and it is dark.
+    expect(document.documentElement.classList.contains('dark')).toBe(true);
+    const wrapper = await mountApp();
+    const choose = async (label: string) => {
+      await wrapper.get('[data-theme-toggle]').trigger('keydown', { key: 'Enter' });
+      await flushPromises();
+      await body().findAll('[role="menuitemradio"]').find((item) => item.text() === label)!.trigger('click');
+      await flushPromises();
+    };
+
+    await choose('Light');
+    expect(document.documentElement.classList.contains('dark')).toBe(false);
+    expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe('light');
+    await choose('Dark');
+    expect(document.documentElement.classList.contains('dark')).toBe(true);
+    expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe('dark');
+
+    // "System" follows the operating system while the page is open.
+    await choose('System');
+    expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe('system');
+    expect(document.documentElement.classList.contains('dark')).toBe(true);
+    systemDark = false;
+    for (const listener of listeners) listener({ matches: false } as MediaQueryListEvent);
+    expect(document.documentElement.classList.contains('dark')).toBe(false);
+
+    // A stored choice wins over the system on the next start.
+    window.localStorage.setItem(THEME_STORAGE_KEY, 'dark');
+    startTheme();
+    expect(document.documentElement.classList.contains('dark')).toBe(true);
+    wrapper.unmount();
+  });
+
+  it('keeps working when the browser refuses storage', async () => {
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('storage disabled');
+    });
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('storage disabled');
+    });
+    expect(() => startTheme()).not.toThrow();
+    expect(() => setTheme('dark')).not.toThrow();
+    expect(document.documentElement.classList.contains('dark')).toBe(true);
+    const wrapper = await mountApp();
+    expect(wrapper.text()).toContain('GUARDED');
+    wrapper.unmount();
+  });
+
+  it('renders no inline style of its own: the CSP allows only the stylesheet', async () => {
+    // The sources set no style attribute at all, static or bound.
+    expect(Object.keys(SOURCES).length).toBeGreaterThan(20);
+    for (const [name, source] of Object.entries(SOURCES)) expect(source, name).not.toMatch(/\sstyle=|:style|<style/);
+
+    // Rendered: no <style> element; the only inline styles are the ones reka-ui's primitives set
+    // through the CSSOM (allowed by style-src 'self'): its CSS variables, outline and animation settings.
+    const wrapper = await mountApp();
+    for (const label of ['Overview', 'Tasks', 'Timeline', 'Repositories', 'Data', 'Evals']) {
+      await nav(wrapper, label).trigger('click');
+      await flushPromises();
+      expect(wrapper.html(), label).not.toContain('<style');
+      for (const element of wrapper.findAll('[style]')) {
+        const properties = (element.attributes('style') ?? '')
+          .split(';')
+          .map((declaration) => declaration.split(':')[0]!.trim())
+          .filter((property) => property !== '');
+        for (const property of properties) expect(property, `${label}: ${element.html().slice(0, 120)}`).toMatch(/^(--reka-[\w-]+|outline(-\w+)?|animation-duration|animation-name|transition-duration)$/);
+      }
+    }
     wrapper.unmount();
   });
 
@@ -275,9 +426,9 @@ describe('Dashboard app', () => {
     expect(state.notice).toBe('Paused JRY-0001.');
 
     await button(wrapper, 'Cancel task', 'JRY-0002')!.trigger('click');
-    expect(wrapper.get('form.dialog button[type="submit"]').attributes('disabled')).toBeDefined();
-    await wrapper.get('form.dialog input').setValue('JRY-0002');
-    await wrapper.get('form.dialog').trigger('submit');
+    expect(body().get('form.dialog button[type="submit"]').attributes('disabled')).toBeDefined();
+    await body().get('form.dialog input').setValue('JRY-0002');
+    await body().get('form.dialog').trigger('submit');
     await flushPromises();
     const cancel = calls.find((call) => call.url === '/api/v1/tasks/JRY-0002/transitions')!;
     expect(JSON.parse(String(cancel.init?.body))).toEqual({ event: 'task.cancelled', confirmTaskId: 'JRY-0002' });
@@ -288,12 +439,12 @@ describe('Dashboard app', () => {
   it('shows which sessions worked on a task and Claude’s last checkpoint', async () => {
     const wrapper = await mountApp();
     await openTasks(wrapper);
-    const card = wrapper.findAll('article.task').find((candidate) => candidate.text().includes('JRY-0001'))!;
+    const card = wrapper.findAll('.task').find((candidate) => candidate.text().includes('JRY-0001'))!;
     expect(card.text()).toContain('2 sessions · last activity');
     expect(card.text()).toContain('last session ended');
     expect(card.get('.checkpoint').text()).toContain('Store and API for sessions are done.');
     expect(card.findAll('.checkpoint li').map((item) => item.text())).toEqual(['Dashboard card', 'Live check']);
-    const waiting = wrapper.findAll('article.task').find((candidate) => candidate.text().includes('JRY-0002'))!;
+    const waiting = wrapper.findAll('.task').find((candidate) => candidate.text().includes('JRY-0002'))!;
     expect(waiting.text()).toContain('No session has worked on it yet');
     expect(waiting.find('.checkpoint').exists()).toBe(false);
     wrapper.unmount();
@@ -302,11 +453,11 @@ describe('Dashboard app', () => {
   it('shows the implementation report next to what JERRY recorded, with accept and request-changes', async () => {
     const wrapper = await mountApp();
     await openTasks(wrapper);
-    const card = wrapper.findAll('article.task').find((candidate) => candidate.text().includes('JRY-0004'))!;
+    const card = wrapper.findAll('.task').find((candidate) => candidate.text().includes('JRY-0004'))!;
     const report = card.get('.report');
     expect(report.text()).toContain('Implementation report v2');
     expect(report.text()).toContain('Added greet(name) and its unit test.');
-    expect(report.get('.evidence').classes()).toContain('evidence--attention');
+    expect(report.get('.evidence').attributes('data-attention')).toBe('true');
     expect(report.get('.evidence').text()).toContain('Edited but not in the report: README.md');
     expect(report.text()).toContain('1 check(s) failed or did not run.');
     expect(report.text()).toContain('NOT_RUN');
@@ -314,19 +465,19 @@ describe('Dashboard app', () => {
     expect(button(wrapper, 'Approve plan v1', 'JRY-0004')).toBeUndefined();
 
     await button(wrapper, 'Request changes', 'JRY-0004')!.trigger('click');
-    expect(wrapper.get('form.dialog h2').text()).toBe('Request changes to JRY-0004 report v2');
-    await wrapper.get('form.dialog textarea').setValue('Also handle empty names.');
-    await wrapper.get('form.dialog input').setValue('JRY-0004');
-    await wrapper.get('form.dialog').trigger('submit');
+    expect(body().get('form.dialog h2').text()).toBe('Request changes to JRY-0004 report v2');
+    await body().get('form.dialog textarea').setValue('Also handle empty names.');
+    await body().get('form.dialog input').setValue('JRY-0004');
+    await body().get('form.dialog').trigger('submit');
     await flushPromises();
     const decision = calls.find((call) => call.url === '/api/v1/tasks/JRY-0004/approvals')!;
     expect(JSON.parse(String(decision.init?.body))).toEqual({ stage: 'IMPLEMENTATION', version: 2, decision: 'REJECTED', comment: 'Also handle empty names.', confirmTaskId: 'JRY-0004' });
     expect(state.notice).toBe('Requested changes to JRY-0004 report v2.');
 
     await button(wrapper, 'Accept implementation', 'JRY-0004')!.trigger('click');
-    expect(wrapper.find('form.dialog textarea').exists()).toBe(false);
-    await wrapper.get('form.dialog input').setValue('JRY-0004');
-    await wrapper.get('form.dialog').trigger('submit');
+    expect(body().find('form.dialog textarea').exists()).toBe(false);
+    await body().get('form.dialog input').setValue('JRY-0004');
+    await body().get('form.dialog').trigger('submit');
     await flushPromises();
     const accepted = calls.filter((call) => call.url === '/api/v1/tasks/JRY-0004/approvals').at(-1)!;
     expect(JSON.parse(String(accepted.init?.body))).toMatchObject({ stage: 'IMPLEMENTATION', version: 2, decision: 'APPROVED' });
@@ -336,9 +487,9 @@ describe('Dashboard app', () => {
   it('shows why JERRY refused DONE and lets the user send the work back', async () => {
     const wrapper = await mountApp();
     await openTasks(wrapper);
-    const card = wrapper.findAll('article.task').find((candidate) => candidate.text().includes('JRY-0005'))!;
+    const card = wrapper.findAll('.task').find((candidate) => candidate.text().includes('JRY-0005'))!;
     const check = card.get('.final-check');
-    expect(check.classes()).toContain('final-check--failed');
+    expect(check.attributes('data-passed')).toBe('false');
     expect(check.text()).toContain('JERRY did not complete the task');
     expect(check.text()).toContain('blocks failed: npm test');
     expect(check.text()).toContain('note no check ran');
@@ -351,7 +502,7 @@ describe('Dashboard app', () => {
     const wrapper = await mountApp();
     await openTasks(wrapper);
     await button(wrapper, 'Accept implementation', 'JRY-0004')!.trigger('click');
-    const dialog = wrapper.get('form.dialog');
+    const dialog = body().get('form.dialog');
     expect(dialog.text()).toContain("You confirm the plan's Definition of Done:");
     for (const item of samplePlan('D:\\Work\\shop', ['src/auth/**']).definitionOfDone) expect(dialog.text()).toContain(item);
     wrapper.unmount();
@@ -360,7 +511,7 @@ describe('Dashboard app', () => {
   it('shows the analysts’ reports with unverified citations, and a run without a report as a gap', async () => {
     const wrapper = await mountApp();
     await openTasks(wrapper);
-    const analysis = wrapper.findAll('article.task').find((candidate) => candidate.text().includes('JRY-0001'))!.get('.analysis');
+    const analysis = wrapper.findAll('.task').find((candidate) => candidate.text().includes('JRY-0001'))!.get('.analysis');
     expect(analysis.text()).toContain('Risk');
     expect(analysis.text()).toContain('medium confidence');
     expect(analysis.text()).toContain('Passwords are compared without constant time');
@@ -373,7 +524,7 @@ describe('Dashboard app', () => {
   it('shows the plan completeness check as information next to the plan', async () => {
     const wrapper = await mountApp();
     await openTasks(wrapper);
-    const grade = wrapper.findAll('article.task').find((candidate) => candidate.text().includes('JRY-0002'))!.get('.plan-grade');
+    const grade = wrapper.findAll('.task').find((candidate) => candidate.text().includes('JRY-0002'))!.get('.plan-grade');
     expect(grade.text()).toContain('incomplete');
     expect(grade.text()).toContain('71/100');
     expect(grade.text()).toContain('informational, you decide');
@@ -428,20 +579,20 @@ describe('Dashboard app', () => {
     await openTasks(wrapper);
     await flushPromises();
     const panel = wrapper.get('.findings');
-    expect(panel.get('summary').text()).toContain('1 open');
-    expect(panel.get('summary').text()).toContain('1 P2 · 1 fixed');
+    expect(panel.get('[data-slot="collapsible-trigger"]').text()).toContain('1 open');
+    expect(panel.get('[data-slot="collapsible-trigger"]').text()).toContain('1 P2 · 1 fixed');
     expect(panel.text()).toContain('Exception swallowed silently');
     expect(panel.text()).not.toContain('Vague name');
-    await panel.get('.findings__filters input[type="checkbox"]').setValue(true);
+    await panel.get('.findings__filters [role="switch"]').trigger('click');
     expect(panel.text()).toContain('Vague name');
 
     await panel.findAll('button').find((candidate) => candidate.text() === 'False positive')!.trigger('click');
-    const submit = wrapper.get('form.dialog button[type="submit"]');
-    await wrapper.get('form.dialog input').setValue('FND-1');
+    const submit = body().get('form.dialog button[type="submit"]');
+    await body().get('form.dialog input').setValue('FND-1');
     expect(submit.attributes('disabled')).toBeDefined();
-    await wrapper.get('form.dialog textarea').setValue('the catch is in generated code');
+    await body().get('form.dialog textarea').setValue('the catch is in generated code');
     expect(submit.attributes('disabled')).toBeUndefined();
-    await wrapper.get('form.dialog').trigger('submit');
+    await body().get('form.dialog').trigger('submit');
     await flushPromises();
     const decision = calls.find((call) => call.url === '/api/v1/findings/FND-1/status')!;
     expect(JSON.parse(String(decision.init?.body))).toEqual({ status: 'FALSE_POSITIVE', reason: 'the catch is in generated code' });
@@ -500,16 +651,16 @@ describe('Dashboard app', () => {
     expect(panel.text()).toContain('FND-4: use timingSafeEqual');
 
     await panel.findAll('button').find((candidate) => candidate.text() === 'Approve fix plan')!.trigger('click');
-    await wrapper.get('form.dialog input').setValue('JRY-0007');
-    await wrapper.get('form.dialog').trigger('submit');
+    await body().get('form.dialog input').setValue('JRY-0007');
+    await body().get('form.dialog').trigger('submit');
     await flushPromises();
     expect(JSON.parse(String(calls.find((call) => call.url === '/api/v1/tasks/JRY-0007/approvals')!.init?.body))).toEqual({ stage: 'REVIEW_FIX', version: 1, decision: 'APPROVED', comment: '', confirmTaskId: 'JRY-0007' });
 
     await wrapper.get('.review').findAll('button').find((candidate) => candidate.text() === 'Waive review')!.trigger('click');
-    await wrapper.get('form.dialog input').setValue('JRY-0007');
-    expect(wrapper.get('form.dialog button[type="submit"]').attributes('disabled')).toBeDefined();
-    await wrapper.get('form.dialog textarea').setValue('prototype only');
-    await wrapper.get('form.dialog').trigger('submit');
+    await body().get('form.dialog input').setValue('JRY-0007');
+    expect(body().get('form.dialog button[type="submit"]').attributes('disabled')).toBeDefined();
+    await body().get('form.dialog textarea').setValue('prototype only');
+    await body().get('form.dialog').trigger('submit');
     await flushPromises();
     expect(JSON.parse(String(calls.find((call) => call.url === '/api/v1/tasks/JRY-0007/review/skip')!.init?.body))).toEqual({ reason: 'prototype only', confirmTaskId: 'JRY-0007' });
     wrapper.unmount();
@@ -605,7 +756,7 @@ describe('Dashboard app', () => {
       return base(url, init);
     });
     const wrapper = await mountApp();
-    await wrapper.findAll('nav button').find((candidate) => candidate.text().includes('Evals'))!.trigger('click');
+    await nav(wrapper, 'Evals').trigger('click');
     await flushPromises();
     const text = wrapper.get('.evals').text();
     expect(text).toContain('Baseline: EVR-1');
@@ -617,9 +768,9 @@ describe('Dashboard app', () => {
     expect(text).toContain('Git unchanged: HEAD moved');
 
     await wrapper.findAll('.evals button').find((candidate) => candidate.text() === 'Make baseline')!.trigger('click');
-    await wrapper.get('form.dialog input').setValue('EVR-2');
-    await wrapper.get('form.dialog textarea').setValue('the regression is intended');
-    await wrapper.get('form.dialog').trigger('submit');
+    await body().get('form.dialog input').setValue('EVR-2');
+    await body().get('form.dialog textarea').setValue('the regression is intended');
+    await body().get('form.dialog').trigger('submit');
     await flushPromises();
     expect(JSON.parse(String(calls.find((call) => call.url === '/api/v1/evals/baseline')!.init?.body))).toEqual({ runId: 'EVR-2', note: 'the regression is intended', confirm: 'EVR-2' });
     wrapper.unmount();
@@ -699,10 +850,10 @@ describe('Dashboard app', () => {
     const diff = wrapper.get('.plan-diff');
     expect(diff.text()).toContain('Plan v1 → v2');
     expect(diff.text()).toContain('Scope (what JERRY checks edits against)');
-    expect(diff.find('.diff__added').text()).toContain('tests/auth/**');
+    expect(diff.find('[data-change="added"]').text()).toContain('tests/auth/**');
     expect(diff.text()).toContain('Add a login form with rate limiting.');
     expect(diff.text()).toContain('Should greetings be localised?');
-    expect(diff.findAll('.diff__removed').map((item) => item.text()).join(' ')).toContain('Should greetings be localised?');
+    expect(diff.findAll('[data-change="removed"]').map((item) => item.text()).join(' ')).toContain('Should greetings be localised?');
     expect(calls.some((call) => call.url === '/api/v1/tasks/JRY-0001/plans')).toBe(true);
     await button(wrapper, 'Hide changes', 'JRY-0001')!.trigger('click');
     expect(wrapper.find('.plan-diff').exists()).toBe(false);
@@ -725,10 +876,10 @@ describe('Dashboard app', () => {
     await openTasks(wrapper);
     await wrapper.findAll('button').find((button) => button.text() === 'Approve plan v1')!.trigger('click');
 
-    const submit = wrapper.get('form.dialog button[type="submit"]');
+    const submit = body().get('form.dialog button[type="submit"]');
     expect(submit.attributes('disabled')).toBeDefined();
-    await wrapper.get('form.dialog input').setValue('JRY-0002');
-    await wrapper.get('form.dialog').trigger('submit');
+    await body().get('form.dialog input').setValue('JRY-0002');
+    await body().get('form.dialog').trigger('submit');
     await flushPromises();
 
     const approval = calls.find((call) => call.url === '/api/v1/tasks/JRY-0002/approvals')!;
@@ -736,6 +887,32 @@ describe('Dashboard app', () => {
     expect((approval.init?.headers as Record<string, string>)['x-jerry-csrf']).toBe(CSRF);
     expect(JSON.parse(String(approval.init?.body))).toEqual({ stage: 'PLAN', version: 1, decision: 'APPROVED', confirmTaskId: 'JRY-0002' });
     expect(state.notice).toBe('Approved JRY-0002 plan v1.');
+    wrapper.unmount();
+  });
+
+  it('asks in an alert dialog and decides nothing without the exact task ID', async () => {
+    const wrapper = await mountApp();
+    await openTasks(wrapper);
+    await button(wrapper, 'Reject', 'JRY-0002')!.trigger('click');
+    await flushPromises();
+    const dialog = body().get('[role="alertdialog"]');
+    expect(dialog.get('h2').text()).toBe('Reject JRY-0002 plan v1');
+    // The field to type into has the focus, not a button.
+    expect(document.activeElement).toBe(dialog.get('#confirm-typed').element);
+    const submit = dialog.get('button[type="submit"]');
+    for (const typed of ['', 'JRY-0001', 'jry-0002', 'JRY-0002x']) {
+      await dialog.get('#confirm-typed').setValue(typed);
+      expect(submit.attributes('disabled'), typed).toBeDefined();
+      await dialog.get('form').trigger('submit');
+    }
+    await flushPromises();
+    expect(calls.some((call) => call.url.endsWith('/approvals'))).toBe(false);
+
+    // Escape closes the dialog without a decision.
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await flushPromises();
+    expect(body().find('[role="alertdialog"]').exists()).toBe(false);
+    expect(calls.some((call) => call.url.endsWith('/approvals'))).toBe(false);
     wrapper.unmount();
   });
 
@@ -754,8 +931,8 @@ describe('Dashboard app', () => {
 
   it('shows each repository’s profile: commands as they run here, instructions and suspicious text', async () => {
     const wrapper = await mountApp();
-    await wrapper.findAll('nav button').find((button) => button.text().includes('Repositories'))!.trigger('click');
-    const card = wrapper.get('article.repository');
+    await nav(wrapper, 'Repositories').trigger('click');
+    const card = wrapper.get('.repository');
     expect(card.text()).toContain('D:\\Work\\shop');
     expect(card.text()).toContain('out of date: stack');
     expect(card.text()).toContain('corepack pnpm run test');
@@ -773,14 +950,15 @@ describe('Dashboard app', () => {
 
   it('filters the timeline and renders every section without errors', async () => {
     const wrapper = await mountApp();
-    const tab = (label: string) => wrapper.findAll('nav button').find((button) => button.text().includes(label))!;
+    const tab = (label: string) => nav(wrapper, label);
     await tab('Timeline').trigger('click');
     expect(wrapper.get('table').text()).toContain('WARN');
     expect(wrapper.get('table').text()).toContain('README.md');
-    await wrapper.findAll('.chip-button').find((button) => button.text() === 'Blocked')!.trigger('click');
+    // reka-ui's tabs switch on mousedown (and on focus or Enter from the keyboard).
+    await wrapper.findAll('[role="tab"]').find((button) => button.text() === 'Blocked')!.trigger('mousedown');
     expect(wrapper.text()).toContain('No events for this filter.');
     await tab('Repositories').trigger('click');
-    expect(wrapper.text()).toContain('No repository is excluded.');
+    expect(wrapper.get('.projects').text()).toContain('D:\\Work\\shop');
     wrapper.unmount();
   });
 

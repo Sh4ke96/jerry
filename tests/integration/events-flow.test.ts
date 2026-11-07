@@ -78,6 +78,9 @@ describe('session events', () => {
   it('spools events while Core is down and ingests them, evaluated against the plan, when it starts', async () => {
     const home = newHome();
     const env = { JERRY_HOME: home };
+    // The repository is a project of this home; then Core goes down.
+    await (await startCore(home)).stop();
+    fs.rmSync(jerryPaths(home).coreInfoFile, { force: true });
     expect(runBridge('session-start', { session_id: 'outage', cwd: repo, hook_event_name: 'SessionStart', source: 'startup' }, env).exitCode).toBe(0);
     expect(runBridge('pre-tool-use', preToolUse(repo, 'Write', { file_path: path.join(repo, 'README.md') }), env)).toMatchObject({ exitCode: 0, stdout: '' });
     expect(runBridge('pre-tool-use', preToolUse(repo, 'Bash', { command: 'git commit -m x' }), env).exitCode).toBe(2);

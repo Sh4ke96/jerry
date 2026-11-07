@@ -43,8 +43,8 @@ describe('independent code review (bundled bridge + MCP + Core)', () => {
   const asSubagent = async (agentId: string, role: ReviewSubmission['role'], body: ReviewSubmission) => {
     hook({ hook_event_name: 'SubagentStart', agent_id: agentId, agent_type: `jerry:${role}` });
     const toolUseId = `toolu_${agentId}_${Math.random()}`;
-    hook({ hook_event_name: 'PreToolUse', tool_name: 'mcp__plugin_jerry_jerry__jerry_submit_review', tool_input: {}, tool_use_id: toolUseId, agent_id: agentId });
-    const result = await mcp.call('jerry_submit_review', { taskId, review: body }, toolUseId);
+    hook({ hook_event_name: 'PreToolUse', tool_name: 'mcp__plugin_jerry_guardian__submit_review', tool_input: {}, tool_use_id: toolUseId, agent_id: agentId });
+    const result = await mcp.call('submit_review', { taskId, review: body }, toolUseId);
     hook({ hook_event_name: 'SubagentStop', agent_id: agentId, agent_type: `jerry:${role}` });
     return result;
   };
@@ -52,7 +52,7 @@ describe('independent code review (bundled bridge + MCP + Core)', () => {
   /** The final report of the DONE task, and the Artifact as the user's recorded choice. */
   const checkFinalReportAndArtifact = async (): Promise<void> => {
     const filesBefore = (fs.readdirSync(repo, { recursive: true }) as string[]).filter((entry) => !entry.startsWith('.git')).sort();
-    const report = await mcp.call('jerry_get_final_report', { taskId });
+    const report = await mcp.call('get_final_report', { taskId });
     expect(report.isError, report.text).toBe(false);
     expect(report.structured).toMatchObject({
       taskId,
@@ -65,11 +65,11 @@ describe('independent code review (bundled bridge + MCP + Core)', () => {
     expect((report.structured['repositories'] as Array<{ changes: Array<{ path: string }> }>)[0]!.changes.map((change) => change.path)).toEqual(['src/greeting/greet.ts']);
 
     // Only claude.ai Artifact links are recorded; a decision needs no Artifact when the user declined.
-    expect((await mcp.call('jerry_record_artifact', { taskId, decision: 'created', kind: 'other', title: 'x', url: 'https://evil.example/artifact/1' })).isError).toBe(true);
-    expect((await mcp.call('jerry_record_artifact', { taskId, decision: 'declined', reason: 'not needed now' })).structured).toMatchObject({ saved: true, decision: 'declined' });
-    const created = await mcp.call('jerry_record_artifact', { taskId, decision: 'created', kind: 'stakeholder-presentation', title: 'Greeting overview', url: 'https://claude.ai/code/artifact/0f6c1a2b-aaaa-bbbb-cccc-000000000001' });
+    expect((await mcp.call('record_artifact', { taskId, decision: 'created', kind: 'other', title: 'x', url: 'https://evil.example/artifact/1' })).isError).toBe(true);
+    expect((await mcp.call('record_artifact', { taskId, decision: 'declined', reason: 'not needed now' })).structured).toMatchObject({ saved: true, decision: 'declined' });
+    const created = await mcp.call('record_artifact', { taskId, decision: 'created', kind: 'stakeholder-presentation', title: 'Greeting overview', url: 'https://claude.ai/code/artifact/0f6c1a2b-aaaa-bbbb-cccc-000000000001' });
     expect(created.structured).toMatchObject({ saved: true, decision: 'created' });
-    expect(((await mcp.call('jerry_get_final_report', { taskId })).structured['artifact'] as Record<string, unknown>)).toMatchObject({ decision: 'created', kind: 'stakeholder-presentation', url: 'https://claude.ai/code/artifact/0f6c1a2b-aaaa-bbbb-cccc-000000000001' });
+    expect(((await mcp.call('get_final_report', { taskId })).structured['artifact'] as Record<string, unknown>)).toMatchObject({ decision: 'created', kind: 'stakeholder-presentation', url: 'https://claude.ai/code/artifact/0f6c1a2b-aaaa-bbbb-cccc-000000000001' });
     expect((await api(core, 'GET', '/api/v1/artifacts')).body).toMatchObject([{ taskId, decision: 'created' }]);
     // JERRY wrote nothing into the repository.
     expect((fs.readdirSync(repo, { recursive: true }) as string[]).filter((entry) => !entry.startsWith('.git')).sort()).toEqual(filesBefore);
@@ -122,7 +122,7 @@ describe('independent code review (bundled bridge + MCP + Core)', () => {
     const state = await review();
     expect(state.rounds).toHaveLength(1);
     expect(state.rounds[0]!.changedFiles).toContain('src/greeting/greet.ts');
-    expect((await mcp.call('jerry_get_state', {})).structured['next']).toMatchObject({ action: 'review' });
+    expect((await mcp.call('get_state', {})).structured['next']).toMatchObject({ action: 'review' });
   });
 
   it('records three reviews, merges the same finding, and tracks coverage and independence', async () => {
@@ -141,7 +141,7 @@ describe('independent code review (bundled bridge + MCP + Core)', () => {
 
     // The third review comes from the main session (no subagent): recorded, not independent.
     // It names the file with an absolute path, as real reviewers sometimes do: stored repo-relative.
-    const design = await mcp.call('jerry_submit_review', { taskId, review: submission('jerry-design-reviewer', [], [greet]) });
+    const design = await mcp.call('submit_review', { taskId, review: submission('jerry-design-reviewer', [], [greet]) });
     expect(design.isError, design.text).toBe(false);
 
     const state = await review();
@@ -157,13 +157,13 @@ describe('independent code review (bundled bridge + MCP + Core)', () => {
 
   it('gates the fixes: a plan citing real findings, approved only by the user', async () => {
     const findingId = (await review()).openFindings[0]!.findingId;
-    const unknown = await mcp.call('jerry_submit_fix_plan', { taskId, plan: { summary: 'x', items: [{ findings: ['FND-999'], change: 'x', files: ['src/greeting/greet.ts'] }] } });
+    const unknown = await mcp.call('submit_fix_plan', { taskId, plan: { summary: 'x', items: [{ findings: ['FND-999'], change: 'x', files: ['src/greeting/greet.ts'] }] } });
     expect(unknown.isError).toBe(true);
     expect(unknown.text).toContain('FND-999');
-    const outside = await mcp.call('jerry_submit_fix_plan', { taskId, plan: { summary: 'x', items: [{ findings: [findingId], change: 'x', files: ['README.md'] }] } });
+    const outside = await mcp.call('submit_fix_plan', { taskId, plan: { summary: 'x', items: [{ findings: [findingId], change: 'x', files: ['README.md'] }] } });
     expect(outside.text).toContain('outside the approved scope');
 
-    const proposed = await mcp.call('jerry_submit_fix_plan', { taskId, plan: { summary: 'Handle blank names', items: [{ findings: [findingId], change: 'Fall back to "Hello!"', files: ['src/greeting/greet.ts'] }], tests: ['unit: blank name'] } });
+    const proposed = await mcp.call('submit_fix_plan', { taskId, plan: { summary: 'Handle blank names', items: [{ findings: [findingId], change: 'Fall back to "Hello!"', files: ['src/greeting/greet.ts'] }], tests: ['unit: blank name'] } });
     expect(proposed.isError, proposed.text).toBe(false);
     expect(proposed.text).toContain('--stage review-fix --version 1');
     expect((await detail()).state).toBe('WAIT_REVIEW_FIX_APPROVAL');
@@ -181,7 +181,7 @@ describe('independent code review (bundled bridge + MCP + Core)', () => {
     const fixEdit = hook({ hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: greet }, tool_use_id: 'toolu_fix' }).stdout;
     expect(fixEdit).not.toContain('systemMessage');
     expect(fixEdit).toContain('Blank names produce an odd greeting');
-    const fixed = await mcp.call('jerry_report_fixes', { taskId, summary: 'Blank names fall back to "Hello!".' });
+    const fixed = await mcp.call('report_fixes', { taskId, summary: 'Blank names fall back to "Hello!".' });
     expect(fixed.structured).toMatchObject({ reviewRound: 2, filesToReview: ['src/greeting/greet.ts'] });
     expect((await detail()).state).toBe('REVERIFICATION');
 

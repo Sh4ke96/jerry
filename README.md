@@ -44,7 +44,15 @@ node dist/cli/jerry.mjs install     # installs the plugin and Core for your Clau
 node dist/cli/jerry.mjs doctor      # checks that everything is in place
 ```
 
-Then restart your Claude Code sessions. JERRY starts its Core automatically and monitors every repository you open.
+Then restart your Claude Code sessions and **add the projects JERRY should work in**:
+
+```powershell
+cd D:\path\to\your\project
+jerry project add                   # asks you to type the path to confirm
+```
+
+📁 JERRY monitors only projects you added. In any other repository only the hard rules apply (no Git changes, no
+tampering with JERRY), nothing is recorded, and Core is not contacted. JERRY starts its Core automatically.
 
 Open the dashboard with `jerry ui`.
 
@@ -61,6 +69,11 @@ Open the dashboard with `jerry ui`.
 | `/jerry:review` | 🔍 Runs the independent review with three reviewers, plans fixes, and re-reviews. |
 | `/jerry:commit-message` | ✍️ Proposes commit messages in your repository's style. You commit. |
 | `/jerry:artifact` | 🎨 Asks whether you want an Artifact for a finished task, and creates it only on yes. |
+
+🔌 Claude talks to JERRY through the MCP server **`plugin:jerry:guardian`** (see `/mcp`). Its tools show up as
+"Plugin Jerry Guardian [get_state]", "[submit_plan]" and so on, and each answer starts with a one-line summary such as
+`📋 JRY-0012 plan v1 submitted · ⏳ waiting for your approval`. For permission rules, the tool ids are
+`mcp__plugin_jerry_guardian__<tool>`. None of the tools can approve, accept or waive anything.
 
 ---
 
@@ -104,15 +117,17 @@ need an interactive terminal, and Claude is not allowed to run them.
 | `jerry report <id>` | 📄 The final report of a task (a draft until it is done). |
 | `jerry events` | The latest recorded session events. |
 
-### 📁 Repositories
+### 📁 Projects and repositories
 
 | Command | Purpose |
 |---|---|
+| `jerry project add [path]` | Add a project: JERRY works there from now on (default: the current repository). 🔐 |
+| `jerry project remove <path>` | Stop working in a project; its open tasks stay. 🔐 |
+| `jerry project list` | Your projects, their open tasks and last activity. |
 | `jerry repo scan [path]` | What JERRY detects: languages, commands, CI, API schemas, migrations. |
 | `jerry repo profile [path]` | The project profile JERRY keeps, with commands as they run on this machine. |
 | `jerry repo graph` | Links between your repositories (shared packages, API contracts). |
-| `jerry repo exclude` / `include <path>` | Turn monitoring off or on for a repository; hard rules always apply. 🔐 |
-| `jerry repo list` | Excluded repositories. |
+| `jerry repo include` / `exclude <path>`, `repo list` | Older names for `project add` / `remove` / `list`. |
 
 ### 📊 Evals
 
@@ -125,12 +140,19 @@ need an interactive terminal, and Claude is not allowed to run them.
 | `jerry eval label …` | Your verdict on a rubric result, for calibration. 🔐 |
 | `jerry eval plugin` | Claude Code's plugin evals for the JERRY plugin, never published. |
 
-### 💾 Database
+### 💾 Your data
 
 | Command | Purpose |
 |---|---|
+| `jerry data` | What JERRY stores and how much space it takes: per category, per project, backups, logs. |
+| `jerry data prune [--done-older-than N] [--events-older-than N] [--evals-older-than N] [--backups-keep N]` | Delete old data: shows exactly what would go, then asks you to type `delete`. 🔐 |
+| `jerry data forget <path>` | Delete everything JERRY knows about one project (not while it has open tasks). 🔐 |
 | `jerry db backup` / `backups` | Back up the database now, or list backups. |
 | `jerry db restore <file>` | Restore a backup (Core stopped). 🔐 |
+
+🛟 Prune and forget always take a backup first (`pre-prune` / `pre-forget`), delete in one transaction and give the
+space back. Open tasks and eval baselines are never pruned. Session events are removed automatically after 90 days;
+everything else stays until you prune it, which is fine: JERRY's data is usually a few dozen MB.
 
 💡 If your terminal shows boxes instead of emoji, set `JERRY_NO_EMOJI=1` for plain CLI output.
 
@@ -142,10 +164,45 @@ need an interactive terminal, and Claude is not allowed to run them.
 - **Overview:** the guard state and what needs you;
 - **Tasks:** the state, plan, analyses, reports, findings, review, final report and the decisions the state allows;
 - **Timeline:** session events;
-- **Repositories:** profiles and links;
+- **Repositories:** your projects (add and remove them), profiles and links;
+- **Data:** what JERRY stores, with preview-first clean-up;
 - **Evals:** runs, regressions and calibration.
 
-It is reachable only from your machine and needs the one-time login link.
+🎨 It uses the shadcn/ui look with the Geist font. The theme switch in the top bar picks light, dark or your
+system's theme. It is reachable only from your machine and needs the one-time login link.
+
+---
+
+## 🪟 JERRY Desktop (optional, Windows)
+
+A small desktop app around the same dashboard. JERRY works fine without it.
+
+- 🖥️ **Dashboard window**, signed in automatically. Closing the window hides it to the tray.
+- 🛡️ **Tray icon** with JERRY's state and how many things wait for you. Menu: Open dashboard, Start Core / Stop Core,
+  Settings…, Quit.
+- 🔔 **Notifications** when a plan, a report or a fix plan waits for your decision, when a task is done or blocked,
+  and when Core stops unexpectedly.
+- ⚙️ **Settings**:
+  - 🚀 launch with Windows (off by default);
+  - open the window at start;
+  - notifications on or off, per type, with or without sound, plus a test notification.
+
+**Install** from the release package: run `desktop/JERRY-Desktop-<version>-x64-setup.exe`. It installs for your
+Windows user, no admin needed. The installer is not code-signed, so Windows SmartScreen may ask once; check
+`SHA256SUMS` first.
+
+**Build it yourself** (needs Rust from [rustup.rs](https://rustup.rs) and Visual Studio Build Tools with
+"Desktop development with C++"):
+
+```powershell
+corepack pnpm desktop:build                 # dist/desktop/JERRY-Desktop-<version>-x64-setup.exe
+corepack pnpm release --with-desktop        # the release package with the installer inside
+corepack pnpm desktop:test                  # the app's Rust tests
+```
+
+🔒 The app talks to Core only on `127.0.0.1`, keeps the Core token in its own process, and gives the dashboard page no
+access to the app. Links to other sites open in your browser. Its settings live in the app's own folder, not in
+JERRY's data.
 
 ---
 
@@ -157,6 +214,7 @@ apps/hook-bridge        🪝 Claude Code hook adapter: forwards tool calls to Co
 apps/mcp-server         🔌 MCP server: Claude's tools for state, plans, reports, reviews
 apps/dashboard          🖥️ JERRY Control Center (Vue 3, TSX, Vite), served by Core
 apps/cli                ⌨️ the jerry command line
+apps/desktop            🪟 JERRY Desktop: Tauri app with tray, notifications and the dashboard (optional)
 packages/contracts      📐 shared schemas and constants (Zod), the emoji vocabulary
 packages/database       💾 SQLite (node:sqlite + Kysely): schema, migrations, backup and restore
 packages/platform       🧰 JERRY_HOME, Core client, Claude Code discovery, safe file writes
@@ -174,8 +232,9 @@ scripts/                🛠️ build, release, live Claude Code check, hook ben
 
 ### 🗄️ Where JERRY keeps its data
 
-Everything lives in `JERRY_HOME` (on Windows `%LOCALAPPDATA%\JERRY`): the database, logs, backups and project
-profiles. Nothing is written into your repositories, `.git` included.
+Everything lives in `JERRY_HOME` (on Windows `%LOCALAPPDATA%\JERRY`): the database, logs, backups, project
+profiles and the list of your projects. Nothing is written into your repositories, `.git` included. `jerry data`
+shows what is there.
 
 ---
 
@@ -185,7 +244,7 @@ profiles. Nothing is written into your repositories, `.git` included.
 corepack pnpm install
 corepack pnpm build          # dist/plugin, dist/core, dist/cli
 corepack pnpm check          # typecheck + all tests
-corepack pnpm release        # dist/release/jerry-<version>.tar.gz with checksums
+corepack pnpm release        # dist/release/jerry-<version>.tar.gz with checksums (--with-desktop adds the app)
 node dist/cli/jerry.mjs --help
 ```
 

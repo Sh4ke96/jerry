@@ -1,6 +1,6 @@
 import type { StoredEvent, TaskWithDecision, WorkflowState } from '@jerry/contracts';
 import { isTerminal, WORK_STATES } from '@jerry/workflow';
-import type { Tone } from './components/Badge';
+import type { Tone } from './components/StatusBadge';
 
 /** States in which the next step is the user's (FINAL_REPORT remains only when Core refused DONE). */
 const WAITING_FOR_USER: ReadonlySet<WorkflowState> = new Set(['WAIT_PLAN_APPROVAL', 'WAIT_IMPLEMENTATION_ACCEPTANCE', 'WAIT_REVIEW_FIX_APPROVAL', 'FINAL_REPORT']);
@@ -68,4 +68,17 @@ export function eventReason(event: StoredEvent): string {
 
 export function shortPath(path: string, max = 64): string {
   return path.length <= max ? path : `…${path.slice(path.length - max + 1)}`;
+}
+
+/** A size in bytes as people read it (1024-based, like file managers on Windows). */
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
 }

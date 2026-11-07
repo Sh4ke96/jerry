@@ -95,7 +95,8 @@ export class ProfileService {
       const scan = scanRepository(repoRoot, now);
       const { root: _root, ...rest } = scan;
       const profile: ProjectProfile = { ...rest, ...resolveCommands(scan, this.isOnPath), formatVersion: PROJECT_PROFILE_FORMAT, repoRoot, checkedAt: now.toISOString(), stale: [] };
-      await this.store.saveProfile(repoRoot, profile, fingerprintScan(repoRoot, scan), now);
+      // Only projects are recorded; elsewhere the scan is answered and forgotten.
+      if (this.store.isMonitored(repoRoot)) await this.store.saveProfile(repoRoot, profile, fingerprintScan(repoRoot, scan), now);
       return profile;
     })().finally(() => this.inFlight.delete(repoRoot));
     this.inFlight.set(repoRoot, work);

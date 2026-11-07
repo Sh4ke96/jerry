@@ -1,6 +1,6 @@
 import type { PlanDocument } from '@jerry/contracts';
 
-/** A complete plan document as Claude would submit it through jerry_submit_plan. */
+/** A complete plan document as Claude would submit it through submit_plan. */
 export function samplePlan(repoRoot: string, scope: string[] = ['src/greeting/**', 'tests/greeting/**']): PlanDocument {
   return {
     goal: 'Add a greeting helper that formats a personalised welcome message.',

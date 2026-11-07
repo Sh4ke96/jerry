@@ -2,8 +2,10 @@ import type { AgentRun, AnalysisReportRecord } from '@jerry/contracts';
 import { EMOJI } from '@jerry/contracts/emoji';
 import { defineComponent, type PropType } from 'vue';
 import { formatTime } from '../format';
-import { Badge, type Tone } from './Badge';
+import { ATTENTION, LIST } from '../lib/classes';
 import { Emoji } from './Emoji';
+import { Section } from './Section';
+import { StatusBadge, type Tone } from './StatusBadge';
 
 const ROLE_LABEL: Record<string, string> = {
   'jerry-architecture-analyst': 'Architecture and contracts',
@@ -25,14 +27,10 @@ export const AnalysisReports = defineComponent({
       const gaps = props.runs.filter((run) => run.status === 'no-report' || run.status === 'timed-out');
       if (props.analyses.length === 0 && gaps.length === 0) return null;
       return (
-        <details class="plan-section analysis" open>
-          <summary>
-            <Emoji symbol={EMOJI.analysis} />
-            Analysis ({props.analyses.length} report(s))
-          </summary>
-          <div class="plan-section__body">
+        <Section class="analysis" title={`Analysis (${props.analyses.length} report(s))`} emoji={EMOJI.analysis} defaultOpen>
+          <div class="grid gap-4">
             {gaps.map((run) => (
-              <p key={run.agentId} class="attention">
+              <p key={run.agentId} class={ATTENTION}>
                 <Emoji symbol={EMOJI.warning} />
                 {run.agentType ?? run.agentId}: {run.status === 'no-report' ? 'stopped without a report' : 'no result after 30 minutes'} (a gap, not a result)
               </p>
@@ -41,41 +39,41 @@ export const AnalysisReports = defineComponent({
               const { report, citations } = analysis;
               const problems = [...citations.missingFiles.map((file) => `${file} (missing)`), ...citations.outOfRange.map((entry) => `${entry} (beyond end of file)`)];
               return (
-                <section key={analysis.id} class="analysis__report">
-                  <h4>
-                    <Emoji symbol={EMOJI.agent} />
-                    {ROLE_LABEL[report.role] ?? report.role} <Badge tone={CONFIDENCE_TONE[report.confidence.level] ?? 'neutral'}>{report.confidence.level} confidence</Badge>{' '}
-                    <span class="muted small">
+                <section key={analysis.id} class="grid gap-2 rounded-lg border p-4">
+                  <h4 class="flex flex-wrap items-center gap-x-2 gap-y-1 font-medium">
+                    <Emoji symbol={EMOJI.agent} class="mr-0" />
+                    {ROLE_LABEL[report.role] ?? report.role} <StatusBadge tone={CONFIDENCE_TONE[report.confidence.level] ?? 'neutral'}>{report.confidence.level} confidence</StatusBadge>{' '}
+                    <span class="text-muted-foreground text-xs font-normal">
                       #{analysis.id} · {formatTime(analysis.createdAt)}
                     </span>
                   </h4>
-                  <p class="muted small">
+                  <p class="text-muted-foreground text-xs">
                     {report.filesRead.length} file(s) read · citations {citations.checked - problems.length}/{citations.checked} verified
                   </p>
                   {problems.length > 0 && (
-                    <p class="attention small">
+                    <p class={[ATTENTION, 'text-xs']}>
                       <Emoji symbol={EMOJI.warning} />
                       Unverified citations: {problems.join(', ')}
                     </p>
                   )}
-                  <ul class="list">
+                  <ul class={LIST}>
                     {report.observations.map((observation, index) => (
                       <li key={`o${index}`}>
-                        {observation.statement} <span class="muted small">{observation.evidence.join(', ')}</span>
+                        {observation.statement} <span class="text-muted-foreground font-mono text-xs">{observation.evidence.join(', ')}</span>
                       </li>
                     ))}
                     {report.risks.map((risk, index) => (
                       <li key={`r${index}`}>
-                        <Badge tone={SEVERITY_TONE[risk.severity] ?? 'neutral'}>{risk.severity}</Badge> {risk.risk}
+                        <StatusBadge tone={SEVERITY_TONE[risk.severity] ?? 'neutral'}>{risk.severity}</StatusBadge> {risk.risk}
                       </li>
                     ))}
                   </ul>
-                  {report.gaps.length > 0 && <p class="muted small">Gaps: {report.gaps.join('; ')}</p>}
+                  {report.gaps.length > 0 && <p class="text-muted-foreground text-xs">Gaps: {report.gaps.join('; ')}</p>}
                 </section>
               );
             })}
           </div>
-        </details>
+        </Section>
       );
     };
   },

@@ -108,6 +108,42 @@ describe('openJerryDatabase', () => {
     await upgraded.close();
   });
 
+  it('makes every repository with an open task a project (0018); finished-only and excluded ones are not', async () => {
+    const where = location();
+    const before = Object.fromEntries(Object.entries(MIGRATIONS).filter(([name]) => name < '0018'));
+    const old = await openJerryDatabase({ ...where, migrations: before });
+    const at = '2026-01-01T00:00:00.000Z';
+    const repos: Array<[string, string, string | null]> = [
+      ['repo_open', 'D:/Work/open', null],
+      ['repo_done', 'D:/Work/done', null],
+      ['repo_excluded', 'D:/Work/excluded', at],
+      ['repo_empty', 'D:/Work/empty', null],
+    ];
+    for (const [repoId, root, excludedAt] of repos) {
+      await sql`INSERT INTO repositories (repo_id, root_path, excluded_at, created_at, updated_at) VALUES (${repoId}, ${root}, ${excludedAt}, ${at}, ${at})`.execute(old.db);
+    }
+    const tasks: Array<[string, string, string]> = [
+      ['JRY-0001', 'repo_open', 'IMPLEMENTATION'],
+      ['JRY-0002', 'repo_open', 'DONE'],
+      ['JRY-0003', 'repo_open', 'PAUSED'],
+      ['JRY-0004', 'repo_done', 'DONE'],
+      ['JRY-0005', 'repo_done', 'CANCELLED'],
+      ['JRY-0006', 'repo_excluded', 'WAIT_PLAN_APPROVAL'],
+    ];
+    for (const [taskId, repoId, state] of tasks) {
+      await sql`INSERT INTO tasks (task_id, title, repo_id, current_plan_version, state, created_at, updated_at) VALUES (${taskId}, 't', ${repoId}, 1, ${state}, ${at}, ${at})`.execute(old.db);
+    }
+    await old.close();
+
+    const upgraded = await openJerryDatabase(where);
+    expect(upgraded.migration).toBe(LATEST);
+    const projects = await upgraded.db.selectFrom('projects').selectAll().execute();
+    expect(projects).toEqual([{ repo_root: 'D:/Work/open', added_at: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/), added_by: 'migration', note: expect.any(String) }]);
+    // The upgrade itself was backed up first.
+    expect(listBackups(where.backupsDir)).toHaveLength(1);
+    await upgraded.close();
+  });
+
   it('distinguishes reading and writing statements through the node:sqlite adapter', async () => {
     const database = await openJerryDatabase(location());
     const inserted = await database.db

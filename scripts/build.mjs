@@ -7,13 +7,27 @@
 import vueJsx from '@vitejs/plugin-vue-jsx';
 import { build } from 'esbuild';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { build as viteBuild } from 'vite';
-import { writeIcons } from './icons.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const dist = path.join(root, 'dist');
+
+// Tailwind CSS is a build dependency of the dashboard package, so it is resolved from there.
+const dashboardRequire = createRequire(path.join(root, 'apps/dashboard/package.json'));
+const { default: tailwindcss } = await import(pathToFileURL(dashboardRequire.resolve('@tailwindcss/vite')).href);
+
+/** The JERRY Desktop app icons (the "J" logo) double as the dashboard's web app icons. */
+const DESKTOP_ICONS = { '32x32.png': 'icon-32.png', '128x128@2x.png': 'icon-256.png', 'icon.png': 'icon-512.png' };
+
+function writeIcons(directory) {
+  fs.mkdirSync(directory, { recursive: true });
+  for (const [source, target] of Object.entries(DESKTOP_ICONS)) {
+    fs.copyFileSync(path.join(root, 'apps/desktop/src-tauri/icons', source), path.join(directory, target));
+  }
+}
 
 fs.rmSync(dist, { recursive: true, force: true });
 fs.cpSync(path.join(root, 'claude-plugin'), path.join(dist, 'plugin'), { recursive: true });
@@ -51,14 +65,15 @@ if (forbidden.length > 0) {
 }
 
 // Dashboard: Vue components compiled ahead of time (no runtime template compiler, so the page
-// runs under a CSP without 'unsafe-eval'); no inlined assets, so the CSP needs no data: scripts.
+// runs under a CSP without 'unsafe-eval'); no inlined assets, so the CSP needs no data: scripts or
+// fonts. Tailwind CSS compiles the styles; the Geist fonts are bundled as files.
 const dashboardDir = path.join(dist, 'core', 'dashboard');
 await viteBuild({
   configFile: false,
   root: path.join(root, 'apps/dashboard'),
   base: '/',
   logLevel: 'warn',
-  plugins: [vueJsx()],
+  plugins: [vueJsx(), tailwindcss()],
   build: { outDir: dashboardDir, emptyOutDir: true, sourcemap: false, assetsInlineLimit: 0, reportCompressedSize: false },
 });
 writeIcons(path.join(dashboardDir, 'icons'));

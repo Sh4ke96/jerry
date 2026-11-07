@@ -49,7 +49,7 @@ async function main(): Promise<void> {
 
   let store: StateStore;
   try {
-    store = await StateStore.open({ databaseFile: paths.databaseFile, backupsDir: paths.backupsDir, legacyStateFile: paths.stateFile });
+    store = await StateStore.open({ databaseFile: paths.databaseFile, backupsDir: paths.backupsDir, legacyStateFile: paths.stateFile, projectsFile: paths.projectsFile });
   } catch (error) {
     releaseLock();
     throw error;
@@ -65,9 +65,11 @@ async function main(): Promise<void> {
   // The quiet period before quality checks; tests shorten it.
   const debounce = Number(process.env['JERRY_QUALITY_DEBOUNCE_MS']);
   const quality = new QualityScheduler({ store, git: store.gitReader, ...(Number.isInteger(debounce) && debounce >= 0 && debounce <= 60_000 ? { debounceMs: debounce } : {}) });
+  const retentionDays = resolveRetentionDays();
   const createApp = (): FastifyInstance =>
     buildCoreApp({
       quality,
+      retentionDays,
       token,
       store,
       jerryHome: home,
@@ -83,7 +85,6 @@ async function main(): Promise<void> {
 
   // Background upkeep: events spooled while Core was down, the pre-database gate log, retention.
   const evaluate = gateEvaluator(store, guardedRoots);
-  const retentionDays = resolveRetentionDays();
   const upkeep = async (): Promise<void> => {
     try {
       const imported = await importLegacyGateLog(paths.gateLogFile, store, new Date());

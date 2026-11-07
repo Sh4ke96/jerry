@@ -111,10 +111,10 @@ describe('Core API access control', () => {
     const page = await asBrowser(auth, 'GET', '/', { origin: null });
     expect(page.statusCode).toBe(200);
     expect(page.body).toContain('<div id="app"></div>');
-    const csp = String(page.headers['content-security-policy']);
-    expect(csp).toContain("script-src 'self'");
-    expect(csp).toContain("frame-ancestors 'none'");
-    expect(csp).not.toMatch(/unsafe-(inline|eval)/);
+    // Only the dashboard's own files: scripts, styles (no inline styles), bundled fonts, images and API.
+    expect(page.headers['content-security-policy']).toBe(
+      "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+    );
     expect(page.headers['x-frame-options']).toBe('DENY');
     expect(page.body).not.toContain(TOKEN);
   });
@@ -128,7 +128,7 @@ describe('Core API access control', () => {
     expect(asset.headers['content-type']).toMatch(/javascript/);
     expect(asset.body).not.toMatch(/new Function|\beval\(/);
 
-    for (const url of ['/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png', '/icons/icon.svg']) {
+    for (const url of ['/manifest.webmanifest', '/icons/icon-32.png', '/icons/icon-256.png', '/icons/icon-512.png', '/icons/icon.svg']) {
       expect(status(await app.inject({ method: 'GET', url, headers: { host: HOST } })), url).toBe(200);
     }
   });
@@ -179,6 +179,62 @@ describe('Core API access control', () => {
     expect(JSON.parse((await control({ event: 'task.cancelled', confirmTaskId: taskId })).body)).toMatchObject({ state: 'CANCELLED' });
     const history = JSON.parse((await asBrowser(auth, 'GET', `/api/v1/tasks/${taskId}/transitions`, { origin: null })).body) as Array<{ event: string }>;
     expect(history.map((step) => step.event)).toEqual(['plan.submitted', 'plan.approved', 'task.paused', 'task.resumed', 'task.cancelled']);
+  });
+
+  it('adds and removes projects and deletes data from the dashboard only with CSRF, the origin and the typed confirmation', async () => {
+    // Outside JERRY's data directory (base), which can never be a project.
+    const outside = tempDir('api-auth-projects');
+    const project = createFixtureRepo(path.join(outside, 'project'));
+    const forgotten = createFixtureRepo(path.join(outside, 'forgotten'));
+    const auth = await signIn();
+    const post = (url: string, payload: Record<string, unknown>, who: { cookie: string; csrf?: string } = auth, origin?: string | null) => asBrowser(who, 'POST', url, { payload, ...(origin === undefined ? {} : { origin }) });
+    try {
+      // Without CSRF or from another origin: refused before the handler.
+      for (const [url, payload] of [
+        ['/api/v1/projects', { path: project, confirmation: project }],
+        ['/api/v1/projects/remove', { path: project, confirmation: project }],
+        ['/api/v1/data/prune/preview', { eventsOlderThanDays: 3650 }],
+        ['/api/v1/data/prune', { eventsOlderThanDays: 3650, confirmation: 'delete' }],
+        ['/api/v1/data/forget/preview', { path: forgotten }],
+        ['/api/v1/data/forget', { path: forgotten, confirmation: forgotten }],
+      ] as const) {
+        expect(status(await post(url, payload, { cookie: auth.cookie })), `${url} without CSRF`).toBe(403);
+        expect(status(await post(url, payload, auth, 'https://evil.example')), `${url} cross-origin`).toBe(403);
+      }
+      expect(status(await post('/api/v1/projects', { path: project, confirmation: path.join(outside, 'other') }))).toBe(400);
+
+      // Adding needs the repository root typed.
+      expect(status(await post('/api/v1/projects', { path: project }))).toBe(400);
+      const added = await post('/api/v1/projects', { path: project, confirmation: project });
+      expect(added.statusCode).toBe(201);
+      expect(added.json()).toMatchObject({ added: true, project: { addedBy: 'dashboard' } });
+      expect((await asBrowser(auth, 'GET', '/api/v1/projects', { origin: null })).json()).toEqual(expect.arrayContaining([expect.objectContaining({ addedBy: 'dashboard', openTasks: 0 })]));
+
+      // Removing too; open tasks stay and are named in the warning.
+      const open = (await store.createTask({ repoRoot: project, title: 'Still open', scope: ['src/**'] }, new Date())).taskId;
+      expect(status(await post('/api/v1/projects/remove', { path: project }))).toBe(400);
+      const removed = await post('/api/v1/projects/remove', { path: project, confirmation: project });
+      expect(removed.statusCode).toBe(200);
+      expect(removed.json()).toMatchObject({ removed: true, openTasks: [open] });
+      expect(String(removed.json<{ warning: string }>().warning)).toContain(open);
+
+      // Deleting old data needs the word "delete"; the preview needs nothing typed.
+      const options = { eventsOlderThanDays: 3650 };
+      expect(status(await post('/api/v1/data/prune/preview', options))).toBe(200);
+      expect(status(await post('/api/v1/data/prune', options))).toBe(400);
+      expect(status(await post('/api/v1/data/prune', { ...options, confirmation: 'Delete it' }))).toBe(400);
+      const pruned = await post('/api/v1/data/prune', { ...options, confirmation: 'delete' });
+      expect(pruned.statusCode).toBe(200);
+      expect(pruned.json()).toHaveProperty('backupFile');
+
+      // Forgetting needs the repository root typed, and is refused while tasks are open.
+      expect((await post('/api/v1/data/forget/preview', { path: project })).json()).toMatchObject({ openTasks: [open] });
+      expect(status(await post('/api/v1/data/forget', { path: project, confirmation: project }))).toBe(409);
+      expect(status(await post('/api/v1/data/forget', { path: forgotten }))).toBe(400);
+      expect(status(await post('/api/v1/data/forget', { path: forgotten, confirmation: forgotten }))).toBe(200);
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   it('keeps hook and lifecycle endpoints away from the browser', async () => {

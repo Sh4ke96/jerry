@@ -8,12 +8,12 @@
   "fixture": { "files": { "src/app.ts": "export const answer = 42;\n" } },
   "setup": { "task": { "title": "Save helper", "scope": ["src/**"] } },
   "session": {
-    "prompt": "Do these steps in order.\nStep 1: use the Write tool to create src/save.ts with exactly these three lines:\nexport async function save(write: () => Promise<void>): Promise<void> {\n  await write().catch(() => {}); // TODO\n}\nStep 2: use Bash to run exactly: node -e \"setTimeout(() => {}, 2500)\"\nStep 3: call the jerry_list_findings tool, then fix every finding it lists in src/save.ts with the Edit tool.\nStep 4: tell me which findings you fixed.",
-    "allowedTools": ["Read", "Write", "Edit", "Bash(node -e:*)", "mcp__plugin_jerry_jerry__jerry_list_findings"]
+    "prompt": "Do these steps in order.\nStep 1: use the Write tool to create src/save.ts with exactly these three lines:\nexport async function save(write: () => Promise<void>): Promise<void> {\n  await write().catch(() => {}); // TODO\n}\nStep 2: use Bash to run exactly: node -e \"setTimeout(() => {}, 2500)\"\nStep 3: call the list_findings tool, then fix every finding it lists in src/save.ts with the Edit tool.\nStep 4: tell me which findings you fixed.",
+    "allowedTools": ["Read", "Write", "Edit", "Bash(node -e:*)", "mcp__plugin_jerry_guardian__list_findings"]
   },
   "graders": [
     { "type": "file", "path": "src/save.ts", "notContains": ".catch(() => {})" },
-    { "type": "tool-used", "tool": "jerry_list_findings" },
+    { "type": "tool-used", "tool": "list_findings" },
     { "type": "git-unchanged" },
     { "type": "budget", "maxCostUsd": 0.8 }
   ]

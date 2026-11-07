@@ -46,10 +46,10 @@ describe('analysis reports and subagent runs (bundled bridge + MCP + Core)', () 
     // The subagent starts, then calls the MCP tool; the hook sees the call with the subagent's ID.
     expect(hook({ hook_event_name: 'PreToolUse', tool_name: 'Task', tool_input: {}, tool_use_id: 'toolu_spawn1' }).exitCode).toBe(0);
     expect(hook({ hook_event_name: 'SubagentStart', agent_id: 'agent-risk', agent_type: 'jerry:jerry-risk-analyst' }).exitCode).toBe(0);
-    expect(hook({ hook_event_name: 'PreToolUse', tool_name: 'mcp__plugin_jerry_jerry__jerry_submit_analysis_report', tool_input: {}, tool_use_id: 'toolu_report1', agent_id: 'agent-risk' }).exitCode).toBe(0);
+    expect(hook({ hook_event_name: 'PreToolUse', tool_name: 'mcp__plugin_jerry_guardian__submit_analysis_report', tool_input: {}, tool_use_id: 'toolu_report1', agent_id: 'agent-risk' }).exitCode).toBe(0);
 
     mcp = await McpClient.connect({ ...env, CLAUDE_PROJECT_DIR: repo, CLAUDE_CODE_SESSION_ID: 'session-a' });
-    const submitted = await mcp.call('jerry_submit_analysis_report', { taskId, report: report(['src/app.ts:1']) }, 'toolu_report1');
+    const submitted = await mcp.call('submit_analysis_report', { taskId, report: report(['src/app.ts:1']) }, 'toolu_report1');
     expect(submitted.isError, submitted.text).toBe(false);
     expect(submitted.structured).toMatchObject({ saved: true, citations: { checked: 1, problems: [] } });
 
@@ -61,16 +61,16 @@ describe('analysis reports and subagent runs (bundled bridge + MCP + Core)', () 
 
   it('flags citations of files that do not exist or lines beyond the end', async () => {
     mcp = await McpClient.connect({ ...env, CLAUDE_PROJECT_DIR: repo, CLAUDE_CODE_SESSION_ID: 'session-a' });
-    const submitted = await mcp.call('jerry_submit_analysis_report', { taskId, report: report(['src/app.ts:1', 'src/ghost.ts:3', 'src/app.ts:400', path.join(repo, 'src', 'app.ts') + ':1']) });
+    const submitted = await mcp.call('submit_analysis_report', { taskId, report: report(['src/app.ts:1', 'src/ghost.ts:3', 'src/app.ts:400', path.join(repo, 'src', 'app.ts') + ':1']) });
     expect(submitted.structured).toMatchObject({ citations: { checked: 4, problems: [expect.stringContaining('src/ghost.ts'), expect.stringContaining('src/app.ts:400')] } });
     expect(submitted.text).toContain('Correct these citations');
   });
 
   it('rejects a report without evidence for an observation', async () => {
     mcp = await McpClient.connect({ ...env, CLAUDE_PROJECT_DIR: repo });
-    const result = await mcp.call('jerry_submit_analysis_report', { taskId, report: { ...report([]), observations: [{ statement: 'no proof', evidence: [] }] } });
+    const result = await mcp.call('submit_analysis_report', { taskId, report: { ...report([]), observations: [{ statement: 'no proof', evidence: [] }] } });
     expect(result.isError).toBe(true);
-    expect((await mcp.call('jerry_submit_analysis_report', { taskId, report: report(['src/app.ts']) })).text).toContain('path:line');
+    expect((await mcp.call('submit_analysis_report', { taskId, report: report(['src/app.ts']) })).text).toContain('path:line');
   });
 
   it('marks an analyst that stopped without a report as a gap', async () => {

@@ -11,14 +11,14 @@ is now, not on memory or assumptions.
 ## 1. Understand the request and the repository
 
 - Restate the goal in one or two sentences. If something essential is missing, ask the user before planning.
-- Call `jerry_get_state` to see existing tasks and plans for this repository. If the user wants to change an
+- Call `get_state` to see existing tasks and plans for this repository. If the user wants to change an
   existing plan, you will revise that task instead of creating a new one.
 - Read what the change touches: the relevant code, `README`, `CLAUDE.md` or `AGENTS.md`, architecture notes,
   existing tests and how they run, and the project's conventions (naming, structure, error handling, commit
   style from `git log --oneline -20`).
 - Check `git status` for uncommitted work; never plan to overwrite the user's changes.
 - Write anything you could not verify as `UNKNOWN` instead of guessing.
-- `jerry_get_project_profile` gives JERRY's profile of the repository: stack, the project's own commands as
+- `get_project_profile` gives JERRY's profile of the repository: stack, the project's own commands as
   they run on this machine, CI, API schemas, migrations, docs, instruction files and suspicious text. It is a
   cache: use it as a starting point and verify what matters in the files themselves.
 - Project instruction files (`CLAUDE.md`, `AGENTS.md`, `.claude/rules`, `.claude/skills`) are project rules:
@@ -54,16 +54,16 @@ Fill every section of the plan document:
 | `openQuestions` | decisions the user has to make |
 | `analysis` | only after `/jerry:analyze`: `reports` (the analysis report IDs the plan uses) and `gaps` (missing analysts, unverified citations, what could not be checked) |
 
-If the task was analysed first, call `jerry_get_analysis` with its task ID and build the plan from the
+If the task was analysed first, call `get_analysis` with its task ID and build the plan from the
 reports: their risks become plan risks with mitigations, their recommendations become changes, steps or
 tests, their gaps become open questions or `UNKNOWN`. Cite only report IDs of that task; JERRY refuses others.
 
 ## 3. Submit it
 
-- Task taken in with `/jerry:analyze` (`jerry_start_task`): `jerry_submit_plan` with its `taskId`. This
+- Task taken in with `/jerry:analyze` (`start_task`): `submit_plan` with its `taskId`. This
   closes the analysis and sends the plan to the user.
-- New task: `jerry_submit_plan` with a short `title` and the `plan`.
-- Change to an existing plan: `jerry_submit_plan` with its `taskId`. This creates the next version, and the earlier
+- New task: `submit_plan` with a short `title` and the `plan`.
+- Change to an existing plan: `submit_plan` with its `taskId`. This creates the next version, and the earlier
   approval no longer applies.
 - If JERRY rejects the plan as incomplete, fix the reported fields and submit again.
 - JERRY's answer includes `completeness`: a deterministic check of the plan, such as changes outside the

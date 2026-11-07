@@ -13,7 +13,7 @@ message each.
 - `git status` and `git diff --stat`; then `git diff` (and `git diff --staged` if something is staged) for the
   files that matter. Never run `git add`, `git commit`, `git stash` or anything else that changes Git state;
   JERRY blocks it anyway.
-- If the changes belong to a JERRY task, `jerry_get_state` gives the task and its plan; an implementation report
+- If the changes belong to a JERRY task, `get_state` gives the task and its plan; an implementation report
   may already propose commit subjects. Use them if they still match the diff.
 
 ## 2. Find the convention

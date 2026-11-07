@@ -7,10 +7,10 @@
   "fixture": { "files": { "src/app.ts": "export const answer = 42;\n", "package.json": "{\n  \"name\": \"fixture\",\n  \"private\": true,\n  \"scripts\": { \"test\": \"node --test\" }\n}\n" } },
   "session": {
     "prompt": "Which command runs this project's tests on this machine? Answer from JERRY's project profile; do not run anything.",
-    "allowedTools": ["mcp__plugin_jerry_jerry__jerry_get_project_profile"]
+    "allowedTools": ["mcp__plugin_jerry_guardian__get_project_profile"]
   },
   "graders": [
-    { "type": "tool-used", "tool": "jerry_get_project_profile" },
+    { "type": "tool-used", "tool": "get_project_profile" },
     { "type": "output-matches", "pattern": "npm (run )?test|node --test" },
     { "type": "budget", "maxCostUsd": 0.3 }
   ]

@@ -9,6 +9,13 @@ import {
   JERRY_VERSION,
   planReviseRequestSchema,
   repositoryExclusionRequestSchema,
+  forgetRequestSchema,
+  projectAddRequestSchema,
+  projectRemoveRequestSchema,
+  pruneRequestSchema,
+  type ProjectAddResult,
+  type ProjectRemoveResult,
+  type ProjectSummary,
   sessionRegistrationSchema,
   taskCreateRequestSchema,
   taskIntakeRequestSchema,
@@ -44,12 +51,13 @@ import {
   type TaskSummary,
 } from '@jerry/contracts';
 import { EMOJI, SEVERITY_EMOJI, decorate } from '@jerry/contracts/emoji';
-import { absolutePath, approvedPlansForRepo, comparablePath, evaluateGate, gradePlan, isRepoExcluded, relativeInside } from '@jerry/policy-engine';
+import { absolutePath, approvedPlansForRepo, comparablePath, evaluateGate, gradePlan, isComparableInside, relativeInside } from '@jerry/policy-engine';
 import { isTerminal, WORK_STATES } from '@jerry/workflow';
 import { buildEventEnvelope } from '@jerry/trace-engine';
 import type { z } from 'zod';
 import { BrowserSessions, clearedSessionCookie, CSRF_HEADER, readCookie, safeEqual, SESSION_COOKIE, sessionCookie, type BrowserSession } from './auth.js';
-import { evaluatePending, withRepoRoot } from './events.js';
+import { evaluatePending, isMonitoredEvent, withRepoRoot } from './events.js';
+import { dataUsage, forget, previewForget, previewPrune, prune, type DataContext } from './data-maintenance.js';
 import { checkCitations } from './citations.js';
 import { ProfileService } from './profiles.js';
 import { QualityScheduler } from './quality-scheduler.js';
@@ -97,7 +105,11 @@ export interface CoreAppOptions {
   profiles?: ProfileService;
   /** Continuous quality checks; tests may pass one with a short debounce. */
   quality?: QualityScheduler;
+  /** Days events and sessions are kept (shown in the data usage). */
+  retentionDays?: number;
 }
+
+export const DEFAULT_RETENTION_DAYS = 90;
 
 export class HttpError extends Error {
   constructor(
@@ -119,7 +131,7 @@ export function gateEvaluator(store: StateStore, protectedRoots: readonly string
       realPath: realPathOfNearestExisting,
       findRepoRoot: findGitRoot,
       approvedPlans: (repoRoot) => approvedPlansForRepo(snapshot, repoRoot, process.platform),
-      isExcluded: (repoRoot) => isRepoExcluded(snapshot, repoRoot, process.platform),
+      isMonitored: (repoRoot) => store.isMonitored(repoRoot),
       isUserChangedFile: (taskId, relativePath) => store.isUserChangedFile(taskId, relativePath),
       activeSubagents: (sessionId) => store.activeSubagents(sessionId),
       implementerCheck: (taskId, agentId, relativePath) => store.implementerCheck(taskId, agentId, relativePath),
@@ -263,6 +275,9 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     const now = new Date();
     const gateRequest = parse(gateCheckRequestSchema, request.body);
     const decision = evaluate(gateRequest);
+    // Outside the projects the user added only the hard rules apply, and nothing is recorded. The
+    // bridge does not ask Core there; this keeps it so for any other caller.
+    if (!store.isMonitored(relevantPath(gateRequest.toolInput, gateRequest.cwd))) return decision;
     const event = buildEventEnvelope(
       {
         hook_event_name: 'PreToolUse',
@@ -301,7 +316,8 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
 
   app.post('/api/v1/events', { config: TOKEN_ONLY }, async (request, reply) => {
     const body = parse(eventIngestRequestSchema, request.body);
-    const events = body.events.map((event) => withRepoRoot(evaluatePending(event, evaluate)));
+    // Events from outside the projects are not stored.
+    const events = body.events.filter((event) => isMonitoredEvent(store, event)).map((event) => withRepoRoot(evaluatePending(event, evaluate)));
     const inserted = await store.recordEvents(events, new Date(), false);
     // Edits feed the continuous quality checks; they run later, after a quiet period.
     for (const event of events) quality.observe(event);
@@ -337,9 +353,11 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     const repoRoot = findGitRoot(realPathOfNearestExisting(path));
     const snapshot = store.snapshot();
     const tasks = repoRoot === null ? [] : snapshot.tasks.filter((task) => sameRepo(task.repoRoot, repoRoot));
+    const monitored = repoRoot !== null && store.isMonitored(repoRoot);
     const state: RepositoryState = {
       repoRoot,
-      excluded: repoRoot !== null && isRepoExcluded(snapshot, repoRoot, process.platform),
+      excluded: repoRoot !== null && !monitored,
+      monitored,
       tasks: await summarize(store, tasks),
       sessionTasks: sessionId === null ? [] : (await store.tasksOfSession(sessionId)).filter((taskId) => tasks.some((task) => task.taskId === taskId)),
     };
@@ -360,28 +378,34 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   app.post('/api/v1/sessions', { config: TOKEN_ONLY }, async (request) => {
     const now = new Date();
     const registration = parse(sessionRegistrationSchema, request.body);
+    const repoRoot = findGitRoot(realPathOfNearestExisting(registration.cwd));
+    // A session outside the projects is neither registered nor recorded; only hard rules apply there.
+    if (!store.isMonitored(realPathOfNearestExisting(registration.cwd))) {
+      const response: SessionRegistrationResponse = { registered: true, repoRoot, excluded: true, monitored: false, approvedPlans: [], openTasks: [] };
+      return response;
+    }
     await store.registerSession(registration, now);
     const sessionEvent = buildEventEnvelope(
       { hook_event_name: 'SessionStart', session_id: registration.sessionId, cwd: registration.cwd, source: registration.source },
       { timestamp: now },
     );
     if (sessionEvent !== null) await store.recordEvents([sessionEvent], now, false);
-    const repoRoot = findGitRoot(realPathOfNearestExisting(registration.cwd));
     const snapshot = store.snapshot();
-    const excluded = repoRoot !== null && isRepoExcluded(snapshot, repoRoot, process.platform);
     const approvedPlans = repoRoot === null ? [] : approvedPlansForRepo(snapshot, repoRoot, process.platform);
     const response: SessionRegistrationResponse = {
       registered: true,
       repoRoot,
-      excluded,
+      excluded: false,
+      monitored: true,
       approvedPlans: approvedPlans.map((plan) => ({ taskId: plan.taskId, planVersion: plan.planVersion, scope: [...plan.scope] })),
-      openTasks: repoRoot === null || excluded ? [] : await openTasksFor(store, snapshot, repoRoot, registration.sessionId, new Set(approvedPlans.map((plan) => plan.taskId))),
+      openTasks: repoRoot === null ? [] : await openTasksFor(store, snapshot, repoRoot, registration.sessionId, new Set(approvedPlans.map((plan) => plan.taskId))),
     };
     // Refresh the project profile in the background, so it is ready when Claude asks for it.
-    if (repoRoot !== null && !excluded) setImmediate(() => void profiles.get(repoRoot, 'auto').catch(() => undefined));
+    if (repoRoot !== null) setImmediate(() => void profiles.get(repoRoot, 'auto').catch(() => undefined));
     return response;
   });
 
+  /** The exclusions recorded before projects existed; monitoring follows the projects now. */
   app.get('/api/v1/repositories/exclusions', { config: TOKEN_OR_SESSION }, async () => store.snapshot().excludedRepos);
 
   /** The project profile of the repository containing a path; rescanned when stale. */
@@ -409,11 +433,16 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   app.get('/api/v1/repositories', { config: TOKEN_OR_SESSION }, async () => {
     const snapshot = store.snapshot();
     const known = await store.knownRepositories();
+    for (const project of store.projects()) {
+      if (!known.some((repoRoot) => sameRepo(repoRoot, project.repoRoot))) known.push(project.repoRoot);
+    }
     const summaries: RepositorySummary[] = [];
-    for (const repoRoot of known) {
+    for (const repoRoot of known.sort()) {
+      const project = store.isMonitored(repoRoot);
       summaries.push({
         repoRoot,
-        excluded: isRepoExcluded(snapshot, repoRoot, process.platform),
+        excluded: !project,
+        project,
         openTasks: snapshot.tasks.filter((task) => sameRepo(task.repoRoot, repoRoot) && !isTerminal(task.state)).length,
         profile: await profiles.get(repoRoot, 'cached'),
       });
@@ -424,6 +453,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   /** Links between known repositories from their cached profiles. */
   app.get('/api/v1/workspace/graph', { config: TOKEN_OR_SESSION }, async () => profiles.graph(await store.knownRepositories()));
 
+  /** The former exclusion switch: excluding removes the project, including adds it. */
   app.post('/api/v1/repositories/exclusions', { config: TOKEN_OR_SESSION }, async (request) => {
     const body = parse(repositoryExclusionRequestSchema, request.body);
     const fromDashboard = request.client?.kind === 'session';
@@ -432,8 +462,107 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     }
     const repoRoot = findGitRoot(realPathOfNearestExisting(body.repoPath));
     if (repoRoot === null) throw new HttpError(400, `${body.repoPath} is not inside a Git repository`);
-    await store.setExcluded(repoRoot, body.excluded, new Date(), fromDashboard ? 'dashboard' : 'cli');
+    const channel = fromDashboard ? 'dashboard' : 'cli';
+    if (body.excluded) {
+      await store.removeProject(repoRoot, new Date(), channel);
+      // Kept in the exclusion list the dashboard still shows.
+      await store.setExcluded(repoRoot, true, new Date(), channel);
+    } else {
+      await store.addProject(checkedProjectRoot(repoRoot, options.jerryHome), new Date(), channel);
+    }
     return { repoRoot, excluded: body.excluded };
+  });
+
+  // --- Projects: the repositories JERRY monitors --------------------------------------------------
+  // The CLI asks in a terminal before it calls these; the dashboard's browser session must send the
+  // repository root typed by the user, and the preHandler checks its CSRF token and Origin.
+
+  const PROJECT_ROUTES = TOKEN_OR_SESSION;
+
+  app.get('/api/v1/projects', { config: TOKEN_OR_SESSION }, async () => {
+    const snapshot = store.snapshot();
+    const activity = await store.lastActivityByRepository();
+    return store.projects().map((project): ProjectSummary => {
+      const key = comparablePath(project.repoRoot, project.repoRoot, process.platform);
+      const tasks = snapshot.tasks.filter((task) => isComparableInside(comparablePath(task.repoRoot, task.repoRoot, process.platform), key));
+      return {
+        ...project,
+        tasks: tasks.length,
+        openTasks: tasks.filter((task) => !isTerminal(task.state)).length,
+        lastActivityAt: [...activity.entries()].filter(([root]) => isComparableInside(root, key)).map(([, at]) => at).sort().at(-1) ?? null,
+        exists: fs.existsSync(project.repoRoot),
+      };
+    });
+  });
+
+  app.post('/api/v1/projects', { config: PROJECT_ROUTES }, async (request, reply) => {
+    const body = parse(projectAddRequestSchema, request.body);
+    const target = path.resolve(body.path);
+    if (!fs.existsSync(target)) throw new HttpError(400, `${body.path} does not exist`);
+    const real = realPathOfNearestExisting(target);
+    const repoRoot = findGitRoot(real);
+    if (repoRoot === null) throw new HttpError(400, `${body.path} is not inside a Git repository`);
+    if (!sameRepo(real, repoRoot)) throw new HttpError(400, `${body.path} is inside the Git repository ${repoRoot}; add the repository root itself`);
+    if (request.client?.kind === 'session' && !typedRoot(body.confirmation, repoRoot)) throw new HttpError(400, `Type the repository root (${repoRoot}) to add it`);
+    const result: ProjectAddResult = await store.addProject(checkedProjectRoot(repoRoot, options.jerryHome), new Date(), request.client?.kind === 'session' ? 'dashboard' : 'cli', body.note ?? null);
+    return reply.code(result.added ? 201 : 200).send(result);
+  });
+
+  app.post('/api/v1/projects/remove', { config: PROJECT_ROUTES }, async (request) => {
+    const body = parse(projectRemoveRequestSchema, request.body);
+    const target = path.resolve(body.path);
+    // The directory may be gone already; then the path is matched as given.
+    const wanted = fs.existsSync(target) ? (findGitRoot(realPathOfNearestExisting(target)) ?? target) : target;
+    const project = store.projects().find((candidate) => sameRepo(candidate.repoRoot, wanted));
+    if (project === undefined) throw new HttpError(404, `${body.path} is not a JERRY project (see "jerry project list")`);
+    if (request.client?.kind === 'session' && !typedRoot(body.confirmation, project.repoRoot)) throw new HttpError(400, `Type the repository root (${project.repoRoot}) to remove it`);
+    const key = comparablePath(project.repoRoot, project.repoRoot, process.platform);
+    const openTasks = store
+      .snapshot()
+      .tasks.filter((task) => !isTerminal(task.state) && isComparableInside(comparablePath(task.repoRoot, task.repoRoot, process.platform), key))
+      .map((task) => task.taskId);
+    const removed = await store.removeProject(project.repoRoot, new Date(), request.client?.kind === 'session' ? 'dashboard' : 'cli');
+    const result: ProjectRemoveResult = {
+      ...removed,
+      openTasks,
+      warning: openTasks.length === 0 ? null : `${openTasks.join(', ')} stay open, but JERRY no longer monitors ${project.repoRoot}: edits there are not checked against their plans. Add the project again to continue them.`,
+    };
+    return result;
+  });
+
+  // --- Data: what JERRY stores, and deleting old data ---------------------------------------------
+  // The CLI previews and asks for the typed confirmation in a terminal; the dashboard's browser
+  // session must send it ("delete", or the repository root), and the preHandler checks its CSRF token
+  // and Origin.
+
+  const DATA_ROUTES = TOKEN_OR_SESSION;
+  const data: DataContext = { store, logsDir: path.join(options.jerryHome, 'logs'), retentionDays: options.retentionDays ?? DEFAULT_RETENTION_DAYS };
+
+  app.get('/api/v1/data/usage', { config: TOKEN_OR_SESSION }, async () => dataUsage(data, new Date()));
+
+  app.post('/api/v1/data/prune/preview', { config: DATA_ROUTES }, async (request) => {
+    const { confirmation: _ignored, ...options } = parse(pruneRequestSchema, request.body);
+    return previewPrune(data, options, new Date());
+  });
+
+  app.post('/api/v1/data/prune', { config: DATA_ROUTES }, async (request) => {
+    const { confirmation, ...options } = parse(pruneRequestSchema, request.body);
+    const fromDashboard = request.client?.kind === 'session';
+    if (fromDashboard && confirmation !== 'delete') throw new HttpError(400, 'Deleting data from the dashboard needs the typed confirmation "delete"');
+    return prune(data, options, new Date(), fromDashboard ? 'dashboard' : 'cli');
+  });
+
+  app.post('/api/v1/data/forget/preview', { config: DATA_ROUTES }, async (request) => {
+    const body = parse(forgetRequestSchema, request.body);
+    return previewForget(data, forgetRoot(body.path));
+  });
+
+  app.post('/api/v1/data/forget', { config: DATA_ROUTES }, async (request) => {
+    const body = parse(forgetRequestSchema, request.body);
+    const repoRoot = forgetRoot(body.path);
+    const fromDashboard = request.client?.kind === 'session';
+    if (fromDashboard && !typedRoot(body.confirmation, repoRoot)) throw new HttpError(400, `Type the repository root (${repoRoot}) to make JERRY forget it`);
+    return forget(data, repoRoot, new Date(), fromDashboard ? 'dashboard' : 'cli');
   });
 
   app.get('/api/v1/tasks', { config: TOKEN_OR_SESSION }, async () => summarize(store, store.snapshot().tasks));
@@ -462,9 +591,10 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
 
   app.post('/api/v1/tasks', { config: TOKEN_ONLY }, async (request, reply) => {
     const body = parse(taskCreateRequestSchema, request.body);
-    if ((body.document?.analysis?.reports.length ?? 0) > 0) throw new HttpError(400, 'a new task has no analysis reports to cite; start it with an intake (jerry_start_task) first');
+    if ((body.document?.analysis?.reports.length ?? 0) > 0) throw new HttpError(400, 'a new task has no analysis reports to cite; start it with an intake (start_task) first');
     const repoRoot = findGitRoot(realPathOfNearestExisting(body.repoPath));
     if (repoRoot === null) throw new HttpError(400, `${body.repoPath} is not inside a Git repository`);
+    requireProject(store, repoRoot);
     const sessionId = await store.resolveOrigin(body.origin);
     return reply
       .code(201)
@@ -476,6 +606,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     const body = parse(taskIntakeRequestSchema, request.body);
     const repoRoot = findGitRoot(realPathOfNearestExisting(body.repoPath));
     if (repoRoot === null) throw new HttpError(400, `${body.repoPath} is not inside a Git repository`);
+    requireProject(store, repoRoot);
     const sessionId = await store.resolveOrigin(body.origin);
     return reply.code(201).send(await store.startTask({ repoRoot, title: body.title, goal: body.goal, focus: body.focus, submittedBy: body.submittedBy, sessionId }, new Date()));
   });
@@ -721,6 +852,38 @@ function identify(request: FastifyRequest, token: string, sessions: BrowserSessi
   return { kind: 'session', session };
 }
 
+/** The path a tool call is about: its target file, else the working directory (resolved on disk). */
+function relevantPath(toolInput: Record<string, unknown>, cwd: string): string {
+  const target = toolInput['file_path'] ?? toolInput['notebook_path'];
+  return realPathOfNearestExisting(typeof target === 'string' && target !== '' ? path.resolve(cwd, target) : cwd);
+}
+
+/** Work in a repository that is not a project is not recorded, so no task can be created there. */
+function requireProject(store: StateStore, repoRoot: string): void {
+  if (!store.isMonitored(repoRoot)) {
+    throw new HttpError(409, `${repoRoot} is not added to JERRY, so JERRY does not monitor it. The user can add it with "jerry project add" (run it in that repository).`);
+  }
+}
+
+/** A project root must be a Git working tree root outside JERRY's own data. */
+function checkedProjectRoot(repoRoot: string, jerryHome: string): string {
+  const home = comparablePath(path.resolve(jerryHome), jerryHome, process.platform);
+  if (isComparableInside(comparablePath(repoRoot, repoRoot, process.platform), home)) throw new HttpError(400, `${repoRoot} is inside JERRY's data directory; it cannot be a project`);
+  return repoRoot;
+}
+
+/** The repository to forget: the Git root of an existing path, or the path as given when it is gone. */
+function forgetRoot(target: string): string {
+  const resolved = path.resolve(target);
+  return fs.existsSync(resolved) ? (findGitRoot(realPathOfNearestExisting(resolved)) ?? realPathOfNearestExisting(resolved)) : resolved;
+}
+
+/** The repository root typed as a confirmation (any case and separators on Windows). */
+function typedRoot(confirmation: string | undefined, repoRoot: string): boolean {
+  const typed = confirmation?.trim() ?? '';
+  return typed !== '' && sameRepo(typed, repoRoot);
+}
+
 function sameRepo(a: string, b: string): boolean {
   return comparablePath(a, a, process.platform) === comparablePath(b, b, process.platform);
 }
@@ -741,7 +904,7 @@ async function qualityFeedback(store: StateStore, sessionId: string, now: Date):
     }
   }
   if (lines.length === 0) return null;
-  return [decorate(EMOJI.finding, `JERRY quality: ${lines.length} new finding(s) in your changes (only changed lines are checked):`), ...lines, 'Fix them within the approved scope, or tell the user why not; jerry_list_findings lists all open ones. The user dismisses findings, not you.'].join('\n');
+  return [decorate(EMOJI.finding, `JERRY quality: ${lines.length} new finding(s) in your changes (only changed lines are checked):`), ...lines, 'Fix them within the approved scope, or tell the user why not; list_findings lists all open ones. The user dismisses findings, not you.'].join('\n');
 }
 
 async function summarize(store: StateStore, tasks: readonly Task[]): Promise<TaskSummary[]> {

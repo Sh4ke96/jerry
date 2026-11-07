@@ -45,9 +45,9 @@ describe('implementation report and acceptance (bundled bridge + MCP + Core)', (
 
   it('refuses a report before the plan is approved', async () => {
     const client = await connect();
-    const submitted = await client.call('jerry_submit_plan', { title: 'Greeting helper', plan: samplePlan(repo) });
+    const submitted = await client.call('submit_plan', { title: 'Greeting helper', plan: samplePlan(repo) });
     taskId = submitted.structured['taskId'] as string;
-    const early = await client.call('jerry_submit_report', { taskId, report: sampleReport() });
+    const early = await client.call('submit_report', { taskId, report: sampleReport() });
     expect(early.isError).toBe(true);
     expect(early.text).toContain('report.submitted is not possible while the task is WAIT_PLAN_APPROVAL');
     await api(core, 'POST', `/api/v1/tasks/${taskId}/approvals`, { stage: 'PLAN', version: 1, decision: 'APPROVED' });
@@ -57,11 +57,11 @@ describe('implementation report and acceptance (bundled bridge + MCP + Core)', (
     const client = await connect();
     const report = sampleReport();
     const unexplained = { ...report, checks: [{ kind: 'test', command: 'npm test', result: 'NOT_RUN', details: '' }] };
-    const result = await client.call('jerry_submit_report', { taskId, report: unexplained });
+    const result = await client.call('submit_report', { taskId, report: unexplained });
     expect(result.isError).toBe(true);
     expect(result.text).toContain('a check that did not run needs the reason');
     const { qaScenarios: _qa, ...withoutQa } = report;
-    expect((await client.call('jerry_submit_report', { taskId, report: withoutQa })).text).toContain('qaScenarios');
+    expect((await client.call('submit_report', { taskId, report: withoutQa })).text).toContain('qaScenarios');
   });
 
   it('records the report with what JERRY saw, and moves the task to the user', async () => {
@@ -70,8 +70,8 @@ describe('implementation report and acceptance (bundled bridge + MCP + Core)', (
     expect(tool('Bash', { command: 'git commit -am wip' }, 'toolu_b1').exitCode).toBe(2);
 
     const client = await connect();
-    expect(tool('mcp__plugin_jerry_jerry__jerry_submit_report', {}, 'toolu_report1').exitCode).toBe(0);
-    const result = await client.call('jerry_submit_report', { taskId, report: sampleReport() }, 'toolu_report1');
+    expect(tool('mcp__plugin_jerry_guardian__submit_report', {}, 'toolu_report1').exitCode).toBe(0);
+    const result = await client.call('submit_report', { taskId, report: sampleReport() }, 'toolu_report1');
     expect(result.isError, result.text).toBe(false);
     expect(result.structured).toMatchObject({ taskId, reportVersion: 1, state: 'WAIT_IMPLEMENTATION_ACCEPTANCE', jerryRecorded: { deviations: 1, blocked: 1, observedEdits: 2, unreportedEdits: ['README.md'] } });
     expect(result.text).toContain(`jerry approve ${taskId} --stage implementation --version 1`);
@@ -88,8 +88,8 @@ describe('implementation report and acceptance (bundled bridge + MCP + Core)', (
   it('treats edits while the report waits as deviations, and refuses a second report', async () => {
     expect(JSON.parse(tool('Write', { file_path: path.join(repo, 'src', 'greeting', 'greet.ts') }, 'toolu_w3').stdout).systemMessage).toContain('monitor.no-approved-plan');
     const client = await connect();
-    expect((await client.call('jerry_get_state')).structured).toMatchObject({ next: { action: 'wait-for-acceptance' } });
-    expect((await client.call('jerry_submit_report', { taskId, report: sampleReport() })).isError).toBe(true);
+    expect((await client.call('get_state')).structured).toMatchObject({ next: { action: 'wait-for-acceptance' } });
+    expect((await client.call('submit_report', { taskId, report: sampleReport() })).isError).toBe(true);
   });
 
   it('sends the report back with the user’s comment, which Claude then sees', async () => {
@@ -100,7 +100,7 @@ describe('implementation report and acceptance (bundled bridge + MCP + Core)', (
     expect(task.reportDecision).toMatchObject({ stage: 'IMPLEMENTATION', version: 1, decision: 'REJECTED', comment: 'Handle empty names too.' });
 
     const client = await connect();
-    const state = (await client.call('jerry_get_state')).structured;
+    const state = (await client.call('get_state')).structured;
     expect(state['next']).toMatchObject({ action: 'apply-requested-changes', details: expect.stringContaining('"Handle empty names too."') });
     // The plan approval still holds: edits in scope pass again.
     expect(tool('Write', { file_path: path.join(repo, 'src', 'greeting', 'greet.ts') }, 'toolu_w4')).toMatchObject({ exitCode: 0, stdout: '' });
@@ -108,7 +108,7 @@ describe('implementation report and acceptance (bundled bridge + MCP + Core)', (
 
   it('refuses DONE when the code changed after the report, and lets the user send the work back', async () => {
     const client = await connect();
-    const second = await client.call('jerry_submit_report', { taskId, report: { ...sampleReport(), summary: 'Added greet(name), its unit test and empty-name handling.' } });
+    const second = await client.call('submit_report', { taskId, report: { ...sampleReport(), summary: 'Added greet(name), its unit test and empty-name handling.' } });
     expect(second.structured).toMatchObject({ reportVersion: 2 });
     // Claude keeps editing after reporting: recorded as a deviation, and the report no longer describes the code.
     expect(JSON.parse(tool('Write', { file_path: path.join(repo, 'src', 'greeting', 'greet.ts') }, 'toolu_w5').stdout).systemMessage).toContain('monitor.no-approved-plan');
@@ -123,7 +123,7 @@ describe('implementation report and acceptance (bundled bridge + MCP + Core)', (
     expect(task.finalCheck?.conditions.filter((condition) => condition.blocking && !condition.passed)).toEqual([
       { id: 'code.unchanged-since-report', blocking: true, passed: false, detail: 'edited after report v2 was submitted: src/greeting/greet.ts' },
     ]);
-    const state = (await client.call('jerry_get_state')).structured;
+    const state = (await client.call('get_state')).structured;
     expect(state['next']).toMatchObject({ action: 'final-checks-failed', details: expect.stringContaining('edited after report v2') });
 
     expect((await decide(2, 'REJECTED', 'Report the last edit too.')).status).toBe(201);
@@ -132,7 +132,7 @@ describe('implementation report and acceptance (bundled bridge + MCP + Core)', (
 
   it('completes the task only through Core: accepting a clean report sets DONE', async () => {
     const client = await connect();
-    const third = await client.call('jerry_submit_report', { taskId, report: { ...sampleReport(), summary: 'Added greet(name), its unit test and empty-name handling; reported the last edit.' } });
+    const third = await client.call('submit_report', { taskId, report: { ...sampleReport(), summary: 'Added greet(name), its unit test and empty-name handling; reported the last edit.' } });
     expect(third.structured).toMatchObject({ reportVersion: 3 });
     expect((await decide(3, 'APPROVED')).status).toBe(201);
     expect((await skipReview()).status).toBe(200);
@@ -162,18 +162,18 @@ describe('implementation report and acceptance (bundled bridge + MCP + Core)', (
       'task.completed:core',
     ]);
     // Done is done: no more reports, checkpoints or decisions.
-    expect((await client.call('jerry_submit_report', { taskId, report: sampleReport() })).isError).toBe(true);
+    expect((await client.call('submit_report', { taskId, report: sampleReport() })).isError).toBe(true);
     expect((await decide(3, 'REJECTED')).status).toBe(409);
-    expect((await client.call('jerry_get_state')).structured).toMatchObject({ currentTask: null, next: { action: 'propose-plan' } });
+    expect((await client.call('get_state')).structured).toMatchObject({ currentTask: null, next: { action: 'propose-plan' } });
   });
 
   it('refuses DONE for a failed check or a critical risk in the accepted report', async () => {
     const client = await connect();
     const failing = { ...sampleReport(), checks: [{ kind: 'test', command: 'npm test', result: 'FAIL', details: '1 failed' }], risks: [{ risk: 'Deletes user data on retry', severity: 'critical', mitigation: '' }] };
-    const created = await client.call('jerry_submit_plan', { title: 'Second task', plan: samplePlan(repo) });
+    const created = await client.call('submit_plan', { title: 'Second task', plan: samplePlan(repo) });
     const second = created.structured['taskId'] as string;
     await api(core, 'POST', `/api/v1/tasks/${second}/approvals`, { stage: 'PLAN', version: 1, decision: 'APPROVED' });
-    expect((await client.call('jerry_submit_report', { taskId: second, report: failing })).isError).toBe(false);
+    expect((await client.call('submit_report', { taskId: second, report: failing })).isError).toBe(false);
     await api(core, 'POST', `/api/v1/tasks/${second}/approvals`, { stage: 'IMPLEMENTATION', version: 1, decision: 'APPROVED' });
     await skipReview(second);
     const task = (await api(core, 'GET', `/api/v1/tasks/${second}`)).body as TaskDetail;

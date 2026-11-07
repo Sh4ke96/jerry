@@ -1,7 +1,10 @@
 import { EMOJI } from '@jerry/contracts/emoji';
 import { computed, defineComponent, ref } from 'vue';
-import { Badge, toneOf } from '../components/Badge';
 import { resultEmoji } from '../components/Emoji';
+import { StatusBadge, toneOf } from '../components/StatusBadge';
+import { Card } from '../components/ui/card';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { eventReason, eventTarget, formatTime, shortPath } from '../format';
 import { state } from '../state';
 
@@ -33,60 +36,63 @@ export const Timeline = defineComponent({
       }),
     );
 
+    const table = () =>
+      visible.value.length === 0 ? (
+        <p class="text-muted-foreground p-6 text-sm">No events for this filter.</p>
+      ) : (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead class="pl-4">Time</TableHead>
+              <TableHead>Event</TableHead>
+              <TableHead>Tool or agent</TableHead>
+              <TableHead>JERRY</TableHead>
+              <TableHead class="pr-4">Target</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {visible.value.map((event) => (
+              <TableRow key={event.eventId} title={eventReason(event)}>
+                <TableCell class="text-muted-foreground pl-4">{formatTime(event.timestamp)}</TableCell>
+                <TableCell>{event.eventType}</TableCell>
+                <TableCell>{shortPath(event.toolName ?? event.agentType ?? '', 40)}</TableCell>
+                <TableCell>
+                  <div class="flex gap-1">
+                    {event.verdict !== null && (
+                      <StatusBadge tone={toneOf(event.verdict)} title={event.ruleId ?? undefined} emoji={resultEmoji(event.verdict)}>
+                        {event.verdict}
+                      </StatusBadge>
+                    )}
+                    {event.spooled && (
+                      <StatusBadge title="Recorded while Core was down" emoji={EMOJI.waiting}>
+                        spooled
+                      </StatusBadge>
+                    )}
+                  </div>
+                </TableCell>
+                <TableCell class="min-w-60 pr-4 font-mono text-xs whitespace-normal break-all">{shortPath(eventTarget(event), 90)}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      );
+
     return () => (
-      <div class="stack">
-        <div class="filters" role="tablist" aria-label="Filter events">
+      <Tabs modelValue={filter.value} onUpdate:modelValue={(value: string) => (filter.value = value as Filter)} class="gap-4">
+        <TabsList aria-label="Filter events" class="max-w-full overflow-x-auto">
           {FILTERS.map((option) => (
-            <button key={option.id} role="tab" aria-selected={filter.value === option.id} class={['chip-button', filter.value === option.id && 'chip-button--active']} onClick={() => (filter.value = option.id)}>
+            <TabsTrigger key={option.id} value={option.id}>
               {option.label}
-            </button>
+            </TabsTrigger>
           ))}
-        </div>
-        <section class="panel panel--flush">
-          {visible.value.length === 0 ? (
-            <p class="muted padded">No events for this filter.</p>
-          ) : (
-            <div class="table-wrap">
-              <table class="table">
-                <thead>
-                  <tr>
-                    <th>Time</th>
-                    <th>Event</th>
-                    <th>Tool or agent</th>
-                    <th>JERRY</th>
-                    <th>Target</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {visible.value.map((event) => (
-                    <tr key={event.eventId} title={eventReason(event)}>
-                      <td class="nowrap">{formatTime(event.timestamp)}</td>
-                      <td class="nowrap">{event.eventType}</td>
-                      <td class="nowrap">{shortPath(event.toolName ?? event.agentType ?? '', 40)}</td>
-                      <td class="nowrap">
-                        {event.verdict !== null && (
-                          <Badge tone={toneOf(event.verdict)} title={event.ruleId ?? undefined} emoji={resultEmoji(event.verdict)}>
-                            {event.verdict}
-                          </Badge>
-                        )}
-                        {event.spooled && (
-                          <Badge title="Recorded while Core was down" emoji={EMOJI.waiting}>
-                            spooled
-                          </Badge>
-                        )}
-                      </td>
-                      <td class="target">
-                        <code>{shortPath(eventTarget(event), 90)}</code>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-        <p class="muted small">Showing the latest {state.events.length} events. Hover a row for JERRY's reason.</p>
-      </div>
+        </TabsList>
+        {FILTERS.map((option) => (
+          <TabsContent key={option.id} value={option.id}>
+            <Card class="gap-0 overflow-hidden py-0">{table()}</Card>
+          </TabsContent>
+        ))}
+        <p class="text-muted-foreground text-xs">Showing the latest {state.events.length} events. Hover a row for JERRY's reason.</p>
+      </Tabs>
     );
   },
 });

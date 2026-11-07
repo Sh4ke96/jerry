@@ -1,39 +1,56 @@
 // @vitest-environment happy-dom
-import { mount } from '@vue/test-utils';
-import { describe, expect, it } from 'vitest';
+import { DOMWrapper, flushPromises, mount } from '@vue/test-utils';
+import { afterEach, describe, expect, it } from 'vitest';
 import { ConfirmDialog } from '../src/components/ConfirmDialog';
 
 describe('ConfirmDialog', () => {
-  const mountDialog = () =>
-    mount(ConfirmDialog, {
+  const mounted: Array<ReturnType<typeof mount>> = [];
+  const mountDialog = async () => {
+    const wrapper = mount(ConfirmDialog, {
+      attachTo: document.body,
       props: { title: 'Approve JRY-0007 plan v2', expected: 'JRY-0007', confirmLabel: 'Approve plan' },
       slots: { default: () => 'Scope: src/**' },
     });
+    mounted.push(wrapper);
+    await flushPromises();
+    // The dialog opens in a portal on <body>.
+    return { wrapper, dialog: new DOMWrapper(document.body).get('[role="alertdialog"]') };
+  };
+  afterEach(() => {
+    for (const wrapper of mounted.splice(0)) wrapper.unmount();
+  });
 
   it('keeps the confirm button disabled until the exact text is typed', async () => {
-    const wrapper = mountDialog();
-    const confirm = wrapper.get('button[type="submit"]');
+    const { wrapper, dialog } = await mountDialog();
+    const confirm = dialog.get('button[type="submit"]');
     expect(confirm.attributes('disabled')).toBeDefined();
 
-    await wrapper.get('input').setValue('JRY-0008');
+    await dialog.get('input').setValue('JRY-0008');
     expect(confirm.attributes('disabled')).toBeDefined();
-    await wrapper.get('form').trigger('submit');
+    await dialog.get('form').trigger('submit');
     expect(wrapper.emitted('confirm')).toBeUndefined();
 
-    await wrapper.get('input').setValue('JRY-0007');
+    await dialog.get('input').setValue('JRY-0007');
     expect(confirm.attributes('disabled')).toBeUndefined();
-    await wrapper.get('form').trigger('submit');
+    await dialog.get('form').trigger('submit');
     expect(wrapper.emitted('confirm')).toEqual([['JRY-0007', '']]);
   });
 
   it('cancels with the button or Escape', async () => {
-    const wrapper = mountDialog();
-    await wrapper.get('button[type="button"]').trigger('click');
-    await wrapper.get('form').trigger('keydown', { key: 'Escape' });
-    expect(wrapper.emitted('cancel')).toHaveLength(2);
+    const first = await mountDialog();
+    await first.dialog.get('button[type="button"]').trigger('click');
+    await flushPromises();
+    expect(first.wrapper.emitted('cancel')).toHaveLength(1);
+    for (const wrapper of mounted.splice(0)) wrapper.unmount();
+
+    const second = await mountDialog();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await flushPromises();
+    expect(second.wrapper.emitted('cancel')).toHaveLength(1);
   });
 
-  it('shows the decision details passed in', () => {
-    expect(mountDialog().text()).toContain('Scope: src/**');
+  it('shows the decision details passed in', async () => {
+    const { dialog } = await mountDialog();
+    expect(dialog.text()).toContain('Scope: src/**');
   });
 });

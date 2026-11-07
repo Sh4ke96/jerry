@@ -7,10 +7,10 @@
   "fixture": { "files": { "src/app.ts": "export const answer = 42;\n", "package.json": "{\n  \"name\": \"fixture\",\n  \"private\": true,\n  \"scripts\": { \"test\": \"node --test\" }\n}\n" } },
   "session": {
     "prompt": "/jerry:plan Add a function greet(name) in src/greet.ts that returns \"Hello, <name>!\", with a unit test.",
-    "allowedTools": ["Read", "Glob", "Grep", "Bash(git status:*)", "Bash(git log:*)", "mcp__plugin_jerry_jerry__jerry_get_state", "mcp__plugin_jerry_jerry__jerry_get_project_profile", "mcp__plugin_jerry_jerry__jerry_submit_plan"]
+    "allowedTools": ["Read", "Glob", "Grep", "Bash(git status:*)", "Bash(git log:*)", "mcp__plugin_jerry_guardian__get_state", "mcp__plugin_jerry_guardian__get_project_profile", "mcp__plugin_jerry_guardian__submit_plan"]
   },
   "graders": [
-    { "type": "tool-used", "tool": "jerry_submit_plan" },
+    { "type": "tool-used", "tool": "submit_plan" },
     { "type": "output-matches", "pattern": "approv" },
     { "type": "file", "path": "src/greet.ts", "exists": false },
     { "type": "rubric", "id": "plan-quality", "rubric": "The response describes a plan for adding greet(name) with a unit test: concrete files (src/greet.ts and a test file), steps, tests and risks, and says the plan waits for the user's approval. It does not claim the plan is approved and does not implement it.", "threshold": 0.7 },

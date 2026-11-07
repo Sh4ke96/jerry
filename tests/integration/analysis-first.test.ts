@@ -44,7 +44,7 @@ describe('analysis first: intake, analysts, plan from their reports (bundled bri
 
   it('takes in a task before its plan: Discovery, the focus as scope, nothing approved', async () => {
     const client = await connect();
-    const started = await client.call('jerry_start_task', { title: 'Make the answer configurable', goal: 'Read the answer from configuration instead of a constant', focus: ['src/**'] });
+    const started = await client.call('start_task', { title: 'Make the answer configurable', goal: 'Read the answer from configuration instead of a constant', focus: ['src/**'] });
     expect(started.isError, started.text).toBe(false);
     expect(started.structured).toMatchObject({ state: 'DISCOVERY', focus: ['src/**'] });
     expect(started.text).toContain('at most three');
@@ -60,23 +60,23 @@ describe('analysis first: intake, analysts, plan from their reports (bundled bri
     expect(edit.exitCode).toBe(0);
     expect(edit.stdout).toContain('deviation');
 
-    const state = await client.call('jerry_get_state', {});
+    const state = await client.call('get_state', {});
     expect(state.structured['next']).toMatchObject({ action: 'analyse-then-plan' });
   });
 
   it('refuses an intake without a focus or goal', async () => {
     const client = await connect();
-    expect((await client.call('jerry_start_task', { title: 'x', goal: '', focus: ['src/**'] })).isError).toBe(true);
-    expect((await client.call('jerry_start_task', { title: 'x', goal: 'y', focus: [] })).isError).toBe(true);
+    expect((await client.call('start_task', { title: 'x', goal: '', focus: ['src/**'] })).isError).toBe(true);
+    expect((await client.call('start_task', { title: 'x', goal: 'y', focus: [] })).isError).toBe(true);
   });
 
   it("moves to Analysis with the first analyst's report and lists reports and gaps", async () => {
     const client = await connect();
-    const saved = await client.call('jerry_submit_analysis_report', { taskId, report: report('jerry-architecture-analyst') });
+    const saved = await client.call('submit_analysis_report', { taskId, report: report('jerry-architecture-analyst') });
     expect(saved.isError, saved.text).toBe(false);
     expect((await detail()).state).toBe('PARALLEL_ANALYSIS');
     // A second report changes no state.
-    await client.call('jerry_submit_analysis_report', { taskId, report: report('jerry-risk-analyst') });
+    await client.call('submit_analysis_report', { taskId, report: report('jerry-risk-analyst') });
     expect((await detail()).state).toBe('PARALLEL_ANALYSIS');
 
     // The quality analyst stopped without a report: a gap, not a success.
@@ -84,7 +84,7 @@ describe('analysis first: intake, analysts, plan from their reports (bundled bri
     hook({ hook_event_name: 'SubagentStart', agent_id: 'agent-q', agent_type: 'jerry:jerry-quality-analyst' });
     hook({ hook_event_name: 'SubagentStop', agent_id: 'agent-q', agent_type: 'jerry:jerry-quality-analyst' });
 
-    const analysis = await client.call('jerry_get_analysis', { taskId: taskId.toLowerCase() });
+    const analysis = await client.call('get_analysis', { taskId: taskId.toLowerCase() });
     expect(analysis.isError, analysis.text).toBe(false);
     expect(analysis.structured).toMatchObject({
       taskId,
@@ -105,19 +105,19 @@ describe('analysis first: intake, analysts, plan from their reports (bundled bri
   it('refuses a plan citing reports the task does not have', async () => {
     const client = await connect();
     const plan = { ...samplePlan(repo), analysis: { reports: [9999], gaps: [] } };
-    const result = await client.call('jerry_submit_plan', { taskId, plan });
+    const result = await client.call('submit_plan', { taskId, plan });
     expect(result.isError).toBe(true);
     expect(result.text).toContain('9999');
     expect((await detail()).state).toBe('PARALLEL_ANALYSIS');
     // A new task cannot cite reports either.
-    expect((await client.call('jerry_submit_plan', { title: 'Other', plan })).isError).toBe(true);
+    expect((await client.call('submit_plan', { title: 'Other', plan })).isError).toBe(true);
   });
 
   it('closes the analysis with the plan built on the reports, which then waits for the user', async () => {
     const client = await connect();
     const ids = (await detail()).analyses.map((record) => record.id);
     const plan = { ...samplePlan(repo, ['src/**', 'tests/**']), analysis: { reports: ids, gaps: ['jerry-quality-analyst stopped without a report'] } };
-    const submitted = await client.call('jerry_submit_plan', { taskId, plan });
+    const submitted = await client.call('submit_plan', { taskId, plan });
     expect(submitted.isError, submitted.text).toBe(false);
     expect(submitted.structured).toMatchObject({ taskId, planVersion: 2, state: 'WAIT_PLAN_APPROVAL', completeness: { level: 'complete', missing: [], informational: true } });
 
@@ -139,9 +139,9 @@ describe('analysis first: intake, analysts, plan from their reports (bundled bri
 
   it('lets a small change skip the analysts: a plan straight from discovery', async () => {
     const client = await connect();
-    const started = await client.call('jerry_start_task', { title: 'Typo', goal: 'Fix a typo', focus: ['README.md'] });
+    const started = await client.call('start_task', { title: 'Typo', goal: 'Fix a typo', focus: ['README.md'] });
     const id = started.structured['taskId'] as string;
-    const submitted = await client.call('jerry_submit_plan', { taskId: id, plan: samplePlan(repo, ['README.md']) });
+    const submitted = await client.call('submit_plan', { taskId: id, plan: samplePlan(repo, ['README.md']) });
     expect(submitted.structured).toMatchObject({ planVersion: 2, state: 'WAIT_PLAN_APPROVAL' });
     // The sample plan changes files outside README.md: JERRY's completeness check says so, and only informs.
     // Runs of the earlier task in the same session are not this task's gaps.

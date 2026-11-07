@@ -195,6 +195,8 @@ export async function runAttempt(evalCase: EvalCase, attempt: number, options: R
     fixture = createFixture(evalCase, options.parentDir);
     const home = path.join(fixture.base, 'jerry-home');
     core = await startCore(options.coreBundle, home, fixture.base);
+    // JERRY monitors only projects: the fixture is added the way the user adds a repository.
+    await request(core.info, 'POST', '/api/v1/projects', { path: fixture.repo });
     let taskId: string | null = null;
     if (evalCase.setup.task !== undefined) {
       const created = (await request(core.info, 'POST', '/api/v1/tasks', { repoPath: fixture.repo, title: evalCase.setup.task.title, scope: evalCase.setup.task.scope })) as { taskId: string };

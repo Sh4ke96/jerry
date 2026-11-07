@@ -2,14 +2,21 @@ import type { ArtifactDecision, FinalReport } from '@jerry/contracts';
 import { EMOJI } from '@jerry/contracts/emoji';
 import { defineComponent, onMounted, ref, type PropType } from 'vue';
 import { api } from '../api';
+import { ATTENTION, LIST } from '../lib/classes';
 import { handleError } from '../state';
-import { Badge } from './Badge';
 import { Emoji, resultEmoji } from './Emoji';
+import { Section } from './Section';
+import { StatusBadge } from './StatusBadge';
+import { Card, CardContent } from './ui/card';
+import { Skeleton } from './ui/skeleton';
 
 /** Only links to claude.ai Artifacts are shown as links; anything else stays text. */
 export function safeArtifactLink(url: string | null): string | null {
   return url !== null && /^https:\/\/claude\.ai\/(code\/)?artifact\/[\w-]+(?:[/?#][^\s"'<>]*)?$/.test(url) ? url : null;
 }
+
+const LINK = 'text-primary font-medium underline underline-offset-4';
+const HEADING = 'flex items-center font-medium';
 
 /** The final report of a task, assembled by Core from what it recorded. */
 export const FinalReportView = defineComponent({
@@ -26,72 +33,80 @@ export const FinalReportView = defineComponent({
     });
     return () => {
       const r = report.value;
-      if (r === null) return <p class="muted small">Assembling the final report…</p>;
+      if (r === null) {
+        return (
+          <div class="grid gap-2 rounded-lg border p-4">
+            <p class="text-muted-foreground text-xs">Assembling the final report…</p>
+            <Skeleton class="h-4 w-1/2" />
+            <Skeleton class="h-4 w-2/3" />
+          </div>
+        );
+      }
       const link = safeArtifactLink(r.artifact.url);
       return (
-        <section class="final-report">
-          <h3>
-            <Emoji symbol={EMOJI.report} />
+        <section class="final-report grid gap-3 rounded-lg border p-4 text-sm">
+          <h3 class="flex flex-wrap items-center gap-x-2 font-semibold">
+            <Emoji symbol={EMOJI.report} class="mr-0" />
             Final report{' '}
             {r.status === 'draft' ? (
-              <Badge tone="warn" emoji={EMOJI.waiting}>
+              <StatusBadge tone="warn" emoji={EMOJI.waiting}>
                 draft
-              </Badge>
+              </StatusBadge>
             ) : (
-              <Badge tone="pass" emoji={EMOJI.done}>
+              <StatusBadge tone="pass" emoji={EMOJI.done}>
                 DONE
-              </Badge>
+              </StatusBadge>
             )}
           </h3>
           <p>{r.goal}</p>
-          <h4>
+          <h4 class={HEADING}>
             <Emoji symbol={EMOJI.implementation} />
             Changes ({r.diffSummary.files})
           </h4>
-          <ul class="list small">
+          <ul class={[LIST, 'text-xs']}>
             {r.repositories.flatMap((repository) =>
               repository.changes.map((change) => (
                 <li key={`${repository.repository}|${change.path}`}>
-                  <code>{change.path}</code> <span class="muted">{change.kind}</span> {change.description}
+                  <code class="font-mono">{change.path}</code> <span class="text-muted-foreground">{change.kind}</span> {change.description}
                 </li>
               )),
             )}
           </ul>
-          {r.diffSummary.unreported.length > 0 && <p class="attention small">Not in the report: {r.diffSummary.unreported.join(', ')}</p>}
-          <h4>
+          {r.diffSummary.unreported.length > 0 && <p class={[ATTENTION, 'text-xs']}>Not in the report: {r.diffSummary.unreported.join(', ')}</p>}
+          <h4 class={HEADING}>
             <Emoji symbol={EMOJI.tests} />
             Tests
           </h4>
-          <ul class="list small">
+          <ul class={[LIST, 'text-xs']}>
             {r.tests.checks.map((check, index) => (
-              <li key={index}>
-                <Badge tone={check.result === 'PASS' ? 'pass' : check.result === 'FAIL' ? 'deny' : 'warn'} emoji={resultEmoji(check.result)}>
+              <li key={index} class="flex flex-wrap items-center gap-x-2">
+                <StatusBadge tone={check.result === 'PASS' ? 'pass' : check.result === 'FAIL' ? 'deny' : 'warn'} emoji={resultEmoji(check.result)}>
                   {check.result}
-                </Badge>{' '}
-                <code>{check.command}</code> {check.details}
+                </StatusBadge>{' '}
+                <code class="font-mono">{check.command}</code> {check.details}
               </li>
             ))}
           </ul>
           {r.tests.claimedVsObserved.map((line) => (
-            <p key={line} class="attention small">
+            <p key={line} class={[ATTENTION, 'text-xs']}>
               {line}
             </p>
           ))}
           {r.review !== null && (
             <p>
               <Emoji symbol={EMOJI.review} />
-              Review: <strong>{r.review.outcome}</strong> after {r.review.rounds} round(s) · {r.review.findings.total} finding(s), {r.review.findings.fixed} fixed
-              {r.review.findings.open.length > 0 && <span class="attention"> · open: {r.review.findings.open.join('; ')}</span>}
+              Review: <strong class="font-medium">{r.review.outcome}</strong> after {r.review.rounds} round(s) · {r.review.findings.total} finding(s), {r.review.findings.fixed} fixed
+              {r.review.findings.open.length > 0 && <span class={ATTENTION}> · open: {r.review.findings.open.join('; ')}</span>}
             </p>
           )}
-          <h4>
+          <h4 class={HEADING}>
             <Emoji symbol={EMOJI.next} />
             Proposed commits
           </h4>
-          <ul class="list small">
+          <ul class={[LIST, 'text-xs']}>
             {r.commitSubjects.map((subject) => (
               <li key={subject}>
-                <code>{subject}</code>
+                <code class="font-mono">{subject}</code>
               </li>
             ))}
           </ul>
@@ -102,32 +117,32 @@ export const FinalReportView = defineComponent({
               link === null ? (
                 <span>{r.artifact.title}</span>
               ) : (
-                <a href={link} target="_blank" rel="noopener noreferrer">
+                <a href={link} target="_blank" rel="noopener noreferrer" class={LINK}>
                   {r.artifact.title}
                 </a>
               )
             ) : r.artifact.decision === 'declined' ? (
-              <span class="muted">declined by the user</span>
+              <span class="text-muted-foreground">declined by the user</span>
             ) : (
-              <span class="muted">not asked yet{r.artifact.planned === '' ? '' : ` (plan: ${r.artifact.planned})`}; Claude offers it with /jerry:artifact</span>
+              <span class="text-muted-foreground">not asked yet{r.artifact.planned === '' ? '' : ` (plan: ${r.artifact.planned})`}; Claude offers it with /jerry:artifact</span>
             )}
           </p>
           {r.limitations.length > 0 && (
-            <div>
-              <h4>
+            <div class="grid gap-2">
+              <h4 class={HEADING}>
                 <Emoji symbol={EMOJI.warning} />
                 Limitations
               </h4>
-              <ul class="list small">
+              <ul class={[LIST, 'list-disc pl-5 text-xs']}>
                 {r.limitations.map((limitation) => (
                   <li key={limitation}>{limitation}</li>
                 ))}
               </ul>
             </div>
           )}
-          <p class="small">
+          <p class="text-xs">
             <Emoji symbol={r.definitionOfDone.passed ? EMOJI.done : EMOJI.fail} />
-            Definition of Done: <strong>{r.definitionOfDone.passed ? 'met' : 'not met'}</strong> · {r.definitionOfDone.items.join('; ')}
+            Definition of Done: <strong class="font-medium">{r.definitionOfDone.passed ? 'met' : 'not met'}</strong> · {r.definitionOfDone.items.join('; ')}
           </p>
         </section>
       );
@@ -142,32 +157,32 @@ export const ArtifactsList = defineComponent({
   setup(props) {
     return () =>
       props.decisions.length === 0 ? null : (
-        <details class="panel artifacts">
-          <summary>
-            <Emoji symbol={EMOJI.artifact} />
-            Artifacts ({props.decisions.filter((decision) => decision.decision === 'created').length})
-          </summary>
-          <ul class="list">
-            {props.decisions.map((decision) => {
-              const link = safeArtifactLink(decision.url);
-              return (
-                <li key={decision.taskId}>
-                  <code>{decision.taskId}</code>{' '}
-                  {decision.decision === 'declined' ? (
-                    <span class="muted">declined{decision.reason === '' ? '' : `: ${decision.reason}`}</span>
-                  ) : link === null ? (
-                    <span>{decision.title}</span>
-                  ) : (
-                    <a href={link} target="_blank" rel="noopener noreferrer">
-                      {decision.title}
-                    </a>
-                  )}{' '}
-                  {decision.kind !== null && <span class="muted small">{decision.kind}</span>}
-                </li>
-              );
-            })}
-          </ul>
-        </details>
+        <Card class="artifacts py-2">
+          <CardContent>
+            <Section title={`Artifacts (${props.decisions.filter((decision) => decision.decision === 'created').length})`} emoji={EMOJI.artifact}>
+              <ul class={LIST}>
+                {props.decisions.map((decision) => {
+                  const link = safeArtifactLink(decision.url);
+                  return (
+                    <li key={decision.taskId}>
+                      <code class="font-mono text-xs">{decision.taskId}</code>{' '}
+                      {decision.decision === 'declined' ? (
+                        <span class="text-muted-foreground">declined{decision.reason === '' ? '' : `: ${decision.reason}`}</span>
+                      ) : link === null ? (
+                        <span>{decision.title}</span>
+                      ) : (
+                        <a href={link} target="_blank" rel="noopener noreferrer" class={LINK}>
+                          {decision.title}
+                        </a>
+                      )}{' '}
+                      {decision.kind !== null && <span class="text-muted-foreground text-xs">{decision.kind}</span>}
+                    </li>
+                  );
+                })}
+              </ul>
+            </Section>
+          </CardContent>
+        </Card>
       );
   },
 });

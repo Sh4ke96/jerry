@@ -1,4 +1,4 @@
-import type { CoreStatus, RepositoryExclusion, RepositorySummary, StoredEvent, TaskSummary, WorkspaceGraph } from '@jerry/contracts';
+import type { CoreStatus, ProjectSummary, RepositorySummary, StoredEvent, TaskSummary, WorkspaceGraph } from '@jerry/contracts';
 import { reactive } from 'vue';
 import { api, SignedOutError, startSession } from './api.js';
 
@@ -12,7 +12,8 @@ export interface DashboardState {
   status: CoreStatus | null;
   tasks: TaskSummary[];
   events: StoredEvent[];
-  exclusions: RepositoryExclusion[];
+  /** The repositories the user added; JERRY monitors only these. */
+  projects: ProjectSummary[];
   repositories: RepositorySummary[];
   graph: WorkspaceGraph;
   refreshedAt: Date | null;
@@ -25,7 +26,7 @@ export const state = reactive<DashboardState>({
   status: null,
   tasks: [],
   events: [],
-  exclusions: [],
+  projects: [],
   repositories: [],
   graph: { nodes: [], edges: [] },
   refreshedAt: null,
@@ -55,8 +56,8 @@ export function withDefaults(task: TaskSummary): TaskSummary {
 
 export async function refresh(): Promise<void> {
   try {
-    const [status, tasks, events, exclusions, repositories, graph] = await Promise.all([api.status(), api.tasks(), api.events({ limit: 300 }), api.exclusions(), api.repositories(), api.workspaceGraph()]);
-    Object.assign(state, { status, tasks: tasks.map(withDefaults), events, exclusions, repositories, graph, refreshedAt: new Date(), phase: 'ready', error: null });
+    const [status, tasks, events, projects, repositories, graph] = await Promise.all([api.status(), api.tasks(), api.events({ limit: 300 }), api.projects(), api.repositories(), api.workspaceGraph()]);
+    Object.assign(state, { status, tasks: tasks.map(withDefaults), events, projects, repositories, graph, refreshedAt: new Date(), phase: 'ready', error: null });
   } catch (error) {
     handleError(error);
   }

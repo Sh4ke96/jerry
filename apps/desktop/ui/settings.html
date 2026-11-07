@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>⚙️ JERRY Desktop settings</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="settings.js" defer></script>
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-header">
+        <h1 class="page-title">⚙️ Settings</h1>
+        <p class="card-description">Changes are saved as soon as you make them.</p>
+      </header>
+
+      <section class="card" aria-labelledby="startup-title">
+        <div class="card-header">
+          <h2 class="card-title" id="startup-title">🚀 Startup</h2>
+          <p class="card-description">How JERRY Desktop starts.</p>
+        </div>
+        <div class="card-content">
+          <div class="option">
+            <div class="option-text">
+              <label class="label" for="launchWithWindows">Launch with Windows</label>
+              <span class="description">Starts JERRY Desktop in the tray when you sign in.</span>
+            </div>
+            <button type="button" class="switch" role="switch" id="launchWithWindows" aria-checked="false"><span class="switch-thumb"></span></button>
+          </div>
+          <hr class="separator" />
+          <div class="option">
+            <div class="option-text">
+              <label class="label" for="openWindowOnStart">Open the window on start</label>
+              <span class="description">Otherwise JERRY Desktop waits in the tray. Starts with Windows always stay in the tray.</span>
+            </div>
+            <button type="button" class="switch" role="switch" id="openWindowOnStart" aria-checked="false"><span class="switch-thumb"></span></button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="notifications-title">
+        <div class="card-header">
+          <h2 class="card-title" id="notifications-title">🔔 Notifications</h2>
+          <p class="card-description">Windows notifications when something needs you. Click one to open the dashboard.</p>
+        </div>
+        <div class="card-content">
+          <div class="option">
+            <div class="option-text">
+              <label class="label" for="notificationsEnabled">Notifications</label>
+              <span class="description">Turns all notifications on or off.</span>
+            </div>
+            <button type="button" class="switch" role="switch" id="notificationsEnabled" aria-checked="false"><span class="switch-thumb"></span></button>
+          </div>
+          <hr class="separator" />
+          <div class="option" data-type>
+            <div class="option-text">
+              <label class="label" for="planWaiting">📋 Plan waiting</label>
+              <span class="description">A plan waits for your approval.</span>
+            </div>
+            <button type="button" class="switch" role="switch" id="planWaiting" aria-checked="false"><span class="switch-thumb"></span></button>
+          </div>
+          <div class="option" data-type>
+            <div class="option-text">
+              <label class="label" for="reportWaiting">📄 Report waiting</label>
+              <span class="description">An implementation report waits for your acceptance.</span>
+            </div>
+            <button type="button" class="switch" role="switch" id="reportWaiting" aria-checked="false"><span class="switch-thumb"></span></button>
+          </div>
+          <div class="option" data-type>
+            <div class="option-text">
+              <label class="label" for="fixesWaiting">🛠️ Fixes waiting</label>
+              <span class="description">Review fixes wait for your approval.</span>
+            </div>
+            <button type="button" class="switch" role="switch" id="fixesWaiting" aria-checked="false"><span class="switch-thumb"></span></button>
+          </div>
+          <div class="option" data-type>
+            <div class="option-text">
+              <label class="label" for="taskDone">🏁 Task done</label>
+              <span class="description">A task was completed.</span>
+            </div>
+            <button type="button" class="switch" role="switch" id="taskDone" aria-checked="false"><span class="switch-thumb"></span></button>
+          </div>
+          <div class="option" data-type>
+            <div class="option-text">
+              <label class="label" for="taskBlocked">⛔ Task blocked</label>
+              <span class="description">A task is blocked and needs a decision.</span>
+            </div>
+            <button type="button" class="switch" role="switch" id="taskBlocked" aria-checked="false"><span class="switch-thumb"></span></button>
+          </div>
+          <div class="option" data-type>
+            <div class="option-text">
+              <label class="label" for="coreStopped">⚠️ Core stopped</label>
+              <span class="description">JERRY Core stopped without you stopping it.</span>
+            </div>
+            <button type="button" class="switch" role="switch" id="coreStopped" aria-checked="false"><span class="switch-thumb"></span></button>
+          </div>
+          <hr class="separator" />
+          <div class="option" data-type>
+            <div class="option-text">
+              <label class="label" for="sound">🔊 Sound</label>
+              <span class="description">Play the Windows notification sound.</span>
+            </div>
+            <button type="button" class="switch" role="switch" id="sound" aria-checked="false"><span class="switch-thumb"></span></button>
+          </div>
+        </div>
+        <div class="card-footer">
+          <button type="button" class="button button--outline" id="test">Send test notification</button>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="core-title">
+        <div class="card-header">
+          <h2 class="card-title" id="core-title">🛡️ JERRY Core</h2>
+          <p class="card-description">Start and stop Core from the tray menu.</p>
+        </div>
+        <div class="card-content">
+          <dl class="facts">
+            <dt>Status</dt>
+            <dd id="core-status">…</dd>
+            <dt>Core version</dt>
+            <dd id="core-version">…</dd>
+            <dt>JERRY Desktop</dt>
+            <dd id="app-version">…</dd>
+            <dt>JERRY_HOME</dt>
+            <dd class="mono" id="core-home">…</dd>
+          </dl>
+        </div>
+      </section>
+
+      <p class="message" id="message" role="status" aria-live="polite"></p>
+    </main>
+  </body>
+</html>

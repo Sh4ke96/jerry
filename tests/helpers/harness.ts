@@ -25,7 +25,40 @@ export interface RunningCore {
 /** Port 0 keeps test Cores away from the default port, which the user's real Core may hold. */
 export const TEST_CORE_ENV = { JERRY_CORE_PORT: '0' } as const;
 
-export async function startCore(home: string, extraEnv: Record<string, string> = {}): Promise<RunningCore> {
+/** Fixture repositories created in this test file; test Cores add them as projects by default. */
+const fixtureRepos: string[] = [];
+
+export interface StartCoreOptions {
+  /** Repositories to add as projects once Core runs (default: every fixture repository of this test file). */
+  projects?: readonly string[];
+}
+
+/**
+ * Starts a test Core. JERRY monitors only projects, so the fixture repositories created so far are
+ * added as projects through the API, the way "jerry project add" does it; pass `projects: []` to
+ * test a repository that is not added.
+ */
+export async function startCore(home: string, extraEnv: Record<string, string> = {}, options: StartCoreOptions = {}): Promise<RunningCore> {
+  const core = await launchCore(home, extraEnv);
+  for (const repo of options.projects ?? fixtureRepos) {
+    if (fs.existsSync(repo)) await addProject(core, repo);
+  }
+  return core;
+}
+
+/** Adds a repository root as a project of the test Core. */
+export async function addProject(core: RunningCore, repo: string): Promise<void> {
+  const result = await api(core, 'POST', '/api/v1/projects', { path: repo });
+  if (result.status !== 201 && result.status !== 200) throw new Error(`Adding ${repo} as a project failed: ${result.status} ${JSON.stringify(result.body)}`);
+}
+
+/** Adds a project through the Core that runs for `home` (started by the CLI, not by the harness). */
+export async function addProjectAt(home: string, repo: string): Promise<void> {
+  const info = coreRuntimeInfoSchema.parse(JSON.parse(fs.readFileSync(path.join(home, 'run', 'core.json'), 'utf8')));
+  await addProject({ home, info } as RunningCore, repo);
+}
+
+async function launchCore(home: string, extraEnv: Record<string, string>): Promise<RunningCore> {
   const child = spawn(process.execPath, [CORE], {
     env: { ...process.env, ...TEST_CORE_ENV, JERRY_HOME: home, ...extraEnv },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -128,6 +161,7 @@ export function createFixtureRepo(dir: string): string {
   execFileSync('git', [...GIT_IDENTITY, '-C', dir, 'commit', '-q', '-m', 'initial']);
   fs.writeFileSync(path.join(dir, 'src', 'app.ts'), 'export const answer = 43; // user change, uncommitted\n');
   fs.writeFileSync(path.join(dir, 'notes.txt'), 'untracked user file\n');
+  fixtureRepos.push(dir);
   return dir;
 }
 

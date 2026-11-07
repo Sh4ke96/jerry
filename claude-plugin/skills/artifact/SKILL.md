@@ -13,7 +13,7 @@ else.
 
 ## 1. Read the task
 
-- Call `jerry_get_final_report` with the task ID. Its `artifact.planned` field shows whether the plan already
+- Call `get_final_report` with the task ID. Its `artifact.planned` field shows whether the plan already
   asked for an Artifact. Its `artifact.decision` shows whether the user already chose.
 - If the task is not DONE yet (`status: draft`), say so. Offer to wait, or to make the Artifact from the
   draft if the user prefers.
@@ -33,7 +33,7 @@ or delete there. Do not assume an answer, and do not create anything before they
 
 ## 3a. No Artifact
 
-Call `jerry_record_artifact` with `decision: "declined"` (and their reason, if they gave one). Done.
+Call `record_artifact` with `decision: "declined"` (and their reason, if they gave one). Done.
 
 ## 3b. An Artifact
 
@@ -48,7 +48,7 @@ Call `jerry_record_artifact` with `decision: "declined"` (and their reason, if t
   personal data or large code dumps.
 - Create it with your Artifact capability (in Claude Code: the Artifact tool), with a short title naming the
   task.
-- Call `jerry_record_artifact` with `decision: "created"`, the kind, the title and the Artifact's link
+- Call `record_artifact` with `decision: "created"`, the kind, the title and the Artifact's link
   (`https://claude.ai/…/artifact/…`). JERRY records only the decision and the link.
 - Give the user the link.
 

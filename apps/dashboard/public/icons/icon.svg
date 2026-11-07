@@ -1,4 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="96" fill="#2e6a8a"/>
-  <path d="M160 120h240v56h-48v184a56 56 0 0 1-56 56h-80a56 56 0 0 1-56-56v-56h64v48h56V176h-120z" fill="#ffffff"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- JERRY logo: the "J" of Geist Bold (SIL Open Font License 1.1) as a path, on a rounded square. Same drawing as apps/desktop/src-tauri/icons/source/jerry-logo.svg. -->
+  <rect width="1024" height="1024" rx="225" ry="225" fill="#09090b"/>
+  <path d="M503.8 812L503.8 812Q435.2 812 387.7 783.1Q340.2 754.1 315 704.1Q289.8 654.1 289 589.7L289 589.7L415.4 583.9Q416.2 646.7 439.4 676.5Q462.5 706.2 503.8 706.2L503.8 706.2Q546 706.2 569.1 677.3Q592.3 648.4 592.3 588L592.3 588L592.3 212L717.9 212L717.9 588Q717.9 656.6 691 707Q664.2 757.5 616.2 784.7Q568.3 812 503.8 812" fill="#fafafa"/>
 </svg>

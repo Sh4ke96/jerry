@@ -8,7 +8,9 @@ import { showEvents } from './events-command.js';
 import { install, uninstall } from './install-commands.js';
 import { evalStatus, labelRun, listCases, listRuns, runEvals, runPluginEval, setBaseline, showRun } from './eval-commands.js';
 import { listFindings, setFindingStatus, showFinding } from './findings-commands.js';
-import { excludeRepository, includeRepository, listExcludedRepositories } from './repo-commands.js';
+import { excludeRepository, includeRepository, listRepositories } from './repo-commands.js';
+import { addProject, listProjects, removeProject } from './project-commands.js';
+import { forgetRepository, pruneData, showDataUsage } from './data-commands.js';
 import { graphCommand, profileCommand, scanCommand } from './scan-command.js';
 import { showStatus } from './status-command.js';
 import { controlTask, createTask, decide, listTasks, revisePlan, showFinalReport, showPlanDiff, showReview, showTask, skipReview } from './task-commands.js';
@@ -20,6 +22,12 @@ const collect = (value: string, previous: string[] | undefined): string[] => [..
 function positiveInteger(value: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) throw new InvalidArgumentError('must be a positive integer');
+  return parsed;
+}
+
+function nonNegativeInteger(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) throw new InvalidArgumentError('must be a whole number, 0 or more');
   return parsed;
 }
 
@@ -120,10 +128,22 @@ for (const decision of ['approve', 'reject'] as const) {
     );
 }
 
-const repo = program.command('repo').description('Repositories JERRY monitors');
-repo.command('exclude <path>').description('Stop monitoring a repository (interactive; hard rules still apply)').action((target: string) => excludeRepository(target));
-repo.command('include <path>').description('Monitor an excluded repository again').action((target: string) => includeRepository(target));
-repo.command('list').description('List excluded repositories').action(() => listExcludedRepositories());
+const project = program.command('project').description('Projects: the repositories JERRY monitors (elsewhere only hard rules apply)');
+project
+  .command('add [path]')
+  .description('Monitor a Git repository (default: the one you are in; interactive: you type its path)')
+  .action((target: string | undefined) => addProject(target));
+project.command('remove <path>').description('Stop monitoring a project; its data stays (interactive: you type its path)').action((target: string) => removeProject(target));
+project
+  .command('list')
+  .description('List projects with their open tasks and last activity')
+  .option('--json', 'print the projects as JSON', false)
+  .action((options: { json: boolean }) => listProjects(options));
+
+const repo = program.command('repo').description('Repositories: scans, profiles, links (include/exclude/list are project add/remove/list)');
+repo.command('include <path>').description('Same as "jerry project add <path>"').action((target: string) => includeRepository(target));
+repo.command('exclude <path>').description('Same as "jerry project remove <path>"').action((target: string) => excludeRepository(target));
+repo.command('list').description('Same as "jerry project list"').action(() => listRepositories());
 repo
   .command('scan [path]')
   .description('Show what JERRY detects in a repository: languages, manifests, commands, CI, API schemas, migrations (read-only)')
@@ -214,6 +234,32 @@ evals
   .option('--runs <n>', 'runs per case', positiveInteger)
   .option('--trust', 'pass --trust-plugin (the JERRY plugin is yours)', false)
   .action((options: { runs?: number; trust: boolean }) => runPluginEval(options));
+
+const data = program.command('data').description('What JERRY stores, and deleting old data');
+data
+  .command('usage', { isDefault: true })
+  .description('Show what JERRY stores: rows and size per kind of data, per repository, backups and logs')
+  .option('--json', 'print the usage as JSON', false)
+  .action((options: { json: boolean }) => showDataUsage(options));
+data
+  .command('prune')
+  .description('Delete old data (interactive: a preview, then you type "delete"; a backup is taken first)')
+  .option('--done-older-than <days>', 'finished and cancelled tasks last changed more than <days> ago, with everything tied to them', nonNegativeInteger)
+  .option('--events-older-than <days>', 'events, sessions and subagent runs older than <days>', nonNegativeInteger)
+  .option('--evals-older-than <days>', 'eval runs older than <days> (baseline runs stay)', nonNegativeInteger)
+  .option('--backups-keep <n>', 'keep only the newest <n> backup files', nonNegativeInteger)
+  .action((options: { doneOlderThan?: number; eventsOlderThan?: number; evalsOlderThan?: number; backupsKeep?: number }) =>
+    pruneData({
+      ...(options.doneOlderThan === undefined ? {} : { doneOlderThanDays: options.doneOlderThan }),
+      ...(options.eventsOlderThan === undefined ? {} : { eventsOlderThanDays: options.eventsOlderThan }),
+      ...(options.evalsOlderThan === undefined ? {} : { evalsOlderThanDays: options.evalsOlderThan }),
+      ...(options.backupsKeep === undefined ? {} : { backupsKeep: options.backupsKeep }),
+    }),
+  );
+data
+  .command('forget <path>')
+  .description('Delete everything JERRY stores about a repository (no open tasks; interactive: you type its path)')
+  .action((target: string) => forgetRepository(target));
 
 const db = program.command('db').description('JERRY database');
 db.command('backup').description('Back up the database now (Core must be running)').action(() => backupNow());

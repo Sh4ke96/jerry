@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { findClaudeBinary } from '@jerry/platform';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createFixtureRepo, ROOT, tempDir } from '../helpers/harness.js';
+import { addProjectAt, createFixtureRepo, ROOT, tempDir } from '../helpers/harness.js';
 
 const claude = findClaudeBinary();
 const CURRENT = JSON.parse(fs.readFileSync(path.join(ROOT, 'claude-plugin', '.claude-plugin', 'plugin.json'), 'utf8')).version as string;
@@ -55,10 +55,12 @@ describe.skipIf(claude === null)('update and rollback across two versions (isola
   };
   const coreVersion = (cli: string): string => /JERRY Core (\S+):/.exec(jerry(cli, ['core', 'status']).output)?.[1] ?? '?';
 
-  it('installs the older version and creates data', () => {
+  it('installs the older version and creates data', async () => {
     expect(jerry(older, ['install']).exitCode).toBe(0);
     expect(jerry(older, ['core', 'start']).exitCode).toBe(0);
     expect(coreVersion(older)).toBe(CURRENT);
+    // What the user does with "jerry project add" in a terminal.
+    await addProjectAt(env.JERRY_HOME, repo);
     expect(jerry(older, ['task', 'create', '--repo', repo, '--title', 'Survives updates', '--scope', 'src/**']).output).toContain('Created JRY-0001');
     expect(jerry(older, ['core', 'stop']).exitCode).toBe(0);
   });

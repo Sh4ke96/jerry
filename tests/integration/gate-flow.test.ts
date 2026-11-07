@@ -119,14 +119,21 @@ describe('JERRY guard (bundled bridge + Core)', () => {
     expect((await api(core, 'POST', `/api/v1/tasks/${taskId}/approvals`, { stage: 'PLAN', version: 1, decision: 'APPROVED' })).status).toBe(409);
   });
 
-  it('stops monitoring an excluded repository but keeps enforcing the hard rules there', async () => {
-    expect((await api(core, 'POST', '/api/v1/repositories/exclusions', { repoPath: repo, excluded: true })).status).toBe(200);
+  it('stops monitoring a removed project but keeps enforcing the hard rules there', async () => {
+    const removed = await api(core, 'POST', '/api/v1/projects/remove', { path: repo });
+    expect(removed.status).toBe(200);
+    expect(removed.body).toMatchObject({ removed: true, openTasks: [taskId], warning: expect.stringContaining(`${taskId} stay open`) });
     expectPassed(write('README.md'));
-    expect(sessionContext()).toContain('excluded');
+    expect(sessionContext()).toContain('this project is not added');
     expectBlocked(bridge('Bash', { command: 'git push' }), 'hard.git-mutation');
     expectBlocked(write('.git/HEAD'), 'hard.git-metadata');
 
-    await api(core, 'POST', '/api/v1/repositories/exclusions', { repoPath: repo, excluded: false });
+    expect((await api(core, 'POST', '/api/v1/projects', { path: repo })).status).toBe(201);
+    expectWarned(write('README.md'), 'monitor.no-approved-plan');
+    // The former exclusion switch is a synonym: excluding removes the project, including adds it.
+    expect((await api(core, 'POST', '/api/v1/repositories/exclusions', { repoPath: repo, excluded: true })).status).toBe(200);
+    expectPassed(write('README.md'));
+    expect((await api(core, 'POST', '/api/v1/repositories/exclusions', { repoPath: repo, excluded: false })).status).toBe(200);
     expectWarned(write('README.md'), 'monitor.no-approved-plan');
   });
 

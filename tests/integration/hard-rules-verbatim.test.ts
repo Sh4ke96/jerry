@@ -17,7 +17,10 @@ describe('hard rules stay verbatim', () => {
     const bridge = fs.readFileSync(path.join(ROOT, 'apps', 'hook-bridge', 'src', 'main.ts'), 'utf8');
     const text = /const HARD_RULES_TEXT =\s*\n\s*'([^']*)';/.exec(bridge)?.[1];
     expect(text).toBeDefined();
-    expect(sha256(text ?? '')).toBe('4ac2ed01054f72eef9bf3c3be3c908b81adbb32903e0e72cc9e553aa5de3d18f');
+    // Last changed with the owner's explicit approval: "jerry project add/remove" and
+    // "jerry data prune/forget" added to the user-only commands.
+    expect(sha256(text ?? '')).toBe('140792725acdd57d214a6274c240662ea730d8f5375e271362e917f27fabc6b0');
+    expect(text).toContain('"jerry project add/remove", "jerry data prune/forget"');
   });
 
   it('keeps every hard-rule DENY reason of the gate', () => {

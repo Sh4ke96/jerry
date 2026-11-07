@@ -13,8 +13,9 @@ import { MAX_SUBAGENTS } from '@jerry/contracts/agents';
  *   - any command or Git-server MCP tool that changes Git state; only the user runs Git operations
  *   - any write into a .git directory
  *   - any write to, or command touching, JERRY data or Claude Code guard configuration
- *   - an agent running JERRY's user-only commands (approve, reject, repo exclude, ...) or its API
- * Everything else is monitoring: PASS, or WARN when Claude acts outside an approved plan.
+ *   - an agent running JERRY's user-only commands (approve, reject, project add, data prune, ...) or its API
+ * Everything else is monitoring, only inside projects the user added: PASS, or WARN when Claude acts
+ * outside an approved plan.
  */
 
 /** Side-effecting lookups are injected so the policy itself stays pure and testable. */
@@ -27,8 +28,11 @@ export interface GateContext {
   /** Git working tree root containing the path, or null when it is not inside a repository. */
   findRepoRoot(absolutePath: string): string | null;
   approvedPlans(repoRoot: string): readonly ApprovedPlan[];
-  /** True when the user excluded the repository from monitoring (hard rules still apply). */
-  isExcluded(repoRoot: string): boolean;
+  /**
+   * True when the repository lies in a project the user added to JERRY. Elsewhere only the hard
+   * rules apply: nothing is checked against plans.
+   */
+  isMonitored(repoRoot: string): boolean;
   /**
    * True when the file had the user's uncommitted changes when the task's plan was approved and
    * Claude was not warned about it yet. Absent where Git baselines are not known.
@@ -49,10 +53,11 @@ export interface GateContext {
 const READ_ONLY_AGENT = /jerry-[\w-]*-(?:analyst|reviewer)$/;
 
 /**
- * Commands only the user may run. Read-only ones (status, doctor, task list/show, repo list, core
- * status) stay available. Pausing, resuming and cancelling a task are user decisions.
+ * Commands only the user may run. Read-only ones (status, doctor, task list/show, project list, data
+ * usage, core status) stay available. Pausing, resuming and cancelling a task are user decisions, and
+ * so are adding or removing a project and deleting JERRY's data.
  */
-const USER_ONLY_JERRY_COMMAND = /\bjerry(?:\.mjs|\.cmd|\.ps1)?\s+(?:approve|reject|install|uninstall|ui|repo\s+(?:exclude|include)|task\s+(?:pause|resume|cancel)|core\s+(?:start|stop)|db\s+restore)\b/i;
+const USER_ONLY_JERRY_COMMAND = /\bjerry(?:\.mjs|\.cmd|\.ps1)?\s+(?:approve|reject|install|uninstall|ui|repo\s+(?:exclude|include)|project\s+(?:add|remove)|data\s+(?:prune|forget)|task\s+(?:pause|resume|cancel)|core\s+(?:start|stop)|db\s+restore)\b/i;
 /** Tools that start a Claude Code subagent. */
 const SUBAGENT_TOOLS: ReadonlySet<string> = new Set(['Task', 'Agent']);
 /** The Core API and the dashboard login: an agent holding a session could approve its own plan. */
@@ -178,8 +183,8 @@ function monitorWrite(target: string, cwd: string, context: GateContext, agentId
   if (repoRoot === null) {
     return decision('PASS', 'monitor.outside-repository', `${requested} is not inside a Git repository`);
   }
-  if (context.isExcluded(repoRoot)) {
-    return decision('PASS', 'monitor.repo-excluded', `${repoRoot} is excluded from JERRY monitoring by the user`, null, repoRoot);
+  if (!context.isMonitored(repoRoot)) {
+    return decision('PASS', 'monitor.not-a-project', `${repoRoot} is not added to JERRY; only hard rules apply there`, null, repoRoot);
   }
   const relative = relativeInside(real, repoRoot, platform) ?? requested;
   const plans = context.approvedPlans(repoRoot);
@@ -214,8 +219,8 @@ function monitorShell(cwd: string, context: GateContext, assessment: { readOnly:
   if (repoRoot === null) {
     return decision('PASS', 'monitor.outside-repository', `Working directory is not inside a Git repository (${assessment.reason})`);
   }
-  if (context.isExcluded(repoRoot)) {
-    return decision('PASS', 'monitor.repo-excluded', `${repoRoot} is excluded from JERRY monitoring by the user`, null, repoRoot);
+  if (!context.isMonitored(repoRoot)) {
+    return decision('PASS', 'monitor.not-a-project', `${repoRoot} is not added to JERRY; only hard rules apply there`, null, repoRoot);
   }
   const plans = context.approvedPlans(repoRoot);
   if (plans.length === 0) {

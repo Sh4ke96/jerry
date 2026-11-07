@@ -85,10 +85,10 @@ describe('continuous quality findings (bundled bridge + Core)', () => {
 
     const mcp = await McpClient.connect({ ...env, CLAUDE_PROJECT_DIR: repo });
     try {
-      const listed = await mcp.call('jerry_list_findings', {});
+      const listed = await mcp.call('list_findings', {});
       expect(listed.isError, listed.text).toBe(false);
       expect(listed.structured).toMatchObject({ count: 2, findings: [{ severity: 'P2', at: 'src/service.ts:8', rule: 'errors.promise-catch-noop' }, { severity: 'P3', rule: 'prose.vague-todo' }] });
-      const state = await mcp.call('jerry_get_state', {});
+      const state = await mcp.call('get_state', {});
       expect((state.structured['next'] as { details: string }).details).toContain('1 open P1/P2 quality finding(s)');
     } finally {
       mcp.close();

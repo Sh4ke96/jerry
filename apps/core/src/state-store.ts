@@ -13,6 +13,8 @@ import {
   type AnalysisReport,
   type AnalysisReportRecord,
   analysisReportRecordSchema,
+  type Project,
+  projectSchema,
   type ProjectProfile,
   projectProfileSchema,
   type TaskDetail,
@@ -61,7 +63,8 @@ import {
   workflowTransitionSchema,
 } from '@jerry/contracts';
 import { backupDatabase, openJerryDatabase, type JerryDatabase, type JerrySchema } from '@jerry/database';
-import { absolutePath, comparablePath, computePlanHash, computeReportHash, currentPlanDecision, decisionFor, matchesAnyGlob, relativeInside } from '@jerry/policy-engine';
+import { absolutePath, comparablePath, computePlanHash, computeReportHash, currentPlanDecision, decisionFor, isComparableInside, matchesAnyGlob, relativeInside } from '@jerry/policy-engine';
+import { writeFileAtomic } from '@jerry/platform';
 import { applyEvent, evaluateCompletion, globsOverlap, isTerminal, planLayers, WORK_STATES } from '@jerry/workflow';
 import { MAX_SUBAGENTS } from '@jerry/contracts/agents';
 import type { ProfileFingerprints } from '@jerry/discovery';
@@ -122,6 +125,8 @@ export interface StateStoreOptions {
   legacyStateFile: string;
   /** Read-only Git access; tests may replace it. */
   git?: GitReader;
+  /** JERRY_HOME/run/projects.json, rewritten at start and after every project change. */
+  projectsFile?: string;
 }
 
 /** When a Git baseline is taken. */
@@ -158,18 +163,22 @@ export class StateStore {
   private assignments = new Map<string, Assignment[]>();
   /** The last subagent that edited a file of a task: (task|file) → writer. */
   private readonly recentWriters = new Map<string, { agentId: string; at: number }>();
+  /** The projects the user added: the only repositories JERRY monitors. */
+  private projectList: Project[] = [];
 
   private constructor(
     private readonly database: JerryDatabase,
     private readonly git: GitReader,
+    private readonly projectsFile: string | null,
   ) {}
 
   static async open(options: StateStoreOptions): Promise<StateStore> {
     const database = await openJerryDatabase({ file: options.databaseFile, backupsDir: options.backupsDir });
-    const store = new StateStore(database, options.git ?? gitReader);
+    const store = new StateStore(database, options.git ?? gitReader, options.projectsFile ?? null);
     try {
       await store.importLegacyState(options.legacyStateFile);
       await store.reload();
+      store.writeProjectsFile();
     } catch (error) {
       await database.close();
       throw error;
@@ -1491,6 +1500,111 @@ export class StateStore {
     };
   }
 
+  /** The projects the user added, in the order of their roots. */
+  projects(): Project[] {
+    return this.projectList.map((project) => ({ ...project }));
+  }
+
+  /** The project containing a repository root or any other absolute path, if any (path-boundary aware). */
+  projectOf(target: string): Project | null {
+    const key = comparablePath(target, target, process.platform);
+    return this.projectList.find((project) => isComparableInside(key, comparablePath(project.repoRoot, project.repoRoot, process.platform))) ?? null;
+  }
+
+  /** True when JERRY monitors the path: it lies in a project the user added. */
+  isMonitored(target: string): boolean {
+    return this.projectOf(target) !== null;
+  }
+
+  /** Adds a project; adding one that exists changes nothing. `repoRoot` must already be a checked Git root. */
+  async addProject(repoRoot: string, now: Date, channel: Channel, note: string | null = null): Promise<{ project: Project; added: boolean }> {
+    const existing = this.projectList.find((project) => sameRoot(project.repoRoot, repoRoot));
+    if (existing !== undefined) return { project: { ...existing }, added: false };
+    const at = now.toISOString();
+    await this.database.db.transaction().execute(async (trx) => {
+      await trx.insertInto('projects').values({ repo_root: repoRoot, added_at: at, added_by: channel, note }).execute();
+      // An exclusion recorded before projects existed no longer describes it.
+      await trx.updateTable('repositories').set({ excluded_at: null, updated_at: at }).where('repo_id', '=', repositoryId(repoRoot)).where('excluded_at', 'is not', null).execute();
+      await audit(trx, at, 'project.add', repoRoot, { channel });
+    });
+    await this.reload();
+    this.writeProjectsFile();
+    return { project: { ...this.projectList.find((project) => sameRoot(project.repoRoot, repoRoot))! }, added: true };
+  }
+
+  /** Removes a project; its tasks stay in the database but nothing monitors them anymore. */
+  async removeProject(repoRoot: string, now: Date, channel: Channel): Promise<{ repoRoot: string; removed: boolean }> {
+    const existing = this.projectList.find((project) => sameRoot(project.repoRoot, repoRoot));
+    if (existing === undefined) return { repoRoot, removed: false };
+    const at = now.toISOString();
+    await this.database.db.transaction().execute(async (trx) => {
+      await trx.deleteFrom('projects').where('repo_root', '=', existing.repoRoot).execute();
+      await audit(trx, at, 'project.remove', existing.repoRoot, { channel });
+    });
+    await this.reload();
+    this.writeProjectsFile();
+    return { repoRoot: existing.repoRoot, removed: true };
+  }
+
+  /**
+   * Writes JERRY_HOME/run/projects.json for the hook bridge (atomically). Called at start and after
+   * every change; without a configured file (tests of the store alone) it does nothing.
+   */
+  writeProjectsFile(): void {
+    if (this.projectsFile === null) return;
+    writeFileAtomic(this.projectsFile, `${JSON.stringify({ version: 1, roots: this.projectList.map((project) => project.repoRoot) }, null, 2)}\n`);
+  }
+
+  /** Latest activity per repository root (comparable key): sessions seen there and task activity. */
+  async lastActivityByRepository(): Promise<Map<string, string>> {
+    const latest = new Map<string, string>();
+    const note = (root: string, at: string | null | undefined): void => {
+      if (at == null) return;
+      const key = comparablePath(root, root, process.platform);
+      if ((latest.get(key) ?? '') < at) latest.set(key, at);
+    };
+    const tasks = await this.database.db
+      .selectFrom('tasks')
+      .innerJoin('repositories', 'repositories.repo_id', 'tasks.repo_id')
+      .select((eb) => ['repositories.root_path', eb.fn.max('tasks.updated_at').as('at')])
+      .groupBy('repositories.root_path')
+      .execute();
+    for (const row of tasks) note(row.root_path, row.at);
+    const links = await this.database.db
+      .selectFrom('session_tasks')
+      .innerJoin('tasks', 'tasks.task_id', 'session_tasks.task_id')
+      .innerJoin('repositories', 'repositories.repo_id', 'tasks.repo_id')
+      .select((eb) => ['repositories.root_path', eb.fn.max('session_tasks.last_at').as('at')])
+      .groupBy('repositories.root_path')
+      .execute();
+    for (const row of links) note(row.root_path, row.at);
+    const sessions = await this.database.db.selectFrom('sessions').select(['cwd', 'last_seen_at']).orderBy('last_seen_at', 'desc').limit(SNAPSHOT_SESSIONS).execute();
+    for (const project of this.projectList) {
+      const key = comparablePath(project.repoRoot, project.repoRoot, process.platform);
+      const seen = sessions.find((session) => isComparableInside(comparablePath(session.cwd, session.cwd, process.platform), key));
+      note(project.repoRoot, seen?.last_seen_at);
+    }
+    return latest;
+  }
+
+  /**
+   * Runs `work` with the database connection held exclusively: no other query of Core runs in
+   * between, so `work` may open and close its own transaction on the raw connection.
+   */
+  async exclusive<T>(work: (raw: JerryDatabase['raw']) => T): Promise<T> {
+    return this.database.db.connection().execute(async () => work(this.database.raw));
+  }
+
+  /** Reloads the in-memory snapshot after `exclusive` changed the database. */
+  async refresh(): Promise<void> {
+    await this.reload();
+    this.writeProjectsFile();
+  }
+
+  get backupsDir(): string {
+    return this.database.backupsDir;
+  }
+
   /** Excluding stops monitoring for the repository; hard rules keep applying there. */
   async setExcluded(repoRoot: string, excluded: boolean, now: Date, channel: Channel = 'cli'): Promise<void> {
     const at = now.toISOString();
@@ -1673,6 +1787,8 @@ export class StateStore {
     const excluded = await db.selectFrom('repositories').select(['root_path', 'excluded_at']).where('excluded_at', 'is not', null).execute();
     const sessionTotal = await db.selectFrom('sessions').select((eb) => eb.fn.countAll<number>().as('count')).executeTakeFirstOrThrow();
     const nextTaskNumber = await db.selectFrom('settings').select('value_json').where('key', '=', NEXT_TASK_NUMBER).executeTakeFirst();
+    const projects = await db.selectFrom('projects').selectAll().orderBy('repo_root').execute();
+    this.projectList = projects.map((row) => projectSchema.parse({ repoRoot: row.repo_root, addedAt: row.added_at, addedBy: row.added_by, note: row.note }));
 
     this.state = coreStateSchema.parse({
       schemaVersion: 1,
@@ -1806,8 +1922,12 @@ function emptyState(): CoreState {
   return { schemaVersion: 1, nextTaskNumber: 1, tasks: [], approvals: [], sessions: [], excludedRepos: [] };
 }
 
+function sameRoot(a: string, b: string): boolean {
+  return comparablePath(a, a, process.platform) === comparablePath(b, b, process.platform);
+}
+
 /** Stable ID per working tree root, independent of path spelling (case, separators on Windows). */
-function repositoryId(repoRoot: string): string {
+export function repositoryId(repoRoot: string): string {
   const key = comparablePath(repoRoot, repoRoot, process.platform);
   return `repo_${createHash('sha256').update(key, 'utf8').digest('hex').slice(0, 16)}`;
 }

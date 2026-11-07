@@ -12,12 +12,12 @@ the user approves the plan are recorded as deviations.
 ## 1. Take in the task
 
 - Restate the goal in one or two sentences. If something essential is missing, ask the user first.
-- Call `jerry_get_state`. If an open task already covers this change, continue with it instead of starting a
+- Call `get_state`. If an open task already covers this change, continue with it instead of starting a
   new one.
-- Call `jerry_get_project_profile` for the stack, commands, instruction files and suspicious text.
+- Call `get_project_profile` for the stack, commands, instruction files and suspicious text.
 - Decide the focus: repo-relative globs of the area the change will likely touch (`src/auth/**`,
   `tests/auth/**`). Keep it narrow; it becomes the analysts' starting point, not the approved scope.
-- Call `jerry_start_task` with a short `title`, the `goal` and the `focus`. Note the task ID it returns.
+- Call `start_task` with a short `title`, the `goal` and the `focus`. Note the task ID it returns.
 
 ## 2. Run the analysts (at most three)
 
@@ -33,12 +33,12 @@ Start them in parallel, in one message, each with the Task/Agent tool:
 - Choose the ones the change needs. A backend change without UI still gets the quality analyst for tests. A
   docs-only change may need none (go straight to `/jerry:plan` with the task ID).
 - Give each one the task ID, the goal, the focus globs and what in particular to look at. Tell it to submit
-  its report with `jerry_submit_analysis_report` for that task ID.
+  its report with `submit_analysis_report` for that task ID.
 - Analysts only read. Do not ask them to edit, run commands or fix anything.
 
 ## 3. Read the reports
 
-- Call `jerry_get_analysis` with the task ID. It lists every report (observations with evidence, risks,
+- Call `get_analysis` with the task ID. It lists every report (observations with evidence, risks,
   recommendations, confidence, gaps), citations JERRY could not verify, and analysts that stopped without a
   report or timed out.
 - If an analyst left no report, or its citations failed, you may run that one analyst once more with what
@@ -48,7 +48,7 @@ Start them in parallel, in one message, each with the Task/Agent tool:
 
 ## 4. Build the plan
 
-Use `/jerry:plan` with the same task ID (`jerry_submit_plan` with `taskId`):
+Use `/jerry:plan` with the same task ID (`submit_plan` with `taskId`):
 
 - Set `analysis.reports` to the IDs of the reports the plan uses, and `analysis.gaps` to every gap
   (missing analyst, unverified citation, what an analyst could not check).

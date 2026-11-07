@@ -6,7 +6,7 @@ const assess = (toolName: string) => assessMcpGitUsage(parseMcpToolName(toolName
 describe('parseMcpToolName', () => {
   it('splits server and tool, including plugin-provided servers', () => {
     expect(parseMcpToolName('mcp__github__push_files')).toEqual({ server: 'github', tool: 'push_files' });
-    expect(parseMcpToolName('mcp__plugin_jerry_jerry__get_status')).toEqual({ server: 'plugin_jerry_jerry', tool: 'get_status' });
+    expect(parseMcpToolName('mcp__plugin_jerry_guardian__get_status')).toEqual({ server: 'plugin_jerry_guardian', tool: 'get_status' });
     expect(parseMcpToolName('Write')).toBeNull();
   });
 });

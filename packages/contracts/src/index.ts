@@ -492,7 +492,10 @@ export type OpenTask = z.infer<typeof openTaskSchema>;
 export const sessionRegistrationResponseSchema = z.object({
   registered: z.literal(true),
   repoRoot: z.string().nullable(),
+  /** True when JERRY does not monitor the session's directory (the opposite of `monitored`; kept for older bridges). */
   excluded: z.boolean(),
+  /** True only inside a project the user added; missing only from an older Core. */
+  monitored: z.boolean().optional(),
   approvedPlans: z.array(approvedPlanSummarySchema),
   /** Missing only from an older Core. */
   openTasks: z.array(openTaskSchema).optional(),
@@ -1090,7 +1093,10 @@ export type TaskDetail = z.infer<typeof taskDetailSchema>;
 /** Everything JERRY knows about the repository containing a path (used by MCP tools and the dashboard). */
 export const repositoryStateSchema = z.object({
   repoRoot: z.string().nullable(),
+  /** True when JERRY does not monitor this repository (the opposite of `monitored`). */
   excluded: z.boolean(),
+  /** True only inside a project the user added; missing only from an older Core. */
+  monitored: z.boolean().optional(),
   tasks: z.array(taskSummarySchema),
   /** Tasks the asking session worked on, when it said which session it is. */
   sessionTasks: z.array(taskIdSchema).default([]),
@@ -1153,11 +1159,173 @@ export const repositoryScanRequestSchema = z.object({ repoPath: z.string().min(1
 /** A known repository as the dashboard lists it. */
 export const repositorySummarySchema = z.object({
   repoRoot: z.string(),
+  /** True when JERRY does not monitor it, i.e. it is not inside a project the user added. */
   excluded: z.boolean(),
+  /** True when the repository is a project the user added (or lies inside one). */
+  project: z.boolean().optional(),
   openTasks: z.number().int().nonnegative(),
   profile: projectProfileSchema.nullable(),
 });
 export type RepositorySummary = z.infer<typeof repositorySummarySchema>;
+
+// --- Projects: the repositories JERRY monitors --------------------------------------------------
+
+/** A repository the user added. JERRY monitors only projects; elsewhere only hard rules apply. */
+export const projectSchema = z.object({
+  /** Git working tree root as found on disk. */
+  repoRoot: z.string().min(1),
+  addedAt: z.iso.datetime(),
+  /** "cli", "dashboard" or "migration" (repositories that had open tasks when projects were introduced). */
+  addedBy: z.string(),
+  note: z.string().nullable(),
+});
+export type Project = z.infer<typeof projectSchema>;
+
+/** A project as `jerry project list` and the dashboard show it. */
+export const projectSummarySchema = projectSchema.extend({
+  tasks: z.number().int().nonnegative(),
+  openTasks: z.number().int().nonnegative(),
+  /** Latest task activity or session seen in the project; null when nothing happened yet. */
+  lastActivityAt: z.iso.datetime().nullable(),
+  /** False when the directory no longer exists on disk. */
+  exists: z.boolean(),
+});
+export type ProjectSummary = z.infer<typeof projectSummarySchema>;
+
+/** Adds the repository containing `path`; it must be a Git working tree root's descendant (or the root). */
+export const projectAddRequestSchema = z.object({
+  path: z.string().min(1),
+  note: z.string().trim().max(500).optional(),
+  /** Required from the dashboard: the repository root typed by the user. */
+  confirmation: z.string().optional(),
+});
+export const projectAddResultSchema = z.object({ project: projectSchema, added: z.boolean() });
+export type ProjectAddResult = z.infer<typeof projectAddResultSchema>;
+
+export const projectRemoveRequestSchema = z.object({
+  path: z.string().min(1),
+  /** Required from the dashboard: the repository root typed by the user. */
+  confirmation: z.string().optional(),
+});
+/** Open tasks stay in the database; they are named in the warning because nothing monitors them anymore. */
+export const projectRemoveResultSchema = z.object({
+  repoRoot: z.string(),
+  removed: z.boolean(),
+  openTasks: z.array(taskIdSchema),
+  warning: z.string().nullable(),
+});
+export type ProjectRemoveResult = z.infer<typeof projectRemoveResultSchema>;
+
+/** JERRY_HOME/run/projects.json, written by Core for the hook bridge. */
+export const projectsFileSchema = z.object({ version: z.literal(1), roots: z.array(z.string().min(1)) });
+export type ProjectsFile = z.infer<typeof projectsFileSchema>;
+
+// --- Data: what JERRY stores, and deleting old data ---------------------------------------------
+
+/** system: the audit log, settings and the migration history. */
+export const DATA_CATEGORIES = ['tasks', 'analysis', 'review', 'quality', 'events', 'sessions', 'git', 'projects', 'evals', 'system'] as const;
+export const dataCategorySchema = z.enum(DATA_CATEGORIES);
+export type DataCategory = z.infer<typeof dataCategorySchema>;
+
+const count = z.number().int().nonnegative();
+
+/** What JERRY stores; bytes of tables are SQLite's page sizes (indexes included), an estimate. */
+export const dataUsageSchema = z.object({
+  at: z.iso.datetime(),
+  database: z.object({ file: z.string(), bytes: count }),
+  categories: z.array(
+    z.object({
+      category: dataCategorySchema,
+      rows: count,
+      bytes: count,
+      tables: z.array(z.object({ table: z.string(), rows: count, bytes: count })),
+    }),
+  ),
+  /** Projects and every other repository JERRY has data of. */
+  projects: z.array(
+    z.object({
+      repoRoot: z.string(),
+      project: z.boolean(),
+      tasks: count,
+      openTasks: count,
+      events: count,
+      lastActivityAt: z.iso.datetime().nullable(),
+    }),
+  ),
+  backups: z.object({ dir: z.string(), count, bytes: count, newestAt: z.iso.datetime().nullable() }),
+  logs: z.object({ dir: z.string(), bytes: count }),
+  /** Database, backups and logs. */
+  totalBytes: count,
+  /** Events and sessions older than this are removed automatically. */
+  retentionDays: z.number().int().positive(),
+});
+export type DataUsage = z.infer<typeof dataUsageSchema>;
+
+const days = z.number().int().min(0).max(36500);
+
+/** What to delete; at least one option is required to delete anything. */
+export const pruneOptionsSchema = z.object({
+  /** DONE and CANCELLED tasks last changed more than this many days ago, with everything tied to them. */
+  doneOlderThanDays: days.optional(),
+  /** Events, sessions and subagent runs older than this; untied quality batches and test runs too. */
+  eventsOlderThanDays: days.optional(),
+  /** Eval runs older than this, except runs that were ever a baseline. */
+  evalsOlderThanDays: days.optional(),
+  /** Backup files beyond the newest N (the backup taken before the prune always stays). */
+  backupsKeep: z.number().int().min(0).max(1000).optional(),
+});
+export type PruneOptions = z.infer<typeof pruneOptionsSchema>;
+
+export const pruneRequestSchema = pruneOptionsSchema.extend({
+  /** Required from the dashboard: the word "delete" typed by the user. */
+  confirmation: z.string().optional(),
+});
+
+/** Rows per table, and the files, a prune deletes. The preview and the prune compute it the same way. */
+export const prunePreviewSchema = z.object({
+  options: pruneOptionsSchema,
+  cutoffs: z.object({ done: z.iso.datetime().nullable(), events: z.iso.datetime().nullable(), evals: z.iso.datetime().nullable() }),
+  tasks: z.array(taskIdSchema),
+  rows: z.record(z.string(), count),
+  totalRows: count,
+  backups: z.object({ count, bytes: count, files: z.array(z.string()) }),
+});
+export type PrunePreview = z.infer<typeof prunePreviewSchema>;
+
+export const pruneResultSchema = prunePreviewSchema.extend({
+  at: z.iso.datetime(),
+  /** The backup taken right before deleting. */
+  backupFile: z.string(),
+  databaseBytesBefore: count,
+  databaseBytesAfter: count,
+});
+export type PruneResult = z.infer<typeof pruneResultSchema>;
+
+export const forgetRequestSchema = z.object({
+  /** The repository (it may no longer exist on disk). */
+  path: z.string().min(1),
+  /** Required from the dashboard: the repository root typed by the user. */
+  confirmation: z.string().optional(),
+});
+
+/** Everything JERRY stores about one repository; refused while it has open tasks. */
+export const forgetPreviewSchema = z.object({
+  repoRoot: z.string(),
+  project: z.boolean(),
+  tasks: z.array(taskIdSchema),
+  openTasks: z.array(taskIdSchema),
+  rows: z.record(z.string(), count),
+  totalRows: count,
+});
+export type ForgetPreview = z.infer<typeof forgetPreviewSchema>;
+
+export const forgetResultSchema = forgetPreviewSchema.extend({
+  at: z.iso.datetime(),
+  backupFile: z.string(),
+  databaseBytesBefore: count,
+  databaseBytesAfter: count,
+});
+export type ForgetResult = z.infer<typeof forgetResultSchema>;
 
 /** Gate decisions for hypothetical edits: evaluated, never recorded. */
 export const gatePreviewRequestSchema = z.object({

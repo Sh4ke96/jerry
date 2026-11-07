@@ -30,6 +30,8 @@ export interface JerryPaths {
   autostartStampFile: string;
   /** Present after "jerry core stop": hooks must not restart Core against the user's wish. */
   autostartDisabledFile: string;
+  /** Roots of the projects the user added; written by Core, read by the hook bridge. */
+  projectsFile: string;
   /** Installed copy of Core that the hooks may start automatically. */
   runtimeDir: string;
   runtimeCoreFile: string;
@@ -62,6 +64,7 @@ export function jerryPaths(home: string): JerryPaths {
     coreLockFile: path.join(runDir, 'core.lock'),
     autostartStampFile: path.join(runDir, 'autostart.stamp'),
     autostartDisabledFile: path.join(runDir, 'autostart.disabled'),
+    projectsFile: path.join(runDir, 'projects.json'),
     runtimeDir,
     runtimeCoreFile: path.join(runtimeDir, 'core', 'core.mjs'),
     stateDir,

@@ -1,8 +1,9 @@
 import type { PlanGrade } from '@jerry/contracts';
 import { EMOJI } from '@jerry/contracts/emoji';
 import { defineComponent, type PropType } from 'vue';
-import { Badge, type Tone } from './Badge';
-import { Emoji } from './Emoji';
+import { LIST } from '../lib/classes';
+import { Section } from './Section';
+import { StatusBadge, type Tone } from './StatusBadge';
 
 const LEVEL: Record<PlanGrade['level'], { label: string; tone: Tone; emoji: string }> = {
   complete: { label: 'complete', tone: 'pass', emoji: EMOJI.pass },
@@ -24,32 +25,37 @@ export const PlanGradeView = defineComponent({
       const missing = grade.checks.filter((check) => !check.passed);
       const level = LEVEL[grade.level];
       return (
-        <details class="plan-section plan-grade" open={missing.some((check) => check.weight === 'major')}>
-          <summary>
-            <Emoji symbol={EMOJI.plan} />
-            Plan completeness{' '}
-            <Badge tone={level.tone} emoji={level.emoji}>
-              {level.label}
-            </Badge>{' '}
-            <span class="muted small">
-              {grade.level === 'scope-only' ? 'nothing to grade' : `${grade.score}/100`} · plan v{grade.planVersion} · informational, you decide
-            </span>
-          </summary>
-          <div class="plan-section__body">
-            {missing.length === 0 ? (
-              <p class="muted">Every check passed ({grade.checks.length}).</p>
-            ) : (
-              <ul class="list">
-                {missing.map((check) => (
-                  <li key={check.id}>
-                    <Badge tone={check.weight === 'major' ? 'deny' : 'warn'}>{check.weight}</Badge> {check.detail}
-                  </li>
-                ))}
-              </ul>
-            )}
-            {missing.length > 0 && <p class="muted small">Passed: {grade.checks.length - missing.length} of {grade.checks.length} checks.</p>}
-          </div>
-        </details>
+        <Section class="plan-grade" emoji={EMOJI.plan} defaultOpen={missing.some((check) => check.weight === 'major')}>
+          {{
+            title: () => [
+              'Plan completeness ',
+              <StatusBadge tone={level.tone} emoji={level.emoji}>
+                {level.label}
+              </StatusBadge>,
+              <span class="text-muted-foreground text-xs font-normal">
+                {grade.level === 'scope-only' ? 'nothing to grade' : `${grade.score}/100`} · plan v{grade.planVersion} · informational, you decide
+              </span>,
+            ],
+            default: () => [
+              missing.length === 0 ? (
+                <p class="text-muted-foreground">Every check passed ({grade.checks.length}).</p>
+              ) : (
+                <ul class={LIST}>
+                  {missing.map((check) => (
+                    <li key={check.id}>
+                      <StatusBadge tone={check.weight === 'major' ? 'deny' : 'warn'}>{check.weight}</StatusBadge> {check.detail}
+                    </li>
+                  ))}
+                </ul>
+              ),
+              missing.length > 0 && (
+                <p class="text-muted-foreground mt-2 text-xs">
+                  Passed: {grade.checks.length - missing.length} of {grade.checks.length} checks.
+                </p>
+              ),
+            ],
+          }}
+        </Section>
       );
     };
   },

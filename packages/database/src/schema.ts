@@ -9,7 +9,7 @@ export interface RepositoriesTable {
   repo_id: string;
   /** Canonical working tree root as found on disk (original case). */
   root_path: string;
-  /** Set while the user excludes the repository from monitoring (hard rules still apply). */
+  /** Set by the former exclusion command; kept for history, monitoring follows the projects table. */
   excluded_at: string | null;
   created_at: string;
   updated_at: string;
@@ -400,7 +400,18 @@ export interface ArtifactDecisionsTable {
   created_at: string;
 }
 
+/** A repository the user added to JERRY; only these are monitored. */
+export interface ProjectsTable {
+  /** Git working tree root as found on disk (original case). */
+  repo_root: string;
+  added_at: string;
+  /** Who added it: the CLI user, the dashboard, or the migration that introduced projects. */
+  added_by: string;
+  note: string | null;
+}
+
 export interface JerrySchema {
+  projects: ProjectsTable;
   hook_events: HookEventsTable;
   repositories: RepositoriesTable;
   tasks: TasksTable;

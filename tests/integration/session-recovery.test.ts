@@ -55,8 +55,8 @@ describe('session ↔ task correlation and session recovery (bundled bridge + MC
 
   it('links a submitted plan to the session the hook saw for that tool use, not the MCP server’s env', async () => {
     const client = await connect('stale-session-from-env');
-    expect(preToolUse('session-a', 'mcp__plugin_jerry_jerry__jerry_submit_plan', 'toolu_submit').exitCode).toBe(0);
-    const submitted = await client.call('jerry_submit_plan', { title: 'Greeting helper', plan: samplePlan(repo) }, 'toolu_submit');
+    expect(preToolUse('session-a', 'mcp__plugin_jerry_guardian__submit_plan', 'toolu_submit').exitCode).toBe(0);
+    const submitted = await client.call('submit_plan', { title: 'Greeting helper', plan: samplePlan(repo) }, 'toolu_submit');
     expect(submitted.isError, submitted.text).toBe(false);
     taskId = submitted.structured['taskId'] as string;
     expect((await detail()).sessions).toMatchObject([{ sessionId: 'session-a', lastActivity: 'plan.submitted', endedAt: null }]);
@@ -70,7 +70,7 @@ describe('session ↔ task correlation and session recovery (bundled bridge + MC
 
     // No tool-use ID (an older Claude Code): the session ID from the server's environment is used.
     const client = await connect('session-a');
-    const saved = await client.call('jerry_save_checkpoint', { taskId, summary: 'Added greet() in src/greeting/greet.ts.', nextSteps: ['Write the unit test', 'Update the README'] });
+    const saved = await client.call('save_checkpoint', { taskId, summary: 'Added greet() in src/greeting/greet.ts.', nextSteps: ['Write the unit test', 'Update the README'] });
     expect(saved.isError, saved.text).toBe(false);
     const task = await detail();
     expect(task.checkpoints).toMatchObject([{ sessionId: 'session-a', summary: 'Added greet() in src/greeting/greet.ts.', nextSteps: ['Write the unit test', 'Update the README'] }]);
@@ -80,8 +80,8 @@ describe('session ↔ task correlation and session recovery (bundled bridge + MC
 
   it('refuses an invalid checkpoint with the reason', async () => {
     const client = await connect('session-a');
-    expect((await client.call('jerry_save_checkpoint', { taskId, summary: '' })).isError).toBe(true);
-    const unknown = await client.call('jerry_save_checkpoint', { taskId: 'JRY-9999', summary: 'x' });
+    expect((await client.call('save_checkpoint', { taskId, summary: '' })).isError).toBe(true);
+    const unknown = await client.call('save_checkpoint', { taskId: 'JRY-9999', summary: 'x' });
     expect(unknown.isError).toBe(true);
     expect(unknown.text).toContain('Unknown task');
   });
@@ -95,7 +95,7 @@ describe('session ↔ task correlation and session recovery (bundled bridge + MC
     expect(context).toContain(`Open JERRY tasks: 🛠️ ${taskId} "Greeting helper": in implementation, last worked on`);
     expect(context).toContain('last checkpoint: Added greet() in src/greeting/greet.ts. 💡 Next: Write the unit test; Update the README');
     expect(context).toContain('check them against the current code (git status, git diff)');
-    expect(context).toContain('Save progress with jerry_save_checkpoint');
+    expect(context).toContain('Save progress with the save_checkpoint tool');
     // The hard-rule statement is untouched.
     expect(context).toContain('you may not run any Git command that changes anything');
   });
@@ -106,7 +106,7 @@ describe('session ↔ task correlation and session recovery (bundled bridge + MC
     expect((await detail()).sessions.find((session) => session.sessionId === 'session-a')).toMatchObject({ endedAt: null, endReason: null });
 
     const client = await connect('session-a');
-    const state = (await client.call('jerry_get_state')).structured;
+    const state = (await client.call('get_state')).structured;
     expect(state['currentTask']).toMatchObject({ taskId, workedInThisSession: true, lastCheckpoint: { summary: 'Added greet() in src/greeting/greet.ts.' } });
   });
 
@@ -115,14 +115,14 @@ describe('session ↔ task correlation and session recovery (bundled bridge + MC
     const context = sessionStart('session-c', 'startup');
     expect(context).toContain(`There is no approved JERRY plan`);
     expect(context).toContain(`${taskId} "Greeting helper": paused, do not continue it until the user resumes it`);
-    expect(context).not.toContain('Save progress with jerry_save_checkpoint');
+    expect(context).not.toContain('Save progress with the save_checkpoint tool');
   });
 
   it('keeps finished work out of the start context, and refuses checkpoints on it', async () => {
     await api(core, 'POST', `/api/v1/tasks/${taskId}/transitions`, { event: 'task.cancelled' });
     expect(sessionStart('session-d', 'startup')).not.toContain('Open JERRY tasks');
     const client = await connect('session-d');
-    const refused = await client.call('jerry_save_checkpoint', { taskId, summary: 'too late' });
+    const refused = await client.call('save_checkpoint', { taskId, summary: 'too late' });
     expect(refused.isError).toBe(true);
     expect(refused.text).toContain('CANCELLED');
   });

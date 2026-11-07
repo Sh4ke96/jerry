@@ -3,19 +3,25 @@ import { EMOJI, STATE_EMOJI } from '@jerry/contracts/emoji';
 import { availableEvents, diffPlans, STATE_LABELS, WORK_STATES, type PlanDiff } from '@jerry/workflow';
 import { defineComponent, onMounted, reactive, ref } from 'vue';
 import { api } from '../api';
-import { Badge } from '../components/Badge';
-import { Emoji, resultEmoji } from '../components/Emoji';
-import { ConfirmDialog } from '../components/ConfirmDialog';
 import { AnalysisReports } from '../components/AnalysisReports';
+import { ConfirmDialog } from '../components/ConfirmDialog';
+import { Emoji, resultEmoji } from '../components/Emoji';
+import { Fact, Facts } from '../components/Facts';
 import { FindingsPanel } from '../components/Findings';
 import { ArtifactsList, FinalReportView } from '../components/FinalReport';
 import { ImplementationReportView } from '../components/ImplementationReport';
-import { PlanDocumentView } from '../components/PlanDocument';
 import { PlanDiffView } from '../components/PlanDiff';
+import { PlanDocumentView } from '../components/PlanDocument';
 import { PlanDriftView } from '../components/PlanDrift';
 import { PlanGradeView } from '../components/PlanGrade';
 import { ReviewPanel } from '../components/Review';
+import { Section } from '../components/Section';
+import { StatusBadge } from '../components/StatusBadge';
+import { Button } from '../components/ui/button';
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { formatTime, isIntake, isOpen, stateTone } from '../format';
+import { CHIP, LIST } from '../lib/classes';
+import { cn } from '../lib/utils';
 import { handleError, perform, state } from '../state';
 
 /** States in which the task card shows the independent review. */
@@ -186,97 +192,103 @@ export const Tasks = defineComponent({
     const actions = (task: TaskSummary) => {
       const allowed = availableEvents(task.state, 'user');
       const ask = (action: ConfirmedAction) => () => (pending.value = { task, action });
-      const buttons = [];
+      const decisions = [];
+      const views = [];
       if (allowed.includes('implementation.accepted') && task.lastReport !== null) {
-        buttons.push(
-          <button key="accept" class="button button--primary" onClick={ask('accept')}>
+        decisions.push(
+          <Button key="accept" size="sm" onClick={ask('accept')}>
             Accept implementation
-          </button>,
+          </Button>,
         );
       }
       if (allowed.includes('changes.requested') && task.lastReport !== null) {
-        buttons.push(
-          <button key="request-changes" class="button" onClick={ask('request-changes')}>
+        decisions.push(
+          <Button key="request-changes" variant="outline" size="sm" onClick={ask('request-changes')}>
             Request changes
-          </button>,
+          </Button>,
         );
       }
       if (allowed.includes('plan.approved')) {
-        buttons.push(
-          <button key="approve" class="button button--primary" onClick={ask('approve')}>
+        decisions.push(
+          <Button key="approve" size="sm" onClick={ask('approve')}>
             Approve plan v{task.plan.version}
-          </button>,
+          </Button>,
         );
       }
       if (allowed.includes('plan.rejected')) {
-        buttons.push(
-          <button key="reject" class="button" onClick={ask('reject')}>
+        decisions.push(
+          <Button key="reject" variant="outline" size="sm" onClick={ask('reject')}>
             {task.state === 'IMPLEMENTATION' ? 'Withdraw approval' : 'Reject'}
-          </button>,
+          </Button>,
         );
       }
       if (allowed.includes('task.paused')) {
-        buttons.push(
-          <button key="pause" class="button" disabled={busy.value} onClick={() => control(task, 'task.paused')}>
+        decisions.push(
+          <Button key="pause" variant="outline" size="sm" disabled={busy.value} onClick={() => control(task, 'task.paused')}>
             Pause
-          </button>,
+          </Button>,
         );
       }
       if (allowed.includes('task.resumed')) {
-        buttons.push(
-          <button key="resume" class="button button--primary" disabled={busy.value} onClick={() => control(task, 'task.resumed')}>
+        decisions.push(
+          <Button key="resume" size="sm" disabled={busy.value} onClick={() => control(task, 'task.resumed')}>
             Resume
-          </button>,
+          </Button>,
         );
       }
       if (allowed.includes('task.cancelled')) {
-        buttons.push(
-          <button key="cancel" class="button button--quiet" onClick={ask('cancel')}>
+        decisions.push(
+          <Button key="cancel" variant="ghost" size="sm" class="text-destructive hover:text-destructive" onClick={ask('cancel')}>
             Cancel task
-          </button>,
+          </Button>,
         );
       }
       if (WORK_STATES.has(task.state) && task.plan.document !== undefined) {
-        buttons.push(
-          <button key="drift" class="button button--quiet" onClick={() => void toggleDrift(task.taskId)}>
+        views.push(
+          <Button key="drift" variant="ghost" size="sm" onClick={() => void toggleDrift(task.taskId)}>
             {drifts[task.taskId] === undefined ? 'Plan drift' : 'Hide drift'}
-          </button>,
+          </Button>,
         );
       }
       if (task.plan.version > 1) {
-        buttons.push(
-          <button key="diff" class="button button--quiet" onClick={() => void toggleDiff(task)}>
+        views.push(
+          <Button key="diff" variant="ghost" size="sm" onClick={() => void toggleDiff(task)}>
             {diffs[task.taskId] === undefined ? `Changes since v${task.plan.version - 1}` : 'Hide changes'}
-          </button>,
+          </Button>,
         );
       }
       if (task.lastReport !== null) {
-        buttons.push(
-          <button key="final-report" class="button button--quiet" onClick={() => (finalReports[task.taskId] = !finalReports[task.taskId])}>
+        views.push(
+          <Button key="final-report" variant="ghost" size="sm" onClick={() => (finalReports[task.taskId] = !finalReports[task.taskId])}>
             {finalReports[task.taskId] === true ? 'Hide final report' : 'Final report'}
-          </button>,
+          </Button>,
         );
       }
-      buttons.push(
-        <button key="history" class="button button--quiet" onClick={() => toggleHistory(task.taskId)}>
+      views.push(
+        <Button key="history" variant="ghost" size="sm" onClick={() => toggleHistory(task.taskId)}>
           {histories[task.taskId] === undefined ? 'History' : 'Hide history'}
-        </button>,
+        </Button>,
       );
-      return <div class="actions">{buttons}</div>;
+      return (
+        <div class="flex flex-wrap items-center gap-2 border-t pt-4">
+          {decisions}
+          <div class="flex flex-wrap gap-1 sm:ml-auto">{views}</div>
+        </div>
+      );
     };
 
     const history = (taskId: string) => {
       const steps = histories[taskId];
       if (steps === undefined) return null;
-      if (steps === null) return <p class="muted small">Loading history…</p>;
-      if (steps.length === 0) return <p class="muted small">No transitions recorded; the task predates workflow states.</p>;
+      if (steps === null) return <p class="text-muted-foreground text-xs">Loading history…</p>;
+      if (steps.length === 0) return <p class="text-muted-foreground text-xs">No transitions recorded; the task predates workflow states.</p>;
       return (
-        <ol class="history">
+        <ol class="history grid gap-1.5 rounded-lg border p-4 text-sm">
           {steps.map((step, index) => (
             <li key={index}>
               <Emoji symbol={STATE_EMOJI[step.to]} />
-              <span class="muted">{formatTime(step.at)}</span> {step.from === null ? 'created' : STATE_LABELS[step.from]} → <strong>{STATE_LABELS[step.to]}</strong>{' '}
-              <span class="muted">
+              <span class="text-muted-foreground">{formatTime(step.at)}</span> {step.from === null ? 'created' : STATE_LABELS[step.from]} → <strong class="font-medium">{STATE_LABELS[step.to]}</strong>{' '}
+              <span class="text-muted-foreground">
                 {step.event} by {step.actor}
                 {step.reason !== '' && ` · ${step.reason}`}
               </span>
@@ -287,140 +299,129 @@ export const Tasks = defineComponent({
     };
 
     const card = (task: TaskSummary) => (
-      <article class="panel task" key={task.taskId}>
-        <header class="task__header">
-          <div>
-            <h2>
-              {task.taskId} <span class="task__title">{task.title}</span>
-            </h2>
-            <p class="muted">{task.repoRoot}</p>
-          </div>
-          <Badge tone={stateTone(task.state)} emoji={STATE_EMOJI[task.state]}>
-            {STATE_LABELS[task.state]}
-          </Badge>
-        </header>
-        <dl class="facts">
-          {task.goal !== undefined && [<dt key="goal-label">Goal</dt>, <dd key="goal-value">{task.goal}</dd>]}
-          <dt>Plan</dt>
-          <dd>{isIntake(task) ? `none yet: analysis first · taken in ${formatTime(task.plan.createdAt)}` : `version ${task.plan.version} · created ${formatTime(task.plan.createdAt)}`}</dd>
-          {/* An intake's scope is only the area to analyse; nothing is approved yet. */}
-          <dt>{isIntake(task) ? 'Analysis focus' : 'Scope'}</dt>
-          <dd class="chips">
-            {task.plan.scope.map((glob) => (
-              <code class="chip" key={glob}>
-                {glob}
-              </code>
-            ))}
-          </dd>
-          <dt>Hash</dt>
-          <dd>
-            <code class="hash">{task.plan.contentHash}</code>
-          </dd>
-          {task.planDecision !== null && [
-            <dt key="decision-label">Decision</dt>,
-            <dd key="decision-value">
-              {task.planDecision.decision === 'APPROVED' ? 'Approved' : 'Rejected'} {formatTime(task.planDecision.approvedAt)}
-              {task.planDecision.comment !== '' && <span class="muted"> · {task.planDecision.comment}</span>}
-            </dd>,
-          ]}
-          <dt>Sessions</dt>
-          <dd>{sessionsText(task)}</dd>
-          {task.lastTestRun !== null && [
-            <dt key="tests-label">Last tests</dt>,
-            <dd key="tests-value">
-              <Badge tone={task.lastTestRun.result === 'PASS' ? 'pass' : task.lastTestRun.result === 'FAIL' ? 'deny' : 'warn'} emoji={resultEmoji(task.lastTestRun.result)}>
-                {task.lastTestRun.result}
-              </Badge> <code>{task.lastTestRun.command}</code>{' '}
-              <span class="muted small">
-                {task.lastTestRun.summary ?? (task.lastTestRun.exitCode === null ? '' : `exit ${task.lastTestRun.exitCode}`)} · {formatTime(task.lastTestRun.at)} · run by Claude, seen by JERRY
-              </span>
-            </dd>,
-          ]}
-          {task.lastReport !== null && [
-            <dt key="report-label">Report</dt>,
-            <dd key="report-value">
-              version {task.lastReport.version} · {formatTime(task.lastReport.createdAt)} ·{' '}
-              {task.reportDecision === null ? 'waiting for your decision' : task.reportDecision.decision === 'APPROVED' ? `accepted ${formatTime(task.reportDecision.approvedAt)}` : `changes requested ${formatTime(task.reportDecision.approvedAt)}`}
-              {task.reportDecision !== null && task.reportDecision.comment !== '' && <span class="muted"> · {task.reportDecision.comment}</span>}
-            </dd>,
-          ]}
-        </dl>
-        {task.lastCheckpoint !== null && (
-          <section class="checkpoint">
-            <h3>
-              <Emoji symbol={EMOJI.next} />
-              Last checkpoint <span class="muted small">{formatTime(task.lastCheckpoint.at)} · written by Claude</span>
-            </h3>
-            <p>{task.lastCheckpoint.summary}</p>
-            {task.lastCheckpoint.nextSteps.length > 0 && (
-              <ol>
-                {task.lastCheckpoint.nextSteps.map((step, index) => (
-                  <li key={index}>{step}</li>
+      <Card class="task" key={task.taskId} data-task-id={task.taskId}>
+        <CardHeader>
+          <CardTitle class="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-base">
+            <span class="font-mono">{task.taskId}</span> <span class="font-normal">{task.title}</span>
+          </CardTitle>
+          <CardDescription class="font-mono text-xs break-all">{task.repoRoot}</CardDescription>
+          <CardAction>
+            <StatusBadge tone={stateTone(task.state)} emoji={STATE_EMOJI[task.state]}>
+              {STATE_LABELS[task.state]}
+            </StatusBadge>
+          </CardAction>
+        </CardHeader>
+        <CardContent class="grid gap-4">
+          <Facts>
+            {task.goal !== undefined && <Fact label="Goal">{task.goal}</Fact>}
+            <Fact label="Plan">{isIntake(task) ? `none yet: analysis first · taken in ${formatTime(task.plan.createdAt)}` : `version ${task.plan.version} · created ${formatTime(task.plan.createdAt)}`}</Fact>
+            {/* An intake's scope is only the area to analyse; nothing is approved yet. */}
+            <Fact label={isIntake(task) ? 'Analysis focus' : 'Scope'}>
+              <div class="flex flex-wrap gap-1.5">
+                {task.plan.scope.map((glob) => (
+                  <code class={CHIP} key={glob}>
+                    {glob}
+                  </code>
                 ))}
-              </ol>
+              </div>
+            </Fact>
+            <Fact label="Hash">
+              <code class="text-muted-foreground font-mono text-xs break-all">{task.plan.contentHash}</code>
+            </Fact>
+            {task.planDecision !== null && (
+              <Fact label="Decision">
+                {task.planDecision.decision === 'APPROVED' ? 'Approved' : 'Rejected'} {formatTime(task.planDecision.approvedAt)}
+                {task.planDecision.comment !== '' && <span class="text-muted-foreground"> · {task.planDecision.comment}</span>}
+              </Fact>
             )}
-          </section>
-        )}
-        <AnalysisReports analyses={task.analyses} runs={task.agentRuns} />
-        {REVIEW_STATES.has(task.state) && <ReviewPanel task={task} />}
-        <FindingsPanel task={task} />
-        {task.planGrade !== null && !isIntake(task) && task.lastReport === null && <PlanGradeView grade={task.planGrade} />}
-        {task.lastReport !== null &&
-          (task.state === 'WAIT_IMPLEMENTATION_ACCEPTANCE' ? (
-            <ImplementationReportView report={task.lastReport} />
-          ) : (
-            <details class="plan-section">
-              <summary>
-                <Emoji symbol={EMOJI.report} />
-                Implementation report v{task.lastReport.version}
-              </summary>
-              <ImplementationReportView report={task.lastReport} />
-            </details>
-          ))}
-        {isOpen(task) &&
-          task.plan.document !== undefined &&
-          (task.lastReport === null ? (
-            <PlanDocumentView plan={task.plan.document} />
-          ) : (
-            <details class="plan-section">
-              <summary>
-                <Emoji symbol={EMOJI.plan} />
-                Approved plan v{task.plan.version}
-              </summary>
-              <PlanDocumentView plan={task.plan.document} />
-            </details>
-          ))}
-        {task.finalCheck !== null && (
-          <section class={['final-check', task.finalCheck.passed ? 'final-check--passed' : 'final-check--failed']}>
-            <h3>
-              <Emoji symbol={task.finalCheck.passed ? EMOJI.done : EMOJI.fail} />
-              {task.finalCheck.passed ? 'Completed by JERRY' : 'JERRY did not complete the task'}{' '}
-              <span class="muted small">
-                final checks {formatTime(task.finalCheck.at)}
-                {task.finalCheck.reportVersion !== null && ` · report v${task.finalCheck.reportVersion}`}
-              </span>
-            </h3>
-            <ul class="list">
-              {task.finalCheck.conditions.map((condition) => (
-                <li key={condition.id}>
-                  <Badge tone={condition.passed ? 'pass' : condition.blocking ? 'deny' : 'warn'} emoji={resultEmoji(condition.passed ? 'PASS' : condition.blocking ? 'FAIL' : 'WARN')}>
-                    {condition.passed ? 'ok' : condition.blocking ? 'blocks' : 'note'}
-                  </Badge>{' '}
-                  {condition.detail}
-                </li>
-              ))}
-            </ul>
-            {!task.finalCheck.passed && <p class="muted small">Request changes to send the work back to Claude, or cancel the task.</p>}
-          </section>
-        )}
-        {actions(task)}
-        {finalReports[task.taskId] === true && <FinalReportView taskId={task.taskId} />}
-        {drifts[task.taskId] === null && <p class="muted small">Reading the repository…</p>}
-        {drifts[task.taskId] != null && <PlanDriftView drift={drifts[task.taskId]!} />}
-        {diffs[task.taskId] === null && <p class="muted small">Loading plan versions…</p>}
-        {diffs[task.taskId] != null && <PlanDiffView diff={diffs[task.taskId]!} />}
-        {history(task.taskId)}
-      </article>
+            <Fact label="Sessions">{sessionsText(task)}</Fact>
+            {task.lastTestRun !== null && (
+              <Fact label="Last tests">
+                <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <StatusBadge tone={task.lastTestRun.result === 'PASS' ? 'pass' : task.lastTestRun.result === 'FAIL' ? 'deny' : 'warn'} emoji={resultEmoji(task.lastTestRun.result)}>
+                    {task.lastTestRun.result}
+                  </StatusBadge>{' '}
+                  <code class="font-mono text-xs">{task.lastTestRun.command}</code>{' '}
+                  <span class="text-muted-foreground text-xs">
+                    {task.lastTestRun.summary ?? (task.lastTestRun.exitCode === null ? '' : `exit ${task.lastTestRun.exitCode}`)} · {formatTime(task.lastTestRun.at)} · run by Claude, seen by JERRY
+                  </span>
+                </div>
+              </Fact>
+            )}
+            {task.lastReport !== null && (
+              <Fact label="Report">
+                version {task.lastReport.version} · {formatTime(task.lastReport.createdAt)} ·{' '}
+                {task.reportDecision === null ? 'waiting for your decision' : task.reportDecision.decision === 'APPROVED' ? `accepted ${formatTime(task.reportDecision.approvedAt)}` : `changes requested ${formatTime(task.reportDecision.approvedAt)}`}
+                {task.reportDecision !== null && task.reportDecision.comment !== '' && <span class="text-muted-foreground"> · {task.reportDecision.comment}</span>}
+              </Fact>
+            )}
+          </Facts>
+          {task.lastCheckpoint !== null && (
+            <section class="checkpoint bg-muted/50 grid gap-1.5 rounded-lg border-l-2 border-l-primary p-4 text-sm">
+              <h3 class="flex flex-wrap items-center gap-x-2 font-medium">
+                <Emoji symbol={EMOJI.next} class="mr-0" />
+                Last checkpoint <span class="text-muted-foreground text-xs font-normal">{formatTime(task.lastCheckpoint.at)} · written by Claude</span>
+              </h3>
+              <p>{task.lastCheckpoint.summary}</p>
+              {task.lastCheckpoint.nextSteps.length > 0 && (
+                <ol class="grid list-decimal gap-1 pl-5">
+                  {task.lastCheckpoint.nextSteps.map((step, index) => (
+                    <li key={index}>{step}</li>
+                  ))}
+                </ol>
+              )}
+            </section>
+          )}
+          {REVIEW_STATES.has(task.state) && <ReviewPanel task={task} />}
+          <div>
+            <AnalysisReports analyses={task.analyses} runs={task.agentRuns} />
+            <FindingsPanel task={task} />
+            {task.planGrade !== null && !isIntake(task) && task.lastReport === null && <PlanGradeView grade={task.planGrade} />}
+            {task.lastReport !== null && task.state !== 'WAIT_IMPLEMENTATION_ACCEPTANCE' && (
+              <Section title={`Implementation report v${task.lastReport.version}`} emoji={EMOJI.report}>
+                <ImplementationReportView report={task.lastReport} />
+              </Section>
+            )}
+            {isOpen(task) && task.plan.document !== undefined && task.lastReport !== null && (
+              <Section title={`Approved plan v${task.plan.version}`} emoji={EMOJI.plan}>
+                <PlanDocumentView plan={task.plan.document} />
+              </Section>
+            )}
+          </div>
+          {task.lastReport !== null && task.state === 'WAIT_IMPLEMENTATION_ACCEPTANCE' && <ImplementationReportView report={task.lastReport} />}
+          {isOpen(task) && task.plan.document !== undefined && task.lastReport === null && <PlanDocumentView plan={task.plan.document} />}
+          {task.finalCheck !== null && (
+            <section class={cn('final-check grid gap-2 rounded-lg border p-4 text-sm', task.finalCheck.passed ? 'border-emerald-500/40 bg-emerald-500/5' : 'border-destructive/40 bg-destructive/5')} data-passed={task.finalCheck.passed ? 'true' : 'false'}>
+              <h3 class="flex flex-wrap items-center gap-x-2 font-medium">
+                <Emoji symbol={task.finalCheck.passed ? EMOJI.done : EMOJI.fail} class="mr-0" />
+                {task.finalCheck.passed ? 'Completed by JERRY' : 'JERRY did not complete the task'}{' '}
+                <span class="text-muted-foreground text-xs font-normal">
+                  final checks {formatTime(task.finalCheck.at)}
+                  {task.finalCheck.reportVersion !== null && ` · report v${task.finalCheck.reportVersion}`}
+                </span>
+              </h3>
+              <ul class={LIST}>
+                {task.finalCheck.conditions.map((condition) => (
+                  <li key={condition.id}>
+                    <StatusBadge tone={condition.passed ? 'pass' : condition.blocking ? 'deny' : 'warn'} emoji={resultEmoji(condition.passed ? 'PASS' : condition.blocking ? 'FAIL' : 'WARN')}>
+                      {condition.passed ? 'ok' : condition.blocking ? 'blocks' : 'note'}
+                    </StatusBadge>{' '}
+                    {condition.detail}
+                  </li>
+                ))}
+              </ul>
+              {!task.finalCheck.passed && <p class="text-muted-foreground text-xs">Request changes to send the work back to Claude, or cancel the task.</p>}
+            </section>
+          )}
+          {actions(task)}
+          {finalReports[task.taskId] === true && <FinalReportView taskId={task.taskId} />}
+          {drifts[task.taskId] === null && <p class="text-muted-foreground text-xs">Reading the repository…</p>}
+          {drifts[task.taskId] != null && <PlanDriftView drift={drifts[task.taskId]!} />}
+          {diffs[task.taskId] === null && <p class="text-muted-foreground text-xs">Loading plan versions…</p>}
+          {diffs[task.taskId] != null && <PlanDiffView diff={diffs[task.taskId]!} />}
+          {history(task.taskId)}
+        </CardContent>
+      </Card>
     );
 
     return () => {
@@ -428,28 +429,30 @@ export const Tasks = defineComponent({
       const open = newestFirst.filter(isOpen);
       const closed = newestFirst.filter((task) => !isOpen(task));
       return (
-        <div class="stack">
+        <div class="flex flex-col gap-4 md:gap-6">
           {state.tasks.length === 0 && (
-            <section class="panel">
-              <h2>
-                <Emoji symbol={EMOJI.task} />
-                No tasks yet
-              </h2>
-              <p class="muted">
-                Ask Claude for a plan with <code>/jerry:plan</code>, or create one with <code>jerry task create --repo &lt;path&gt; --title &lt;text&gt; --scope &lt;glob&gt;</code>.
-              </p>
-            </section>
+            <Card>
+              <CardHeader>
+                <CardTitle class="flex items-center">
+                  <Emoji symbol={EMOJI.task} />
+                  No tasks yet
+                </CardTitle>
+                <CardDescription>
+                  Ask Claude for a plan with <code class={CHIP}>/jerry:plan</code>, or create one with <code class={CHIP}>jerry task create --repo &lt;path&gt; --title &lt;text&gt; --scope &lt;glob&gt;</code>.
+                </CardDescription>
+              </CardHeader>
+            </Card>
           )}
           {open.map(card)}
           <ArtifactsList decisions={artifacts.value} />
           {closed.length > 0 && (
-            <details class="panel">
-              <summary>
-                <Emoji symbol={EMOJI.done} />
-                Finished and cancelled ({closed.length})
-              </summary>
-              <div class="stack">{closed.map(card)}</div>
-            </details>
+            <Card class="closed-tasks py-2">
+              <CardContent>
+                <Section title={`Finished and cancelled (${closed.length})`} emoji={EMOJI.done}>
+                  <div class="flex flex-col gap-4">{closed.map(card)}</div>
+                </Section>
+              </CardContent>
+            </Card>
           )}
 
           {pending.value !== null && (
@@ -463,19 +466,19 @@ export const Tasks = defineComponent({
               onConfirm={confirm}
               onCancel={() => (pending.value = null)}
             >
-              <p>{pending.value.task.title}</p>
-              <p class="muted">Scope: {pending.value.task.plan.scope.join(', ')}</p>
+              <p class="text-foreground">{pending.value.task.title}</p>
+              <p>Scope: {pending.value.task.plan.scope.join(', ')}</p>
               {pending.value.action === 'accept' && (pending.value.task.plan.document?.definitionOfDone.length ?? 0) > 0 && (
-                <div class="dod">
+                <div class="grid gap-1">
                   <p>You confirm the plan's Definition of Done:</p>
-                  <ul class="list">
+                  <ul class="text-foreground grid list-disc gap-1 pl-5">
                     {pending.value.task.plan.document?.definitionOfDone.map((item, index) => (
                       <li key={index}>{item}</li>
                     ))}
                   </ul>
                 </div>
               )}
-              <p class="muted small">{DIALOG[pending.value.action].note}</p>
+              <p class="text-xs">{DIALOG[pending.value.action].note}</p>
             </ConfirmDialog>
           )}
         </div>

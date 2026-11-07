@@ -64,6 +64,7 @@ describe('guards accept exactly what the Zod schemas accept', () => {
         registered: [false, ...UNUSUAL],
         repoRoot: UNUSUAL,
         excluded: UNUSUAL,
+        monitored: [true, false, undefined, ...UNUSUAL],
         approvedPlans: [
           ...UNUSUAL,
           [{ ...plan, taskId: 'JRY-1' }],

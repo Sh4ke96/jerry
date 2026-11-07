@@ -10,9 +10,9 @@ line as you go and tells you about problems. The user stays in charge of approva
 
 ## 1. Check the starting point
 
-- Call `jerry_get_state`. The task must be in implementation under an approved plan (`approved`). If not, stop:
+- Call `get_state`. The task must be in implementation under an approved plan (`approved`). If not, stop:
   the plan needs the user's approval first (or `/jerry:plan` for a change).
-- Read the plan's steps, files, tests and Definition of Done. Read `jerry_get_project_profile` for the
+- Read the plan's steps, files, tests and Definition of Done. Read `get_project_profile` for the
   project's commands and instruction files.
 - Check `git status` (read-only). The user's uncommitted changes stay as they are.
 
@@ -23,7 +23,7 @@ line as you go and tells you about problems. The user stays in charge of approva
   subagents. Two implementers never share a file. Steps that touch the same file go to the same implementer
   or run one after the other.
 
-To split, call `jerry_assign_work` with the task ID and one assignment per implementer: a label, its plan
+To split, call `assign_work` with the task ID and one assignment per implementer: a label, its plan
 steps and, if needed, its files. JERRY refuses overlapping files and unknown steps. It answers with the step
 layers that may run in parallel.
 
@@ -43,11 +43,11 @@ Start the next layer when its dependencies are done.
   (dashboard or `jerry findings set`).
 - After two fix rounds that brought the same finding back, JERRY leaves it to the user; do not loop.
 - Warnings about an implementer outside its files, or two writers on one file, mean stop that edit and
-  reassign (a new `jerry_assign_work`) or serialize the steps.
+  reassign (a new `assign_work`) or serialize the steps.
 
 ## 4. Test
 
-- `jerry_list_findings` returns `tests.run`: the project's test command limited to the test files of the
+- `list_findings` returns `tests.run`: the project's test command limited to the test files of the
   changed files. Run it, then the project's full test, build, lint and typecheck commands from the profile.
   `tests.changedWithoutTests` lists changed files without a test file; the plan's tests say which to add.
 - JERRY never runs these commands itself; it records how your runs ended. Report only real results.

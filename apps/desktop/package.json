@@ -1,0 +1,20 @@
+{
+  "name": "@jerry/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "JERRY Desktop: the JERRY dashboard in its own window, with a tray icon and notifications (Tauri 2, Windows).",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build --bundles nsis && node scripts/copy-installer.mjs",
+    "test": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "icons": "node scripts/geist-assets.mjs"
+  },
+  "devDependencies": {
+    "@fontsource-variable/geist": "5.3.0",
+    "@fontsource-variable/geist-mono": "5.3.0",
+    "@fontsource/geist": "5.3.0",
+    "@tauri-apps/cli": "2.12.4",
+    "opentype.js": "2.0.0"
+  }
+}

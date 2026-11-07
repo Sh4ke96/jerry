@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>🛡️ JERRY</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="index.js" defer></script>
+  </head>
+  <body>
+    <main class="page page--center">
+      <section class="card" aria-labelledby="title">
+        <div class="card-header">
+          <span class="badge" id="badge"><span class="dot" id="dot"></span><span id="badge-text">Checking…</span></span>
+          <h1 class="card-title" id="title">🛡️ Connecting to JERRY Core…</h1>
+          <p class="card-description" id="description">JERRY Desktop shows the JERRY dashboard once Core answers.</p>
+        </div>
+        <div class="card-content">
+          <div class="callout" id="reason-box" hidden>
+            <p class="description">Reason</p>
+            <p class="mono" id="reason"></p>
+          </div>
+          <hr class="separator" />
+          <dl class="facts">
+            <dt>JERRY_HOME</dt>
+            <dd class="mono" id="home">…</dd>
+            <dt>JERRY Desktop</dt>
+            <dd id="app-version">…</dd>
+          </dl>
+        </div>
+        <div class="card-footer">
+          <button type="button" class="button button--primary" id="start">Start Core</button>
+          <button type="button" class="button button--outline" id="retry">Retry</button>
+          <p class="message" id="message" role="status" aria-live="polite"></p>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

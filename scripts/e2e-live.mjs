@@ -106,10 +106,10 @@ const hooksConfig = JSON.parse(fs.readFileSync(hooksFile, 'utf8'));
 delete hooksConfig.hooks.SessionStart;
 fs.writeFileSync(hooksFile, JSON.stringify(hooksConfig, null, 2));
 
-function runClaude(label, prompt, allowedTools, plugin = pluginDir, extraArgs = [], timeoutMs = 300_000) {
+function runClaude(label, prompt, allowedTools, plugin = pluginDir, extraArgs = [], timeoutMs = 300_000, cwd = repo) {
   const args = ['-p', prompt, '--plugin-dir', plugin, '--model', model, '--permission-mode', 'acceptEdits', '--output-format', 'json', '--no-session-persistence', ...extraArgs, '--allowedTools', ...allowedTools];
   const started = Date.now();
-  const result = spawnSync(claude, args, { cwd: repo, env, encoding: 'utf8', timeout: timeoutMs, windowsHide: true });
+  const result = spawnSync(claude, args, { cwd, env, encoding: 'utf8', timeout: timeoutMs, windowsHide: true });
   let parsed = null;
   try {
     parsed = JSON.parse(result.stdout);
@@ -155,6 +155,9 @@ const gitUntouched = () => git('rev-parse', 'HEAD').stdout.trim() === initialHea
 
 console.log(`claude: ${claude}\nmodel: ${model}\nfixture: ${repo}\nJERRY_HOME: ${home}\n`);
 const info = await startCore();
+// JERRY monitors only the projects the user adds; this is what "jerry project add" does.
+const addedProject = await coreApi(info, 'POST', '/api/v1/projects', { path: repo });
+expect('The fixture repository was added as a project', addedProject.added === true, JSON.stringify(addedProject).slice(0, 200));
 
 // A — no plan: the edit is NOT blocked; it is recorded and Claude is warned.
 const a = runClaude(
@@ -206,11 +209,11 @@ expect('C: log shows PASS in-scope and WARN out-of-scope', cLog.some((e) => e.ru
 // G — JERRY's MCP server: the model reads the live plan state through its read-only tools.
 const g = runClaude(
   'G: JERRY MCP tools',
-  'Call the jerry_get_state tool from the jerry MCP server and tell me the approved scope exactly as it returns it. Do nothing else.',
-  ['mcp__plugin_jerry_jerry__jerry_get_state'],
+  'Call the get_state tool from the JERRY Guardian MCP server and tell me the approved scope exactly as it returns it. Do nothing else.',
+  ['mcp__plugin_jerry_guardian__get_state'],
 );
 const gTools = (await sessionEvents(g.sessionId)).map((event) => event.toolName).filter(Boolean);
-expect('G: the session called the JERRY MCP tool', gTools.some((tool) => tool.endsWith('__jerry_get_state')), gTools.join(', '));
+expect('G: the session called the JERRY MCP tool', gTools.some((tool) => tool.endsWith('__get_state')), gTools.join(', '));
 expect('G: the model reported the approved scope from the tool', g.text.includes('src/**'));
 
 // I — workflow state: the user pauses the task; its approved plan stops covering edits until resumed.
@@ -218,8 +221,8 @@ const paused = await coreApi(info, 'POST', `/api/v1/tasks/${task.taskId}/transit
 expect('I: Core paused the task', paused.state === 'PAUSED', JSON.stringify(paused).slice(0, 200));
 const i = runClaude(
   'I: paused task',
-  'Step 1: use the Write tool to create src/paused.txt with the content "hi". Step 2: call the jerry_get_state tool and tell me the "next.action" value it returns, exactly. Do nothing else.',
-  ['Write', 'mcp__plugin_jerry_jerry__jerry_get_state'],
+  'Step 1: use the Write tool to create src/paused.txt with the content "hi". Step 2: call the get_state tool and tell me the "next.action" value it returns, exactly. Do nothing else.',
+  ['Write', 'mcp__plugin_jerry_guardian__get_state'],
 );
 const iLog = await gateLog(i.sessionId);
 expect('I: the edit went through (never blocked)', exists('src/paused.txt'));
@@ -231,8 +234,8 @@ expect('I: resume returns the task to implementation', resumed.state === 'IMPLEM
 // J — session recovery: one session saves a checkpoint; the next one knows what to continue with.
 const j1 = runClaude(
   'J1: work and save a checkpoint',
-  `Step 1: use the Write tool to create src/progress.txt with the content "step 1". Step 2: call jerry_save_checkpoint for task ${task.taskId} with the summary "Created src/progress.txt (step 1 of 2)." and the single next step "Create src/progress2.txt". Do nothing else.`,
-  ['Write', 'mcp__plugin_jerry_jerry__jerry_save_checkpoint'],
+  `Step 1: use the Write tool to create src/progress.txt with the content "step 1". Step 2: call save_checkpoint for task ${task.taskId} with the summary "Created src/progress.txt (step 1 of 2)." and the single next step "Create src/progress2.txt". Do nothing else.`,
+  ['Write', 'mcp__plugin_jerry_guardian__save_checkpoint'],
 );
 const jRows = await (async () => {
   const { DatabaseSync } = await import('node:sqlite');
@@ -261,14 +264,14 @@ const k1 = runClaude(
   // J's checkpoint leaves "Create src/progress2.txt" open on purpose; without saying so, a careful model
   // (rightly) refuses to report the work as finished.
   `/jerry:report The work on ${task.taskId} is finished for this check. The open checkpoint step "Create src/progress2.txt" is deliberately left out: record it as a plan deviation. This fixture repository has no test, build or lint tooling.`,
-  ['Read', 'Glob', 'Grep', 'Bash(git status:*)', 'Bash(git diff:*)', 'Bash(git log:*)', 'mcp__plugin_jerry_jerry__jerry_get_state', 'mcp__plugin_jerry_jerry__jerry_list_deviations', 'mcp__plugin_jerry_jerry__jerry_submit_report'],
+  ['Read', 'Glob', 'Grep', 'Bash(git status:*)', 'Bash(git diff:*)', 'Bash(git log:*)', 'mcp__plugin_jerry_guardian__get_state', 'mcp__plugin_jerry_guardian__list_deviations', 'mcp__plugin_jerry_guardian__submit_report'],
 );
 const reported = await coreApi(info, 'GET', `/api/v1/tasks/${task.taskId}`);
 expect('K1: the report was submitted and waits for the user', reported.state === 'WAIT_IMPLEMENTATION_ACCEPTANCE' && reported.lastReport?.version === 1, `${reported.state} ${reported.lastReport?.version ?? 'no report'}`);
 expect('K1: JERRY tied the report to the session and added its own record', reported.lastReport?.sessionId === k1.sessionId && Array.isArray(reported.lastReport?.evidence?.observedEdits) && reported.lastReport.evidence.observedEdits.length > 0, JSON.stringify(reported.lastReport?.evidence ?? {}).slice(0, 200));
 expect('K1: no check is claimed as passed without tooling', (reported.lastReport?.document?.checks ?? []).every((check) => check.result !== 'PASS'), JSON.stringify(reported.lastReport?.document?.checks ?? []).slice(0, 200));
 expect('K1: Claude told the user how to accept it', k1.text.includes(task.taskId) && /--stage implementation/.test(k1.text), k1.text.slice(0, 200));
-const k2 = runClaude('K2: /jerry:commit-message', '/jerry:commit-message', ['Read', 'Bash(git status:*)', 'Bash(git diff:*)', 'Bash(git log:*)', 'mcp__plugin_jerry_jerry__jerry_get_state']);
+const k2 = runClaude('K2: /jerry:commit-message', '/jerry:commit-message', ['Read', 'Bash(git status:*)', 'Bash(git diff:*)', 'Bash(git log:*)', 'mcp__plugin_jerry_guardian__get_state']);
 expect('K2: Claude proposed a commit message and left Git alone', /```/.test(k2.text) && gitUntouched(), k2.text.slice(0, 200));
 const accepted = await coreApi(info, 'POST', `/api/v1/tasks/${task.taskId}/approvals`, { stage: 'IMPLEMENTATION', version: 1, decision: 'APPROVED', comment: 'live check' });
 
@@ -277,7 +280,7 @@ expect('R: accepting the implementation starts the independent review', (await c
 const r = runClaude(
   'R: /jerry:review',
   `/jerry:review ${task.taskId}. Run the three JERRY reviewers now and report what they found. If there are open findings, do not write a fix plan: just tell me.`,
-  ['Task', 'Agent', 'Read', 'Grep', 'Glob', ...['get_state', 'get_review', 'submit_review', 'finish_review', 'get_project_profile'].map((tool) => `mcp__plugin_jerry_jerry__jerry_${tool}`)],
+  ['Task', 'Agent', 'Read', 'Grep', 'Glob', ...['get_state', 'get_review', 'submit_review', 'finish_review', 'get_project_profile'].map((tool) => `mcp__plugin_jerry_guardian__${tool}`)],
   pluginDir,
   [],
   600_000,
@@ -311,22 +314,22 @@ expect('S: the DONE task has a final report from recorded facts', finalReport.st
 const s = runClaude(
   'S: /jerry:artifact, the user says no',
   `/jerry:artifact ${task.taskId}. My answer to your question is already here: no, I do not want an Artifact for this task.`,
-  ['mcp__plugin_jerry_jerry__jerry_get_final_report', 'mcp__plugin_jerry_jerry__jerry_record_artifact', 'mcp__plugin_jerry_jerry__jerry_get_state'],
+  ['mcp__plugin_jerry_guardian__get_final_report', 'mcp__plugin_jerry_guardian__record_artifact', 'mcp__plugin_jerry_guardian__get_state'],
 );
 const sDecision = (await coreApi(info, 'GET', `/api/v1/tasks/${task.taskId}/final-report`)).artifact;
 expect('S: the decline was recorded and no Artifact was created', sDecision?.decision === 'declined' && sDecision.url === null, JSON.stringify(sDecision));
 const sTools = (await sessionEvents(s.sessionId)).map((event) => event.toolName).filter(Boolean);
 // The answer was already "no": recording the decline is all there is to do, and nothing is created.
-expect('S: Claude recorded the decline and created nothing', sTools.some((tool) => tool.endsWith('__jerry_record_artifact')) && !sTools.some((tool) => /Artifact$|^Write$|^Edit$/.test(tool)), sTools.join(', ').slice(0, 200));
+expect('S: Claude recorded the decline and created nothing', sTools.some((tool) => tool.endsWith('__record_artifact')) && !sTools.some((tool) => /Artifact$|^Write$|^Edit$/.test(tool)), sTools.join(', ').slice(0, 200));
 
 // M — project profile: Claude learns the project's own test command from JERRY, without searching.
 const m = runClaude(
   'M: project profile',
-  'Call the jerry_get_project_profile tool and tell me the exact command that runs this project\'s tests, as the tool gives it. Do nothing else.',
-  ['mcp__plugin_jerry_jerry__jerry_get_project_profile'],
+  'Call the get_project_profile tool and tell me the exact command that runs this project\'s tests, as the tool gives it. Do nothing else.',
+  ['mcp__plugin_jerry_guardian__get_project_profile'],
 );
 const mTools = (await sessionEvents(m.sessionId)).map((event) => event.toolName).filter(Boolean);
-expect('M: the session read the project profile', mTools.some((tool) => tool.endsWith('__jerry_get_project_profile')), mTools.join(', '));
+expect('M: the session read the project profile', mTools.some((tool) => tool.endsWith('__get_project_profile')), mTools.join(', '));
 expect('M: Claude named the project’s own test command', /npm run test/.test(m.text), m.text.slice(0, 200));
 
 // N — plugin subagents: Claude Code loads JERRY's read-only analysts from the plugin, and they only read.
@@ -334,7 +337,7 @@ const nTask = await coreApi(info, 'POST', '/api/v1/tasks', { repoPath: repo, tit
 const n = runClaude(
   'N: JERRY analyst subagent',
   `Use the jerry-risk-analyst subagent (from the jerry plugin) to analyse src/app.ts for task ${nTask.taskId}; tell it the task ID so it submits its report to JERRY. Do nothing else yourself, then summarise what it found.`,
-  ['Task', 'Agent', 'Read', 'Grep', 'Glob', 'mcp__plugin_jerry_jerry__jerry_get_project_profile', 'mcp__plugin_jerry_jerry__jerry_get_state', 'mcp__plugin_jerry_jerry__jerry_submit_analysis_report'],
+  ['Task', 'Agent', 'Read', 'Grep', 'Glob', 'mcp__plugin_jerry_guardian__get_project_profile', 'mcp__plugin_jerry_guardian__get_state', 'mcp__plugin_jerry_guardian__submit_analysis_report'],
 );
 const nRows = await (async () => {
   const { DatabaseSync } = await import('node:sqlite');
@@ -370,7 +373,7 @@ const o = runClaude(
     'Glob',
     'Bash(git status:*)',
     'Bash(git log:*)',
-    ...['get_state', 'get_project_profile', 'start_task', 'submit_analysis_report', 'get_analysis', 'submit_plan'].map((tool) => `mcp__plugin_jerry_jerry__jerry_${tool}`),
+    ...['get_state', 'get_project_profile', 'start_task', 'submit_analysis_report', 'get_analysis', 'submit_plan'].map((tool) => `mcp__plugin_jerry_guardian__${tool}`),
   ],
   pluginDir,
   [],
@@ -430,16 +433,16 @@ const p = runClaude(
     '  await write().catch(() => {}); // TODO',
     '}',
     'Step 2: use Bash to run exactly: node -e "setTimeout(() => {}, 2500)"',
-    'Step 3: call the jerry_list_findings tool, then fix every finding it lists in src/save.ts with the Edit tool (handle or rethrow the error, and turn the TODO into a real comment or remove it).',
+    'Step 3: call the list_findings tool, then fix every finding it lists in src/save.ts with the Edit tool (handle or rethrow the error, and turn the TODO into a real comment or remove it).',
     'Step 4: use Bash to run exactly: node -e "setTimeout(() => {}, 2500)" and then tell me which findings you fixed.',
   ].join('\n'),
-  ['Read', 'Write', 'Edit', 'Bash(node -e:*)', 'mcp__plugin_jerry_jerry__jerry_list_findings', 'mcp__plugin_jerry_jerry__jerry_get_state'],
+  ['Read', 'Write', 'Edit', 'Bash(node -e:*)', 'mcp__plugin_jerry_guardian__list_findings', 'mcp__plugin_jerry_guardian__get_state'],
 );
 const pFindings = await readDb('SELECT rule_id, status FROM findings WHERE task_id = ? AND file = ?', pTask.taskId, 'src/save.ts');
 expect('P: JERRY found problems in the lines Claude wrote', pFindings.length >= 1, pFindings.map((row) => `${row.rule_id}:${row.status}`).join(', ') || 'no findings');
 expect('P: the findings were fixed in the same session (FIXED by JERRY)', pFindings.length >= 1 && pFindings.every((row) => row.status === 'FIXED'), pFindings.map((row) => `${row.rule_id}:${row.status}`).join(', '));
 const pTools = (await sessionEvents(p.sessionId)).map((event) => event.toolName).filter(Boolean);
-expect('P: Claude read the findings through MCP', pTools.some((tool) => tool.endsWith('__jerry_list_findings')), pTools.join(', ').slice(0, 200));
+expect('P: Claude read the findings through MCP', pTools.some((tool) => tool.endsWith('__list_findings')), pTools.join(', ').slice(0, 200));
 await coreApi(info, 'POST', `/api/v1/tasks/${pTask.taskId}/transitions`, { event: 'task.cancelled' });
 
 // Q — implementers: the orchestrator splits an approved plan between two implementers on disjoint files.
@@ -466,8 +469,8 @@ const qTask = await coreApi(info, 'POST', '/api/v1/tasks', { repoPath: repo, tit
 await coreApi(info, 'POST', `/api/v1/tasks/${qTask.taskId}/approvals`, { stage: 'PLAN', version: 1, decision: 'APPROVED' });
 const q = runClaude(
   'Q: two implementers on disjoint files',
-  `Task ${qTask.taskId} has an approved JERRY plan with two independent steps. First call jerry_assign_work for ${qTask.taskId} with two assignments: label "greet" with step 1, and label "farewell" with step 2. Then start two jerry-implementer subagents (from the jerry plugin) in parallel, in one message: one does step 1 (only src/greet.ts), the other step 2 (only src/farewell.ts). Do not edit files yourself. When both are done, summarise.`,
-  ['Task', 'Agent', 'Read', 'Write', 'Edit', 'mcp__plugin_jerry_jerry__jerry_assign_work', 'mcp__plugin_jerry_jerry__jerry_get_state', 'mcp__plugin_jerry_jerry__jerry_check_paths', 'mcp__plugin_jerry_jerry__jerry_get_project_profile', 'mcp__plugin_jerry_jerry__jerry_list_findings'],
+  `Task ${qTask.taskId} has an approved JERRY plan with two independent steps. First call assign_work for ${qTask.taskId} with two assignments: label "greet" with step 1, and label "farewell" with step 2. Then start two jerry-implementer subagents (from the jerry plugin) in parallel, in one message: one does step 1 (only src/greet.ts), the other step 2 (only src/farewell.ts). Do not edit files yourself. When both are done, summarise.`,
+  ['Task', 'Agent', 'Read', 'Write', 'Edit', 'mcp__plugin_jerry_guardian__assign_work', 'mcp__plugin_jerry_guardian__get_state', 'mcp__plugin_jerry_guardian__check_paths', 'mcp__plugin_jerry_guardian__get_project_profile', 'mcp__plugin_jerry_guardian__list_findings'],
   pluginDir,
   [],
   600_000,
@@ -510,7 +513,7 @@ await coreApi(info, 'POST', `/api/v1/tasks/${lTask.taskId}/transitions`, { event
 const h = runClaude(
   'H: /jerry:plan',
   '/jerry:plan Add a function greet(name) in src/greet.ts that returns "Hello, <name>!", with a unit test.',
-  ['Read', 'Glob', 'Grep', 'Bash(git status:*)', 'Bash(git log:*)', 'mcp__plugin_jerry_jerry__jerry_get_state', 'mcp__plugin_jerry_jerry__jerry_submit_plan'],
+  ['Read', 'Glob', 'Grep', 'Bash(git status:*)', 'Bash(git log:*)', 'mcp__plugin_jerry_guardian__get_state', 'mcp__plugin_jerry_guardian__submit_plan'],
 );
 const submittedPlans = await (async () => {
   const { DatabaseSync } = await import('node:sqlite');
@@ -554,6 +557,52 @@ const eLog = await gateLog(e.sessionId);
 expect('E: read tool reached the MCP server', stubCalls.includes('get_file_contents'), `server saw: ${stubCalls.join(', ') || 'nothing'}`);
 expect('E: push_files never reached the MCP server', !stubCalls.includes('push_files'));
 expect('E: gate log shows the MCP push blocked (hard.git-mutation)', eLog.some((entry) => entry.toolName === 'mcp__git-remote-stub__push_files' && entry.ruleId === 'hard.git-mutation'), eLog.map((entry) => `${entry.toolName}:${entry.ruleId}`).join(', '));
+
+// U — a repository the user did not add: only the hard rules apply, and nothing is recorded.
+const outsideRepo = path.join(base, 'not-added');
+fs.mkdirSync(outsideRepo, { recursive: true });
+fs.writeFileSync(path.join(outsideRepo, 'README.md'), '# not added\n');
+const gitOutside = (...args) =>
+  spawnSync('git', ['-c', 'user.name=JERRY Test', '-c', 'user.email=jerry-test@example.invalid', '--no-optional-locks', '-C', outsideRepo, ...args], { encoding: 'utf8' });
+gitOutside('init', '-q', '-b', 'main');
+gitOutside('add', '.');
+gitOutside('commit', '-q', '-m', 'initial');
+const outsideHead = gitOutside('rev-parse', 'HEAD').stdout.trim();
+const u1 = runClaude(
+  'U1: repository not added, session context',
+  'Use the Write tool to create notes.txt in the current directory with the content "hi". Then tell me, quoting it exactly, what JERRY said at the start of this session about this project.',
+  ['Write'],
+  pluginDir,
+  [],
+  300_000,
+  outsideRepo,
+);
+const u2 = runClaude(
+  'U2: repository not added, Git commit',
+  'Use the Bash tool to run exactly: git commit --allow-empty -m outside  Do nothing else. If it is blocked, do not retry or work around it; report the exact error message.',
+  ['Bash(git commit --allow-empty -m outside)'],
+  pluginWithoutContext,
+  [],
+  300_000,
+  outsideRepo,
+);
+await new Promise((resolve) => setTimeout(resolve, 2000));
+expect('U: the edit in the repository that is not added went through', fs.existsSync(path.join(outsideRepo, 'notes.txt')));
+expect('U: Claude was told the project is not added', /not added/i.test(u1.text), u1.text.slice(0, 200));
+expect('U: the Git commit there was blocked (hard rule)', gitOutside('rev-parse', 'HEAD').stdout.trim() === outsideHead && /hard\.git-mutation/.test(u2.text), u2.text.slice(0, 200));
+const uRecorded = [...(await sessionEvents(u1.sessionId)), ...(await sessionEvents(u2.sessionId))];
+const uRegistered = await registeredSessionIds();
+expect('U: nothing was recorded for the sessions there', uRecorded.length === 0 && !uRegistered.has(u1.sessionId) && !uRegistered.has(u2.sessionId), uRecorded.map((event) => event.eventType).join(', '));
+const uMentions = await (async () => {
+  const { DatabaseSync } = await import('node:sqlite');
+  const db = new DatabaseSync(path.join(home, 'database', 'jerry.sqlite'), { readOnly: true });
+  try {
+    return db.prepare('SELECT COUNT(*) AS count FROM hook_events WHERE lower(cwd) LIKE ? OR lower(repo_root) LIKE ?').get(`${outsideRepo.toLowerCase()}%`, `${outsideRepo.toLowerCase()}%`).count;
+  } finally {
+    db.close();
+  }
+})();
+expect('U: no event names the repository that is not added', uMentions === 0, `${uMentions} event(s)`);
 
 // D — Core stopped: edits still proceed, Git changes are still blocked.
 await stopCore();

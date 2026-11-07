@@ -3,10 +3,12 @@ import { EMOJI, SEVERITY_EMOJI } from '@jerry/contracts/emoji';
 import { defineComponent, onMounted, ref, watch, type PropType } from 'vue';
 import { api } from '../api';
 import { formatTime } from '../format';
+import { ATTENTION, LIST } from '../lib/classes';
 import { handleError, perform } from '../state';
-import { Badge } from './Badge';
-import { Emoji } from './Emoji';
 import { ConfirmDialog } from './ConfirmDialog';
+import { Emoji } from './Emoji';
+import { StatusBadge } from './StatusBadge';
+import { Button } from './ui/button';
 
 /** The three reviewers (kept here: a value import from the contracts would bundle Zod). */
 const REVIEWER_ROLES = ['jerry-correctness-reviewer', 'jerry-security-reviewer', 'jerry-design-reviewer'] as const;
@@ -66,33 +68,33 @@ export const ReviewPanel = defineComponent({
       const waiting = props.task.state === 'WAIT_REVIEW_FIX_APPROVAL' && round.fixPlan !== null;
       const canWaive = ['CODE_REVIEW', 'REVIEW_REPORT', 'WAIT_REVIEW_FIX_APPROVAL', 'REVERIFICATION'].includes(props.task.state);
       return (
-        <section class="review panel-section">
-          <h3>
-            <Emoji symbol={EMOJI.review} />
+        <section class="review grid gap-3 rounded-lg border p-4 text-sm">
+          <h3 class="flex flex-wrap items-center gap-x-2 gap-y-1 font-semibold">
+            <Emoji symbol={EMOJI.review} class="mr-0" />
             Independent review{' '}
-            <Badge
+            <StatusBadge
               tone={state.outcome === 'passed' ? 'pass' : state.outcome === 'skipped' ? 'warn' : state.openFindings.length > 0 ? 'deny' : 'neutral'}
               emoji={state.outcome === 'passed' ? EMOJI.pass : state.outcome === 'skipped' ? EMOJI.skipped : state.openFindings.length > 0 ? EMOJI.finding : EMOJI.waiting}
             >
               {state.outcome ?? (state.openFindings.length > 0 ? `${state.openFindings.length} open finding(s)` : 'in progress')}
-            </Badge>{' '}
-            <span class="muted small">
+            </StatusBadge>{' '}
+            <span class="text-muted-foreground text-xs font-normal">
               round {round.round} of at most {state.maxRounds}
             </span>
           </h3>
-          <ul class="list">
+          <ul class={LIST}>
             {REVIEWER_ROLES.map((role) => {
               const submission = round.submissions.find((entry) => entry.role === role);
               return (
                 <li key={role}>
                   <Emoji symbol={EMOJI.agent} />
-                  <strong>{ROLE_LABEL[role]}</strong>:{' '}
+                  <strong class="font-medium">{ROLE_LABEL[role]}</strong>:{' '}
                   {submission === undefined ? (
-                    <span class="muted">{round.completedAt === null ? 'not reported yet' : 'no report (gap)'}</span>
+                    <span class="text-muted-foreground">{round.completedAt === null ? 'not reported yet' : 'no report (gap)'}</span>
                   ) : (
                     <span>
-                      {submission.findings} finding(s), {submission.filesReviewed.length} file(s) read <span class="muted small">{formatTime(submission.at)}</span>
-                      {!submission.independent && <span class="attention small"> · not independent: {submission.independenceNote}</span>}
+                      {submission.findings} finding(s), {submission.filesReviewed.length} file(s) read <span class="text-muted-foreground text-xs">{formatTime(submission.at)}</span>
+                      {!submission.independent && <span class={[ATTENTION, 'text-xs']}> · not independent: {submission.independenceNote}</span>}
                     </span>
                   )}
                 </li>
@@ -100,72 +102,74 @@ export const ReviewPanel = defineComponent({
             })}
           </ul>
           {round.uncovered.length > 0 && (
-            <p class="attention">
+            <p class={ATTENTION}>
               <Emoji symbol={EMOJI.warning} />
               Changed files no reviewer covered: {round.uncovered.join(', ')}
             </p>
           )}
           {state.openFindings.length > 0 && (
-            <ul class="list">
+            <ul class={LIST}>
               {state.openFindings.map((finding) => (
-                <li key={finding.findingId}>
-                  <Badge tone={finding.severity === 'P1' || finding.severity === 'P2' ? 'deny' : 'warn'} emoji={SEVERITY_EMOJI[finding.severity]}>
+                <li key={finding.findingId} class="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <StatusBadge tone={finding.severity === 'P1' || finding.severity === 'P2' ? 'deny' : 'warn'} emoji={SEVERITY_EMOJI[finding.severity]}>
                     {finding.severity}
-                  </Badge>{' '}
+                  </StatusBadge>{' '}
                   {finding.title}{' '}
-                  <code>
+                  <code class="font-mono text-xs">
                     {finding.file}:{finding.lineStart}
                   </code>{' '}
-                  <span class="muted small">{finding.findingId}</span>
+                  <span class="text-muted-foreground text-xs">{finding.findingId}</span>
                 </li>
               ))}
             </ul>
           )}
           {round.fixPlan !== null && (
-            <div class="review__fix-plan">
-              <h4>
+            <div class="bg-muted/50 grid gap-2 rounded-md p-3">
+              <h4 class="flex items-center font-medium">
                 <Emoji symbol={EMOJI.plan} />
                 Fix plan (round {round.round})
               </h4>
               <p>{round.fixPlan.summary}</p>
-              <ul class="list">
+              <ul class={LIST}>
                 {round.fixPlan.items.map((item, index) => (
                   <li key={index}>
-                    {item.findings.join(', ')}: {item.change} <span class="muted small">{item.files.join(', ')}</span>
+                    {item.findings.join(', ')}: {item.change} <span class="text-muted-foreground font-mono text-xs">{item.files.join(', ')}</span>
                   </li>
                 ))}
                 {round.fixPlan.notFixed.map((entry) => (
-                  <li key={entry.finding} class="muted">
+                  <li key={entry.finding} class="text-muted-foreground">
                     not fixed {entry.finding}: {entry.reason}
                   </li>
                 ))}
               </ul>
-              {round.fixesSummary !== null && <p class="muted">Fixes reported: {round.fixesSummary}</p>}
+              {round.fixesSummary !== null && <p class="text-muted-foreground">Fixes reported: {round.fixesSummary}</p>}
             </div>
           )}
           {round.skippedAt !== null && (
-            <p class="muted">
+            <p class="text-muted-foreground">
               <Emoji symbol={EMOJI.skipped} />
               Waived by the user: {round.skipReason}
             </p>
           )}
-          <div class="actions">
-            {waiting && (
-              <button type="button" class="button button--primary" onClick={() => (pending.value = 'approve-fixes')}>
-                Approve fix plan
-              </button>
-            )}
-            {waiting && (
-              <button type="button" class="button" onClick={() => (pending.value = 'reject-fixes')}>
-                Reject fix plan
-              </button>
-            )}
-            {canWaive && (
-              <button type="button" class="button button--quiet" onClick={() => (pending.value = 'waive')}>
-                Waive review
-              </button>
-            )}
-          </div>
+          {(waiting || canWaive) && (
+            <div class="flex flex-wrap gap-2">
+              {waiting && (
+                <Button type="button" size="sm" onClick={() => (pending.value = 'approve-fixes')}>
+                  Approve fix plan
+                </Button>
+              )}
+              {waiting && (
+                <Button type="button" variant="outline" size="sm" onClick={() => (pending.value = 'reject-fixes')}>
+                  Reject fix plan
+                </Button>
+              )}
+              {canWaive && (
+                <Button type="button" variant="ghost" size="sm" onClick={() => (pending.value = 'waive')}>
+                  Waive review
+                </Button>
+              )}
+            </div>
+          )}
           {pending.value !== null && (
             <ConfirmDialog
               title={pending.value === 'waive' ? `Waive the review of ${props.task.taskId}` : `${pending.value === 'approve-fixes' ? 'Approve' : 'Reject'} the fix plan of ${props.task.taskId}`}

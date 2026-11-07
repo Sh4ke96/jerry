@@ -1,0 +1,54 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "JERRY Desktop",
+  "version": "0.1.0",
+  "identifier": "dev.jerry.desktop",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "🛡️ JERRY",
+        "url": "index.html",
+        "width": 1280,
+        "height": 860,
+        "minWidth": 720,
+        "minHeight": 520,
+        "center": true,
+        "visible": false,
+        "create": false
+      },
+      {
+        "label": "settings",
+        "title": "⚙️ JERRY Desktop settings",
+        "url": "settings.html",
+        "width": 520,
+        "height": 640,
+        "minWidth": 420,
+        "minHeight": 480,
+        "center": true,
+        "create": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src ipc: http://ipc.localhost",
+      "capabilities": ["local-pages"]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "publisher": "JERRY",
+    "shortDescription": "JERRY Desktop",
+    "longDescription": "The JERRY dashboard in its own window, with a tray icon and notifications.",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

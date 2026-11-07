@@ -1,6 +1,6 @@
 import type { CoreState, GateCheckRequest, Task, WorkflowState } from '@jerry/contracts';
 import { describe, expect, it } from 'vitest';
-import { approvedPlansForRepo, computePlanHash, computeReportHash, isRepoExcluded } from '../src/approvals.js';
+import { approvedPlansForRepo, computePlanHash, computeReportHash } from '../src/approvals.js';
 import { evaluateGate, type GateContext } from '../src/gate.js';
 
 const REPO = 'D:/Work/Repo';
@@ -50,7 +50,8 @@ function context(state: CoreState = emptyState(), overrides: Partial<GateContext
     realPath: (target) => target,
     findRepoRoot: (target) => (target.toLowerCase().startsWith(REPO.toLowerCase() + '/') || target.toLowerCase() === REPO.toLowerCase() ? REPO : null),
     approvedPlans: (repoRoot) => approvedPlansForRepo(state, repoRoot, 'win32'),
-    isExcluded: (repoRoot) => isRepoExcluded(state, repoRoot, 'win32'),
+    // The fixture repository is a project unless a test says otherwise.
+    isMonitored: (repoRoot) => repoRoot.toLowerCase() === REPO.toLowerCase(),
     ...overrides,
   };
 }
@@ -117,9 +118,10 @@ describe('monitoring: file writes are never blocked, deviations are warned', () 
     expect(evaluateGate(write('C:/Temp/scratch.txt'), context()).ruleId).toBe('monitor.outside-repository');
   });
 
-  it('does not monitor repositories the user excluded', () => {
-    const state: CoreState = { ...emptyState(), excludedRepos: [{ repoRoot: 'd:\\work\\repo', excludedAt: '2026-11-06T10:00:00.000Z' }] };
-    expect(evaluateGate(write('src/a.ts'), context(state))).toMatchObject({ verdict: 'PASS', ruleId: 'monitor.repo-excluded' });
+  it('does not monitor repositories that are not added as projects', () => {
+    const notAdded = context(approvedState(task(['src/**'])), { isMonitored: () => false });
+    expect(evaluateGate(write('README.md'), notAdded)).toMatchObject({ verdict: 'PASS', ruleId: 'monitor.not-a-project', taskId: null, repoRoot: REPO });
+    expect(evaluateGate(shell('npm install'), notAdded)).toMatchObject({ verdict: 'PASS', ruleId: 'monitor.not-a-project' });
   });
 
   it('warns about a write tool call without a target path', () => {
@@ -158,9 +160,9 @@ describe('monitoring: shell commands', () => {
   });
 });
 
-describe('hard rules: always blocked, with or without a plan, in excluded repositories too', () => {
+describe('hard rules: always blocked, with or without a plan, outside projects too', () => {
   const approved = approvedState(task(['**']));
-  const excluded: CoreState = { ...approved, excludedRepos: [{ repoRoot: REPO, excludedAt: '2026-11-06T10:00:00.000Z' }] };
+  const notAdded = (state: CoreState = emptyState()): GateContext => context(state, { isMonitored: () => false });
 
   it.each([
     ['git commit -m "x"', 'Bash'],
@@ -172,8 +174,8 @@ describe('hard rules: always blocked, with or without a plan, in excluded reposi
     ['& git reset --hard', 'PowerShell'],
     ['npm version patch', 'Bash'],
   ])('blocks %s (%s)', (command, tool) => {
-    for (const state of [emptyState(), approved, excluded]) {
-      expect(evaluateGate(shell(command, tool), context(state))).toMatchObject({ verdict: 'DENY', ruleId: 'hard.git-mutation' });
+    for (const ctx of [context(), context(approved), notAdded(approved)]) {
+      expect(evaluateGate(shell(command, tool), ctx)).toMatchObject({ verdict: 'DENY', ruleId: 'hard.git-mutation' });
     }
   });
 
@@ -183,7 +185,7 @@ describe('hard rules: always blocked, with or without a plan, in excluded reposi
 
   it('blocks writes inside .git, even with a plan covering everything', () => {
     expect(evaluateGate(write('.git/config'), context(approved))).toMatchObject({ verdict: 'DENY', ruleId: 'hard.git-metadata' });
-    expect(evaluateGate(write('sub/.git/hooks/pre-commit'), context(excluded)).ruleId).toBe('hard.git-metadata');
+    expect(evaluateGate(write('sub/.git/hooks/pre-commit'), notAdded()).ruleId).toBe('hard.git-metadata');
   });
 
   it('does not confuse .gitignore or .github with Git metadata', () => {
@@ -205,6 +207,12 @@ describe('hard rules: always blocked, with or without a plan, in excluded reposi
     for (const action of ['pause', 'resume', 'cancel']) {
       expect(evaluateGate(shell(`jerry task ${action} JRY-0001`), context()).ruleId, action).toBe('hard.user-only-command');
     }
+    for (const command of ['jerry project add .', 'jerry project add', 'node dist/cli/jerry.mjs project remove D:/Work/Repo', 'jerry.cmd PROJECT  ADD', 'jerry data prune --done-older-than 30', 'jerry data forget D:/Work/Repo', 'jerry repo include .']) {
+      expect(evaluateGate(shell(command), context()).ruleId, command).toBe('hard.user-only-command');
+      expect(evaluateGate(shell(command), notAdded()).ruleId, command).toBe('hard.user-only-command');
+    }
+    // Reading projects and data usage is not a user-only action.
+    for (const command of ['jerry project list', 'jerry data', 'jerry data --json']) expect(evaluateGate(shell(command), context()).verdict, command).not.toBe('DENY');
     expect(evaluateGate(shell('jerry task show JRY-0001'), context()).verdict).toBe('PASS');
     expect(evaluateGate(shell('jerry task list'), context()).verdict).toBe('PASS');
     expect(evaluateGate(shell('node dist/cli/jerry.mjs task list --all'), context()).verdict).toBe('PASS');

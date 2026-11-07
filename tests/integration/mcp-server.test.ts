@@ -25,7 +25,7 @@ describe('JERRY MCP server (bundled)', () => {
   const connect = async (env: Record<string, string> = { JERRY_HOME: home, CLAUDE_PROJECT_DIR: repo }): Promise<McpClient> => {
     client = new McpClient(env);
     const init = await client.request('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '0' } });
-    expect(init['result']).toMatchObject({ protocolVersion: '2025-06-18', serverInfo: { name: 'jerry' }, capabilities: { tools: {} } });
+    expect(init['result']).toMatchObject({ protocolVersion: '2025-06-18', serverInfo: { name: 'jerry-guardian' }, capabilities: { tools: {} } });
     client.notify('notifications/initialized');
     return client;
   };
@@ -34,19 +34,26 @@ describe('JERRY MCP server (bundled)', () => {
     const mcp = await connect();
     const listed = (await mcp.request('tools/list'))['result'] as { tools: Array<{ name: string; annotations: { readOnlyHint: boolean } }> };
     const names = listed.tools.map((tool) => tool.name).sort();
-    expect(names).toEqual(['jerry_assign_work', 'jerry_check_paths', 'jerry_finish_review', 'jerry_get_analysis', 'jerry_get_final_report', 'jerry_get_project_profile', 'jerry_get_review', 'jerry_get_state', 'jerry_list_deviations', 'jerry_list_findings', 'jerry_record_artifact', 'jerry_report_fixes', 'jerry_save_checkpoint', 'jerry_start_task', 'jerry_submit_analysis_report', 'jerry_submit_fix_plan', 'jerry_submit_plan', 'jerry_submit_report', 'jerry_submit_review']);
-    expect(listed.tools.filter((tool) => !tool.annotations.readOnlyHint).map((tool) => tool.name)).toEqual(['jerry_submit_plan', 'jerry_start_task', 'jerry_record_artifact', 'jerry_submit_review', 'jerry_finish_review', 'jerry_submit_fix_plan', 'jerry_report_fixes', 'jerry_assign_work', 'jerry_submit_analysis_report', 'jerry_submit_report', 'jerry_save_checkpoint']);
+    expect(names).toEqual(['assign_work', 'check_paths', 'finish_review', 'get_analysis', 'get_final_report', 'get_project_profile', 'get_review', 'get_state', 'list_deviations', 'list_findings', 'record_artifact', 'report_fixes', 'save_checkpoint', 'start_task', 'submit_analysis_report', 'submit_fix_plan', 'submit_plan', 'submit_report', 'submit_review']);
+    expect(listed.tools.filter((tool) => !tool.annotations.readOnlyHint).map((tool) => tool.name)).toEqual(['submit_plan', 'start_task', 'record_artifact', 'submit_review', 'finish_review', 'submit_fix_plan', 'report_fixes', 'assign_work', 'submit_analysis_report', 'submit_report', 'save_checkpoint']);
     expect(names.some((name) => /approve|accept|reject|exclude|pause|resume|cancel|done|complete/.test(name))).toBe(false);
   });
 
   it('submits a plan as a task waiting for approval, and a revision voids the approval', async () => {
     const mcp = await connect();
     // A second repository keeps these tasks out of the plan-state test, which expects none in `repo`.
-    const submitted = await mcp.call('jerry_submit_plan', { title: 'Greeting helper', repoPath: otherRepo, plan: samplePlan(otherRepo) });
+    const submitted = await mcp.call('submit_plan', { title: 'Greeting helper', repoPath: otherRepo, plan: samplePlan(otherRepo) });
     expect(submitted.isError).toBe(false);
     expect(submitted.structured).toMatchObject({ planVersion: 1, state: 'WAIT_PLAN_APPROVAL' });
     expect(submitted.text).toContain('Do not approve it yourself');
     const taskId = submitted.structured['taskId'] as string;
+    // The first block is the human line the user sees in the tool row; the JSON follows it.
+    expect(submitted.summary).toMatch(new RegExp(`^📋 ${taskId} plan v1 submitted · ⏳ waiting for your approval`));
+    expect(submitted.text.split('\n').slice(1).join('\n')).toBe(JSON.stringify(submitted.structured, null, 2));
+
+    const state = await mcp.call('get_state', { path: otherRepo });
+    expect(state.summary).toBe(`🛡️ GUARDED · ⏳ ${taskId} waiting for plan approval · ⏳ 1 waiting for you`);
+    expect((await mcp.call('check_paths', { paths: ['src/greeting/greet.ts'], cwd: otherRepo })).summary).toMatch(/^🔍 1 path\(s\): ✅ \d+ in scope · ⚠️ \d+ deviation · ⛔ \d+ blocked$/);
 
     const tasks = (await api(core, 'GET', '/api/v1/tasks')).body as Array<{ taskId: string; plan: { document?: { goal: string } }; planDecision: unknown }>;
     const stored = tasks.find((task) => task.taskId === taskId)!;
@@ -54,7 +61,7 @@ describe('JERRY MCP server (bundled)', () => {
     expect(stored.planDecision).toBeNull();
 
     await api(core, 'POST', `/api/v1/tasks/${taskId}/approvals`, { stage: 'PLAN', version: 1, decision: 'APPROVED' });
-    const revised = await mcp.call('jerry_submit_plan', { taskId, plan: { ...samplePlan(otherRepo), goal: 'Add a localised greeting helper.' } });
+    const revised = await mcp.call('submit_plan', { taskId, plan: { ...samplePlan(otherRepo), goal: 'Add a localised greeting helper.' } });
     expect(revised.structured).toMatchObject({ taskId, planVersion: 2, state: 'WAIT_PLAN_APPROVAL' });
     const after = ((await api(core, 'GET', '/api/v1/tasks')).body as Array<{ taskId: string; planDecision: unknown }>).find((task) => task.taskId === taskId)!;
     expect(after.planDecision).toBeNull();
@@ -63,33 +70,33 @@ describe('JERRY MCP server (bundled)', () => {
   it('rejects an incomplete plan with the fields to fix, and a new task without a title', async () => {
     const mcp = await connect();
     const { tests: _tests, ...withoutTests } = samplePlan(repo);
-    const incomplete = await mcp.call('jerry_submit_plan', { title: 'x', plan: withoutTests });
+    const incomplete = await mcp.call('submit_plan', { title: 'x', plan: withoutTests });
     expect(incomplete.isError).toBe(true);
     expect(incomplete.text).toContain('tests');
-    expect((await mcp.call('jerry_submit_plan', { plan: samplePlan(repo) })).text).toContain('needs a short title');
+    expect((await mcp.call('submit_plan', { plan: samplePlan(repo) })).text).toContain('needs a short title');
   });
 
   it('reports the live workflow state: none, waiting, in implementation, paused, cancelled', async () => {
     const mcp = await connect();
-    expect((await mcp.call('jerry_get_state')).structured).toMatchObject({ guard: 'GUARDED', monitored: true, currentTask: null, next: { action: 'propose-plan' } });
+    expect((await mcp.call('get_state')).structured).toMatchObject({ guard: 'GUARDED', monitored: true, currentTask: null, next: { action: 'propose-plan' } });
 
     const created = (await api(core, 'POST', '/api/v1/tasks', { repoPath: repo, title: 'Live state', scope: ['src/**'] })).body as { taskId: string };
-    expect((await mcp.call('jerry_get_state')).structured).toMatchObject({
+    expect((await mcp.call('get_state')).structured).toMatchObject({
       currentTask: { taskId: created.taskId, state: 'WAIT_PLAN_APPROVAL' },
       next: { action: 'wait-for-approval' },
     });
 
     // Approved while the session is running: the tool sees it immediately.
     await api(core, 'POST', `/api/v1/tasks/${created.taskId}/approvals`, { stage: 'PLAN', version: 1, decision: 'APPROVED' });
-    const state = (await mcp.call('jerry_get_state')).structured;
+    const state = (await mcp.call('get_state')).structured;
     expect(state).toMatchObject({ approved: [{ taskId: created.taskId, scope: ['src/**'], state: 'IMPLEMENTATION' }], open: [], next: { action: 'work-within-approved-scope' } });
     expect(String(state['hardRules'])).toContain('No Git command');
 
     await api(core, 'POST', `/api/v1/tasks/${created.taskId}/transitions`, { event: 'task.paused' });
-    expect((await mcp.call('jerry_get_state')).structured).toMatchObject({ approved: [], open: [{ taskId: created.taskId, state: 'PAUSED' }], next: { action: 'paused' } });
+    expect((await mcp.call('get_state')).structured).toMatchObject({ approved: [], open: [{ taskId: created.taskId, state: 'PAUSED' }], next: { action: 'paused' } });
 
     await api(core, 'POST', `/api/v1/tasks/${created.taskId}/transitions`, { event: 'task.cancelled' });
-    expect((await mcp.call('jerry_get_state')).structured).toMatchObject({ approved: [], open: [], currentTask: null, next: { action: 'propose-plan' } });
+    expect((await mcp.call('get_state')).structured).toMatchObject({ approved: [], open: [], currentTask: null, next: { action: 'propose-plan' } });
 
     // Later tests preview edits against an approved plan in this repository.
     const next = (await api(core, 'POST', '/api/v1/tasks', { repoPath: repo, title: 'Live state again', scope: ['src/**'] })).body as { taskId: string };
@@ -99,7 +106,7 @@ describe('JERRY MCP server (bundled)', () => {
   it('previews gate decisions without recording them', async () => {
     const mcp = await connect();
     const before = ((await api(core, 'GET', '/api/v1/events?limit=500')).body as unknown[]).length;
-    const result = await mcp.call('jerry_check_paths', { paths: ['src/app.ts', 'src/other.ts', 'README.md', '.git/config'] });
+    const result = await mcp.call('check_paths', { paths: ['src/app.ts', 'src/other.ts', 'README.md', '.git/config'] });
     expect(result.structured).toMatchObject({
       decisions: [
         // The fixture's src/app.ts holds the user's uncommitted change; a preview shows the warning without using it up.
@@ -116,14 +123,14 @@ describe('JERRY MCP server (bundled)', () => {
     runBridge('pre-tool-use', preToolUse(repo, 'Write', { file_path: path.join(repo, 'README.md') }), { JERRY_HOME: home });
     runBridge('pre-tool-use', preToolUse(repo, 'Bash', { command: 'git push' }), { JERRY_HOME: home });
     const mcp = await connect();
-    const result = await mcp.call('jerry_list_deviations');
+    const result = await mcp.call('list_deviations');
     const deviations = result.structured['deviations'] as Array<{ verdict: string; rule: string }>;
     expect(deviations.map((deviation) => `${deviation.verdict}:${deviation.rule}`)).toEqual(expect.arrayContaining(['WARN:monitor.out-of-scope']));
   });
 
   it('says plainly when Core is unreachable, instead of guessing', async () => {
     const mcp = await connect({ JERRY_HOME: path.join(base, 'no-core-here'), CLAUDE_PROJECT_DIR: repo });
-    const result = await mcp.call('jerry_get_state');
+    const result = await mcp.call('get_state');
     expect(result.isError).toBe(true);
     expect(result.text).toContain('JERRY Core is not reachable');
   });

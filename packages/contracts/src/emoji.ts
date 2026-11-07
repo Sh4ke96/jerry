@@ -34,6 +34,7 @@ export const EMOJI = {
   security: '🔒',
   artifact: '🎨',
   done: '🏁',
+  checkpoint: '💾',
   cancelled: '🚫',
 } as const;
 

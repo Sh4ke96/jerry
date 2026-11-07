@@ -534,4 +534,28 @@ export const MIGRATIONS: Readonly<Record<string, Migration>> = {
       await db.schema.createIndex('artifact_decisions_task').on('artifact_decisions').columns(['task_id', 'id']).execute();
     },
   },
+
+  '0018_projects': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // The repositories the user added: JERRY monitors only these; elsewhere only hard rules apply.
+      // repo_root is the Git working tree root as found on disk (original case).
+      await db.schema
+        .createTable('projects')
+        .addColumn('repo_root', 'text', (column) => column.primaryKey())
+        .addColumn('added_at', 'text', (column) => column.notNull())
+        .addColumn('added_by', 'text', (column) => column.notNull())
+        .addColumn('note', 'text')
+        .execute();
+
+      // Repositories with unfinished work stay monitored after the upgrade. A repository the user
+      // had excluded stays unmonitored: that was their decision.
+      await sql`
+        INSERT INTO projects (repo_root, added_at, added_by, note)
+        SELECT DISTINCT repositories.root_path, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 'migration', 'had open tasks when projects were introduced'
+        FROM repositories
+        JOIN tasks ON tasks.repo_id = repositories.repo_id
+        WHERE tasks.state NOT IN ('DONE', 'CANCELLED') AND repositories.excluded_at IS NULL
+      `.execute(db);
+    },
+  },
 };
