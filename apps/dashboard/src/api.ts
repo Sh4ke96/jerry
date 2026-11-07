@@ -1,4 +1,4 @@
-import type { ApprovalRecord, ArtifactDecision, CoreStatus, FinalChecksRerun, FinalReport,EvalRunDetail, EvalRunSummary, EvalStatus, Finding, Plan, PlanDrift, ReviewState, ProjectProfile, ProjectAddResult, ProjectRemoveResult, ProjectSummary, DataUsage, PruneOptions, PrunePreview, PruneResult, ForgetPreview, ForgetResult, RepositorySummary, SkillChangeResult, SkillDetail, SkillPreview, SkillsList, StoredEvent, Task, TaskSummary, WorkflowState, WorkflowTransition, WorkspaceGraph } from '@jerry/contracts';
+import type { ApprovalRecord, ArtifactDecision, CoreStatus, FinalChecksRerun, FinalReport, EvalRunnerStatus, EvalRunDetail, EvalRunSummary, EvalStatus, Finding, Plan, PlanDrift, ReviewState, ProjectProfile, ProjectAddResult, ProjectRemoveResult, ProjectSummary, DataUsage, PruneOptions, PrunePreview, PruneResult, ForgetPreview, ForgetResult, RepositorySummary, SkillChangeResult, SkillDetail, SkillPreview, SkillsList, StoredEvent, Task, TaskSummary, WorkflowState, WorkflowTransition, WorkspaceGraph } from '@jerry/contracts';
 
 import type { ProjectReviewMode, SettingsUpdate, WorkflowSettings } from './settings.js';
 
@@ -98,6 +98,11 @@ export const api = {
   evalRuns: () => request<EvalRunSummary[]>('GET', '/api/v1/evals/runs'),
   evalRun: (runId: string) => request<EvalRunDetail>('GET', `/api/v1/evals/runs/${encodeURIComponent(runId)}`),
   evalStatus: () => request<EvalStatus>('GET', '/api/v1/evals/status'),
+  /** "jerry eval run" started from here: its state, output tail and the run it recorded. */
+  evalRunner: () => request<EvalRunnerStatus>('GET', '/api/v1/evals/runner'),
+  /** Starts real Claude Code sessions in the background; the user confirmed it first. */
+  startEvalRun: (suite: string | null, label: string) => request<EvalRunnerStatus>('POST', '/api/v1/evals/runner/start', { suite, label }),
+  stopEvalRun: () => request<EvalRunnerStatus>('POST', '/api/v1/evals/runner/stop', {}),
   evalCalibration: () => request<Array<{ rubricId: string; labels: number; agreement: number; calibrated: boolean }>>('GET', '/api/v1/evals/calibration'),
   /** The user's baseline choice, with a reason and the typed run ID. */
   setEvalBaseline: (runId: string, note: string, confirm: string) => request<EvalRunSummary>('POST', '/api/v1/evals/baseline', { runId, note, confirm }),

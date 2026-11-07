@@ -113,6 +113,12 @@ code,
   justify-content: center;
 }
 
+/* The settings page fills the main window: a wider column than the old settings window. */
+.page--settings {
+  max-width: 760px;
+  padding-top: 16px;
+}
+
 /* Card */
 
 .card {
@@ -162,6 +168,11 @@ code,
 
 .page-title {
   font-size: 22px;
+}
+
+.page-header--with-back .back {
+  align-self: flex-start;
+  margin-left: -12px;
 }
 
 /* Separator */
@@ -220,6 +231,15 @@ code,
 .button--secondary {
   background: var(--secondary);
   color: var(--secondary-foreground);
+}
+
+.button--ghost {
+  background: transparent;
+  color: var(--foreground);
+}
+
+.button--ghost:hover {
+  background: var(--accent);
 }
 
 /* Select: shadcn/ui's select trigger (36px, input border, chevron on the right) */

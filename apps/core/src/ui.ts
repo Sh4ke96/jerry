@@ -12,10 +12,14 @@ export const HTML_SECURITY_HEADERS: Readonly<Record<string, string>> = {
   'referrer-policy': 'no-referrer',
 };
 
-/** The built dashboard app: only its own compiled scripts, styles, fonts, images and API (no inline code, no eval). */
+/**
+ * The built dashboard app: only its own compiled scripts, styles, fonts, images and API (no inline
+ * code, no eval). Inside the Jerry app the dashboard also reaches the app's IPC endpoint
+ * (http://ipc.localhost, ipc:) for the app's settings; a browser has no such host.
+ */
 export const DASHBOARD_SECURITY_HEADERS: Readonly<Record<string, string>> = {
   'content-security-policy':
-    "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+    "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self'; connect-src 'self' http://ipc.localhost ipc:; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
   'x-frame-options': 'DENY',
   'referrer-policy': 'no-referrer',
 };

@@ -18,6 +18,7 @@ import {
   type SkillScanFinding,
   type SkillSource,
   type SkillsList,
+  type SkillUse,
 } from '@jerry/contracts';
 import type { JerrySchema } from '@jerry/database';
 import {
@@ -45,7 +46,7 @@ import {
   type LoadedSkill,
   type SkillInput,
 } from '@jerry/skills';
-import type { Kysely, Selectable } from 'kysely';
+import { sql, type Kysely, type Selectable } from 'kysely';
 import { z } from 'zod';
 
 /**
@@ -70,6 +71,8 @@ export interface SkillServiceOptions {
 export const PREVIEW_TTL_MS = 30 * 60 * 1000;
 /** Previews kept at once; the oldest goes first. */
 const MAX_PREVIEWS = 20;
+/** Uses of a skill listed on its page at most. */
+const MAX_USES = 50;
 /** SKILL.md shown in a preview or on the skill page at most. */
 const MAX_SKILL_MD_CHARS = 256 * 1024;
 
@@ -226,12 +229,30 @@ export class SkillService {
         files: filesOf(row),
         scan: scanOf(row),
         history: events.map((event) => ({ action: event.action, channel: event.channel, at: event.at, details: z.record(z.string(), z.unknown()).catch({}).parse(JSON.parse(event.details_json)) })),
+        uses: await this.uses(name),
       };
     }
     const other = [...this.ownSkills(), ...this.personalSkills(new Set())].find((candidate) => candidate.name === name);
     if (other === undefined) throw new SkillError(404, `No skill named ${name} (see "jerry skill list").`);
     const skillMdFile = path.join(other.dir, 'SKILL.md');
-    return { skill: other, skillMd: fs.existsSync(skillMdFile) ? clip(fs.readFileSync(skillMdFile, 'utf8')) : null, files: listSkillFiles(other.dir) ?? [], scan: [], history: [] };
+    return { skill: other, skillMd: fs.existsSync(skillMdFile) ? clip(fs.readFileSync(skillMdFile, 'utf8')) : null, files: listSkillFiles(other.dir) ?? [], scan: [], history: [], uses: await this.uses(name) };
+  }
+
+  /**
+   * The latest times Claude used the skill: Skill tool calls JERRY checked (PreToolUse events, which
+   * carry the gate's verdict), newest first. The skill name is in the event's tool input summary.
+   */
+  async uses(name: string, limit = MAX_USES): Promise<SkillUse[]> {
+    const rows = await this.options.db
+      .selectFrom('hook_events')
+      .select(['occurred_at', 'session_id', 'task_id', 'repo_root', 'verdict', 'rule_id'])
+      .where('tool_name', '=', 'Skill')
+      .where('event_type', '=', 'PreToolUse')
+      .where(sql<string>`json_extract(payload_json, '$.input.skill')`, '=', name)
+      .orderBy('occurred_at', 'desc')
+      .limit(limit)
+      .execute();
+    return rows.map((row) => ({ at: row.occurred_at, sessionId: row.session_id, taskId: row.task_id, repoRoot: row.repo_root, verdict: row.verdict, ruleId: row.rule_id }));
   }
 
   // --- Previews -------------------------------------------------------------------------------

@@ -1,11 +1,14 @@
-import type { EvalRunDetail, EvalRunSummary, EvalStatus } from '@jerry/contracts';
+import type { EvalRunDetail, EvalRunnerStatus, EvalRunSummary, EvalStatus } from '@jerry/contracts';
 import { EMOJI } from '@jerry/contracts/emoji';
-import { defineComponent, onMounted, ref } from 'vue';
+import { Play, Square } from '@lucide/vue';
+import { defineComponent, onMounted, onUnmounted, ref } from 'vue';
 import { api } from '../api';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { Emoji } from '../components/Emoji';
 import { StatusBadge, type Tone } from '../components/StatusBadge';
 import { Button } from '../components/ui/button';
+import { Input } from '../components/ui/input';
+import { Label } from '../components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Skeleton } from '../components/ui/skeleton';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
@@ -19,10 +22,21 @@ const OUTCOME_EMOJI: Record<string, string> = { PASS: EMOJI.pass, FAIL: EMOJI.fa
 /** An unchanged case has no emoji of its own: its result column shows the outcome. */
 const COMPARISON_EMOJI: Record<string, string> = { REGRESSION: EMOJI.blocked, FIXED: EMOJI.pass, FLAKY: EMOJI.warning, NEW: EMOJI.info, MISSING: EMOJI.warning, ERROR: EMOJI.fail };
 
+/** How often the page asks how a running eval run goes. */
+const RUNNER_POLL_MS = 2000;
+const RUNNER_STATE: Record<EvalRunnerStatus['state'], { label: string; tone: Tone; emoji: string }> = {
+  idle: { label: 'idle', tone: 'neutral', emoji: EMOJI.info },
+  running: { label: 'running', tone: 'accent', emoji: EMOJI.waiting },
+  finished: { label: 'finished', tone: 'pass', emoji: EMOJI.pass },
+  failed: { label: 'ended with errors or regressions', tone: 'warn', emoji: EMOJI.warning },
+  stopped: { label: 'stopped', tone: 'neutral', emoji: EMOJI.paused },
+};
+
 /**
  * JERRY's evals: runs, per-case results across repeats compared with the baseline,
- * regressions, flaky cases, calibration and what changed since the baseline. Runs start from the
- * CLI (`jerry eval run`); choosing a baseline is the user's decision.
+ * regressions, flaky cases, calibration and what changed since the baseline. Runs start here
+ * ("Run evals": Core runs `jerry eval run` in the background) or from the CLI; choosing a baseline
+ * is the user's decision.
  */
 export const Evals = defineComponent({
   name: 'Evals',
@@ -33,6 +47,112 @@ export const Evals = defineComponent({
     const selected = ref<EvalRunDetail | null>(null);
     const baselineFor = ref<EvalRunSummary | null>(null);
     const busy = ref(false);
+    const runner = ref<EvalRunnerStatus | null>(null);
+    /** The run dialog: open, and the suite chosen in it ('' for all cases). */
+    const asking = ref(false);
+    const suite = ref('');
+    const label = ref('');
+    let poll: ReturnType<typeof setTimeout> | null = null;
+
+    const watchRunner = async (): Promise<void> => {
+      poll = null;
+      try {
+        const before = runner.value?.state;
+        runner.value = await api.evalRunner();
+        if (runner.value.state === 'running') poll = setTimeout(() => void watchRunner(), RUNNER_POLL_MS);
+        else if (before === 'running') {
+          // Just finished: show the run it recorded.
+          selected.value = null;
+          await load();
+          if (runner.value.runId !== null) await open(runner.value.runId);
+        }
+      } catch (error) {
+        handleError(error);
+      }
+    };
+    onMounted(() => void watchRunner());
+    onUnmounted(() => {
+      if (poll !== null) clearTimeout(poll);
+    });
+
+    const casesFor = (choice: string): number => {
+      const suites = runner.value?.suites ?? [];
+      return choice === '' ? suites.reduce((sum, entry) => sum + entry.cases, 0) : (suites.find((entry) => entry.suite === choice)?.cases ?? 0);
+    };
+
+    const startRun = async (): Promise<void> => {
+      busy.value = true;
+      try {
+        runner.value = await api.startEvalRun(suite.value === '' ? null : suite.value, label.value.trim());
+        asking.value = false;
+        if (poll !== null) clearTimeout(poll);
+        poll = setTimeout(() => void watchRunner(), RUNNER_POLL_MS);
+      } catch (error) {
+        handleError(error);
+      } finally {
+        busy.value = false;
+      }
+    };
+
+    const stopRun = async (): Promise<void> => {
+      busy.value = true;
+      try {
+        runner.value = await api.stopEvalRun();
+      } catch (error) {
+        handleError(error);
+      } finally {
+        busy.value = false;
+      }
+    };
+
+    const runnerPanel = () => {
+      const current = runner.value;
+      if (current === null) return null;
+      const shown = RUNNER_STATE[current.state];
+      return (
+        <div class="eval-runner grid gap-3 rounded-lg border p-3" data-runner-state={current.state}>
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div class="flex flex-wrap items-center gap-2">
+              <Button size="sm" data-run-evals disabled={busy.value || current.state === 'running' || current.unavailable !== null} onClick={() => (asking.value = true)}>
+                <Play />
+                Run evals
+              </Button>
+              {current.state !== 'idle' && (
+                <StatusBadge tone={shown.tone} emoji={shown.emoji}>
+                  {shown.label}
+                </StatusBadge>
+              )}
+              {current.startedAt !== null && (
+                <span class="text-muted-foreground text-xs">
+                  started {formatTime(current.startedAt)}
+                  {current.suite !== null && ` · suite ${current.suite}`}
+                  {current.label !== '' && ` · ${current.label}`}
+                  {current.exitCode !== null && ` · exit ${current.exitCode}`}
+                </span>
+              )}
+              {current.runId !== null && current.state !== 'running' && (
+                <Button variant="link" size="sm" class="h-auto px-0 font-mono" onClick={() => void open(current.runId!)}>
+                  {current.runId}
+                </Button>
+              )}
+            </div>
+            {current.state === 'running' && (
+              <Button size="sm" variant="outline" data-stop-evals disabled={busy.value} onClick={() => void stopRun()}>
+                <Square />
+                Stop
+              </Button>
+            )}
+          </div>
+          {current.unavailable !== null && <p class={ATTENTION}>{current.unavailable}</p>}
+          {current.logTail.length > 0 && (
+            <pre class="eval-runner__log bg-muted max-h-64 overflow-auto rounded p-2 font-mono text-xs whitespace-pre-wrap" aria-live="polite">
+              {current.logTail.join('\n')}
+            </pre>
+          )}
+          {current.logFile !== null && <p class="text-muted-foreground text-xs break-all">Full output: {current.logFile}</p>}
+        </div>
+      );
+    };
 
     const load = async (): Promise<void> => {
       try {
@@ -222,7 +342,7 @@ export const Evals = defineComponent({
               <div class="grid gap-1">
                 <p class={status.value.changedSinceBaseline.length > 0 ? ATTENTION : 'text-muted-foreground'}>
                   <Emoji symbol={status.value.changedSinceBaseline.length > 0 ? EMOJI.warning : EMOJI.pass} />
-                  {status.value.changedSinceBaseline.length > 0 ? `Changed since the baseline: ${status.value.changedSinceBaseline.join(', ')}. Run the evals again: jerry eval run` : 'Nothing JERRY ships changed since the baseline.'}
+                  {status.value.changedSinceBaseline.length > 0 ? `Changed since the baseline: ${status.value.changedSinceBaseline.join(', ')}. Run the evals again.` : 'Nothing JERRY ships changed since the baseline.'}
                 </p>
                 {calibration.value.length > 0 && (
                   <p class="text-muted-foreground text-xs">
@@ -231,7 +351,8 @@ export const Evals = defineComponent({
                 )}
               </div>
             )}
-            {runs.value.length === 0 && <p class="text-muted-foreground">No eval runs yet. Run them from a terminal: jerry eval run</p>}
+            {runnerPanel()}
+            {runs.value.length === 0 && <p class="text-muted-foreground">No eval runs yet. Start one with Run evals, or from a terminal: jerry eval run</p>}
             {runs.value.length > 0 && runsTable()}
           </CardContent>
         </Card>
@@ -245,6 +366,31 @@ export const Evals = defineComponent({
             </CardHeader>
             <CardContent>{casesTable(selected.value)}</CardContent>
           </Card>
+        )}
+        {asking.value && runner.value !== null && (
+          <ConfirmDialog title="Run the evals?" expected="evals" confirmLabel="Run evals" busy={busy.value} onConfirm={() => void startRun()} onCancel={() => (asking.value = false)}>
+            <div class="grid gap-3">
+              <p>
+                Starts real Claude Code sessions in the background, each in its own temporary repository: {casesFor(suite.value)} case(s). They use your Claude Code account (tokens, plan limits) and take a while. You can stop the run
+                here.
+              </p>
+              <div class="grid gap-1.5">
+                <Label for="eval-suite">Cases</Label>
+                <select id="eval-suite" class="border-input bg-background h-9 rounded-md border px-3 text-sm" value={suite.value} onChange={(event: Event) => (suite.value = (event.target as HTMLSelectElement).value)}>
+                  <option value="">All ({casesFor('')})</option>
+                  {runner.value.suites.map((entry) => (
+                    <option key={entry.suite} value={entry.suite}>
+                      {entry.suite} ({entry.cases})
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div class="grid gap-1.5">
+                <Label for="eval-label">Label (optional)</Label>
+                <Input id="eval-label" maxlength={80} placeholder="e.g. after the skills change" modelValue={label.value} onUpdate:modelValue={(value: string) => (label.value = value)} />
+              </div>
+            </div>
+          </ConfirmDialog>
         )}
         {baselineFor.value !== null && (
           <ConfirmDialog title={`Make ${baselineFor.value.runId} the baseline`} expected={baselineFor.value.runId} confirmLabel="Make baseline" busy={busy.value} commentLabel="Why (required)" commentRequired onConfirm={setBaseline} onCancel={() => (baselineFor.value = null)}>

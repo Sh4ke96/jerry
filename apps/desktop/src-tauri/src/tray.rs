@@ -1,4 +1,5 @@
-//! The tray icon and its menu, the two windows, polling Core and showing notifications.
+//! The tray icon and its menu, the main window (dashboard, fallback and settings pages), polling
+//! Core and showing notifications.
 //! Anything that talks to Core over HTTP runs off the main thread.
 
 use std::ffi::OsStr;
@@ -21,7 +22,6 @@ use crate::settings;
 use crate::{lock, AppState, CoreView};
 
 pub const MAIN: &str = "main";
-pub const SETTINGS: &str = "settings";
 const TRAY_ID: &str = "jerry";
 const POLL_INTERVAL: Duration = Duration::from_secs(15);
 
@@ -56,7 +56,7 @@ fn filter_navigation(app: &AppHandle, url: &Url, allow_core: bool) -> bool {
         }
         Navigation::Block => false,
         Navigation::OpenSettings => {
-            open_settings(app);
+            open_settings(app, true);
             false
         }
     }
@@ -183,20 +183,32 @@ pub fn open_dashboard_at(app: &AppHandle, route: Option<&str>) -> Result<(), Str
     }
 }
 
-/// Shows the settings window, creating it on first use.
-pub fn open_settings(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window(SETTINGS) {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
-        return;
-    }
-    // Built off the main thread: creating a webview inside a menu handler can deadlock WebView2.
+/// The tray's Settings…: the dashboard's Settings page, which shows the app's settings inline; the
+/// local settings page only when Core cannot be reached. Blocking parts run off the menu thread.
+pub fn show_settings(app: &AppHandle) {
     let handle = app.clone();
     std::thread::spawn(move || {
-        if let Ok(window) = build_window(&handle, SETTINGS, false) {
-            let _ = window.set_focus();
+        if open_dashboard_at(&handle, Some(core::SETTINGS_RETURN_ROUTE)).is_err() {
+            open_settings(&handle, false);
         }
+    });
+}
+
+/// Shows the local settings page in the main window (no separate window): the fallback while Core
+/// cannot be reached, and the target of the dashboard's old "Desktop app settings…" link. Opened from the
+/// dashboard's Settings, its Back button returns there; opened from the tray, to the dashboard.
+pub fn open_settings(app: &AppHandle, from_dashboard: bool) {
+    let Some(url) = local_page(app, core::settings_page(from_dashboard)) else {
+        return;
+    };
+    // Off the calling thread: this runs inside a navigation or menu handler, where navigating
+    // the same webview at once can deadlock WebView2.
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        if let Some(window) = handle.get_webview_window(MAIN) {
+            let _ = window.navigate(url);
+        }
+        show_main(&handle);
     });
 }
 
@@ -319,7 +331,7 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
             });
         }
         "stop" => confirm_stop_core(app),
-        "settings" => open_settings(app),
+        "settings" => show_settings(app),
         "quit" => app.exit(0),
         _ => {}
     }

@@ -10,8 +10,8 @@ import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Switch } from '../components/ui/switch';
 import { formatTime } from '../format';
-import { ATTENTION, CHIP } from '../lib/classes';
-import { linkTo, skillHref } from '../router';
+import { CHIP } from '../lib/classes';
+import { linkTo, navigate, skillHref } from '../router';
 import { handleError } from '../state';
 
 /** Where a skill came from, in one line. */
@@ -21,17 +21,29 @@ export function sourceLine(skill: AddedSkill): string {
   return `${source.kind === 'zip' ? 'zip' : 'folder'} ${source.source}`;
 }
 
-/** A skill added through JERRY: switch, update and remove. */
-export function addedTile(skill: AddedSkill, actions: ReturnType<typeof useSkillActions>) {
+/** Clicks on these do their own thing; elsewhere on a row a click opens the skill's page. */
+const INTERACTIVE = 'a, button, input, label, [role="switch"]';
+
+/** Opens a skill's page from a click on its row (not on its controls). */
+function openSkill(event: MouseEvent, name: string): void {
+  if ((event.target as Element | null)?.closest(INTERACTIVE)) return;
+  navigate(skillHref(name));
+}
+
+/**
+ * A skill added through JERRY as a full-width row: what it is, when JERRY starts it, the switch,
+ * update and remove. The scan and everything else is on the skill's page (a click on the row).
+ */
+export function addedTile(skill: AddedSkill, actions: ReturnType<typeof useSkillActions>, options: { onPage?: boolean } = {}) {
   const switchId = `skill-enabled-${skill.name}`;
   return (
-    <li key={skill.name} class="skill-tile bg-card grid gap-3 rounded-xl border p-4" data-skill={skill.name}>
-      <div class="flex items-start justify-between gap-3">
-        <div class="grid min-w-0 gap-1">
+    <li key={skill.name} class={['skill-tile bg-card grid gap-3 rounded-xl border p-4', options.onPage !== true && 'cursor-pointer transition-shadow hover:shadow-md']} data-skill={skill.name} onClick={options.onPage === true ? undefined : (event: MouseEvent) => openSkill(event, skill.name)}>
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div class="grid min-w-0 flex-1 gap-1">
           <a class="font-semibold hover:underline" {...linkTo(skillHref(skill.name))}>
             {skill.name}
           </a>
-          <p class="text-muted-foreground line-clamp-2 text-sm">{skill.description}</p>
+          <p class={['text-muted-foreground text-sm', options.onPage !== true && 'line-clamp-2']}>{skill.description}</p>
         </div>
         <div class="flex shrink-0 items-center gap-2">
           <label for={switchId} class="text-muted-foreground text-xs">
@@ -40,27 +52,17 @@ export function addedTile(skill: AddedSkill, actions: ReturnType<typeof useSkill
           <Switch id={switchId} aria-label={`${skill.name} on`} modelValue={skill.enabled} disabled={!skill.present || actions.busy.value} onUpdate:modelValue={(value: boolean) => actions.toggle(skill.name, value)} />
         </div>
       </div>
-      <div class="flex flex-wrap items-center gap-2 text-xs">
+      <div class="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs">
+        <span class="skill-trigger text-muted-foreground" data-trigger={!skill.jerryTriggered ? 'claude' : skill.states.length === 0 ? 'none' : 'jerry'}>
+          <Emoji symbol={EMOJI.jerry} />
+          {triggerText(skill)}
+        </span>
         {!skill.present && <StatusBadge tone="deny">folder missing</StatusBadge>}
         {skill.modified && <StatusBadge tone="warn" title="The files differ from what JERRY installed">changed by hand</StatusBadge>}
-        {skill.scan.dangers > 0 && (
-          <StatusBadge tone="deny" emoji={EMOJI.blocked}>
-            {skill.scan.dangers} red
-          </StatusBadge>
-        )}
-        {skill.scan.warnings > 0 && (
-          <StatusBadge tone="warn" emoji={EMOJI.warning}>
-            {skill.scan.warnings} amber
-          </StatusBadge>
-        )}
         <span class="text-muted-foreground break-all">
           {sourceLine(skill)} · {skill.fileCount} file(s) · updated {formatTime(skill.updatedAt)}
         </span>
       </div>
-      <p class={['skill-trigger text-xs', skill.jerryTriggered && skill.states.length > 0 ? 'text-muted-foreground' : ATTENTION]} data-trigger={!skill.jerryTriggered ? 'claude' : skill.states.length === 0 ? 'none' : 'jerry'}>
-        <Emoji symbol={skill.jerryTriggered ? EMOJI.jerry : EMOJI.warning} />
-        {triggerText(skill)}
-      </p>
       <div class="flex flex-wrap gap-2">
         <Button size="sm" variant="outline" disabled={actions.busy.value} data-skill-update onClick={() => actions.checkUpdate(skill.name, skill.source.kind === 'zip' && !/^([A-Za-z]:[\\/]|\/)/.test(skill.source.source))}>
           <RefreshCw />
@@ -75,10 +77,10 @@ export function addedTile(skill: AddedSkill, actions: ReturnType<typeof useSkill
   );
 }
 
-/** A skill JERRY did not install: its own (read-only) or the user's. */
+/** A skill JERRY did not install, as a full-width row: its own (read-only) or the user's. */
 function otherTile(skill: OtherSkill) {
   return (
-    <li key={skill.name} class="skill-tile grid gap-1 rounded-xl border p-4" data-skill={skill.name} data-kind={skill.kind}>
+    <li key={skill.name} class="skill-tile grid cursor-pointer gap-1 rounded-xl border p-4 transition-shadow hover:shadow-md" data-skill={skill.name} data-kind={skill.kind} onClick={(event: MouseEvent) => openSkill(event, skill.name)}>
       <div class="flex items-center justify-between gap-2">
         <a class="font-medium hover:underline" {...linkTo(skillHref(skill.name))}>
           {skill.name}
@@ -133,7 +135,7 @@ export const Skills = defineComponent({
               ) : current.added.length === 0 ? (
                 <p class="text-muted-foreground text-sm">No skills added through JERRY yet. Add one from GitHub, a folder or a zip file.</p>
               ) : (
-                <ul class="added-skills grid gap-3 md:grid-cols-2">{current.added.map((skill) => addedTile(skill, actions))}</ul>
+                <ul class="added-skills grid grid-cols-1 gap-3">{current.added.map((skill) => addedTile(skill, actions))}</ul>
               )}
             </CardContent>
           </Card>
@@ -147,7 +149,7 @@ export const Skills = defineComponent({
                 <CardDescription>Part of JERRY’s plugin (/jerry:…); they change with JERRY.</CardDescription>
               </CardHeader>
               <CardContent>
-                <ul class="own-skills grid gap-3 md:grid-cols-2">{current.own.map(otherTile)}</ul>
+                <ul class="own-skills grid grid-cols-1 gap-3">{current.own.map(otherTile)}</ul>
               </CardContent>
             </Card>
           )}
@@ -161,7 +163,7 @@ export const Skills = defineComponent({
                 <CardDescription>In the skills folder, but not installed by JERRY: JERRY never changes or removes them.</CardDescription>
               </CardHeader>
               <CardContent>
-                <ul class="personal-skills grid gap-3 md:grid-cols-2">{current.personal.map(otherTile)}</ul>
+                <ul class="personal-skills grid grid-cols-1 gap-3">{current.personal.map(otherTile)}</ul>
               </CardContent>
             </Card>
           )}

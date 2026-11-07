@@ -1,4 +1,6 @@
 import { computed, defineComponent, nextTick, ref, type ComponentPublicInstance, type PropType } from 'vue';
+import { decisionConfirmation } from '../settings';
+import { state } from '../state';
 import { AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from './ui/alert-dialog';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -6,13 +8,13 @@ import { Label } from './ui/label';
 import { Textarea } from './ui/textarea';
 
 /**
- * A decision is a deliberate gesture. In typed mode (the default, and always for irreversible
- * actions) the confirm button stays disabled until the user types the expected text (the task ID,
- * "delete", a repository root), exactly like the CLI prompt. In click mode (reversible decisions,
- * when the user chose one-click decisions in Settings) the dialog shows the same details and the
- * decision button is ready at once: it takes the focus, Enter confirms and Escape cancels; the
- * expected text is still emitted, so Core receives the task ID. The `controls` slot holds choices
- * that belong to the decision; they never replace the confirmation.
+ * A decision is a deliberate gesture, confirmed in this dialog as the user chose in Settings ("Type
+ * the ID or name to confirm decisions"), for every decision alike. In typed mode the confirm button
+ * stays disabled until the user types the expected text (the task ID, "delete", a repository root,
+ * a skill name), exactly like the CLI prompt. In click mode the dialog shows the same details and
+ * the decision button is ready at once: it takes the focus, Enter confirms and Escape cancels; the
+ * expected text is still emitted, so Core receives it. The `controls` slot holds choices that belong
+ * to the decision; they never replace the confirmation.
  */
 export const ConfirmDialog = defineComponent({
   name: 'ConfirmDialog',
@@ -22,8 +24,8 @@ export const ConfirmDialog = defineComponent({
     confirmLabel: { type: String, required: true },
     tone: { type: String as PropType<'primary' | 'danger'>, default: 'primary' },
     busy: { type: Boolean, default: false },
-    /** click: no typing, the decision button is enabled at once; typed: the expected text must be typed. */
-    mode: { type: String as PropType<'click' | 'typed'>, default: 'typed' },
+    /** click: no typing, the decision button is enabled at once; typed: the expected text must be typed. Default: the Settings option. */
+    mode: { type: String as PropType<'click' | 'typed'>, default: undefined },
     /** Shows a comment field with this label (e.g. what Claude should change). */
     commentLabel: { type: String, default: undefined },
     /** The comment must not be empty (e.g. the reason for dismissing a finding). */
@@ -39,7 +41,7 @@ export const ConfirmDialog = defineComponent({
     const input = ref<ComponentPublicInstance | null>(null);
     const confirmButton = ref<ComponentPublicInstance | null>(null);
     const commentField = ref<ComponentPublicInstance | null>(null);
-    const typing = computed(() => props.mode !== 'click');
+    const typing = computed(() => (props.mode ?? decisionConfirmation(state.settings)) === 'typed');
     const ready = computed(() => (!typing.value || typed.value.trim() === props.expected) && (!props.commentRequired || comment.value.trim() !== ''));
 
     const submit = (event: Event): void => {

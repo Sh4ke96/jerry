@@ -185,7 +185,7 @@ export const ProjectPage = defineComponent({
             {tasks.length === 0 ? (
               <p class="text-muted-foreground text-sm">No tasks in this repository yet.</p>
             ) : (
-              <div class="task-grid grid grid-cols-1 items-start gap-4 md:grid-cols-2">
+              <div class="task-grid grid grid-cols-1 gap-3">
                 {tasks.map((task) => (
                   <TaskTile key={task.taskId} task={task} hideProject />
                 ))}

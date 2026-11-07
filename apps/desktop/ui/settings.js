@@ -1,6 +1,9 @@
-// Settings window. Every change is saved at once through set_settings, which also applies
-// "Launch with Windows" and reports what Windows really has.
+// Settings page, shown in the main window (no separate window). Every change is saved at once
+// through set_settings, which also applies "Launch with Windows" and reports what Windows really
+// has. "Back to the dashboard" returns to the dashboard's Settings when the page was opened from
+// there, else to the dashboard's root.
 const { invoke } = window.__TAURI__.core;
+const FROM_DASHBOARD = new URLSearchParams(window.location.search).get('from') === 'dashboard';
 
 const $ = (id) => document.getElementById(id);
 const FIELDS = [
@@ -74,6 +77,19 @@ $('test').addEventListener('click', async () => {
     setMessage('Test notification sent.');
   } catch (error) {
     setMessage(String(error), true);
+  }
+});
+
+$('back').addEventListener('click', async () => {
+  $('back').disabled = true;
+  setMessage('Opening the dashboard…');
+  try {
+    await invoke('retry', { route: FROM_DASHBOARD ? '#/settings' : null });
+  } catch (error) {
+    // Core is not reachable: the fallback page says why.
+    setMessage(String(error), true);
+  } finally {
+    $('back').disabled = false;
   }
 });
 

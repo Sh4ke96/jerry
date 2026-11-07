@@ -1,8 +1,9 @@
 import path from 'node:path';
 import { SKILL_TRIGGER_STATES, skillChangeResultSchema, skillDetailSchema, skillPreviewSchema, skillsListSchema, type AddedSkill, type SkillChangeResult, type SkillPreview, type SkillScanFinding, type SkillSource } from '@jerry/contracts';
 import { EMOJI, flag, mark } from './emoji.js';
+import { confirmDecision } from './settings-commands.js';
 import { confirm } from './statusline-commands.js';
-import { ask, callCore, formatBytes, requireTerminal } from './terminal.js';
+import { callCore, formatBytes, requireTerminal } from './terminal.js';
 
 /**
  * `jerry skill`: Claude Code skills added through JERRY. Listing and showing are read-only. Adding,
@@ -136,12 +137,9 @@ export async function showSkill(name: string, options: { json: boolean }): Promi
   }
 }
 
+/** Confirms with the typed skill name or a y/N question, as the decision confirmation setting says. */
 async function typedName(name: string, what: string): Promise<boolean> {
-  const typed = (await ask(`Type the skill name to ${what} (${name}): `)).trim().toLowerCase();
-  if (typed === name) return true;
-  console.log(mark('fail', 'Confirmation did not match. Nothing changed.'));
-  process.exitCode = 1;
-  return false;
+  return confirmDecision({ question: `${what[0]!.toUpperCase()}${what.slice(1).replace(/\bit$/, name)}?`, typedPrompt: `Type the skill name to ${what} (${name})`, matches: (typed) => typed.trim().toLowerCase() === name });
 }
 
 export async function addSkill(source: string): Promise<void> {

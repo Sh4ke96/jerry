@@ -1149,6 +1149,42 @@ export const evalStatusSchema = z.object({
 });
 export type EvalStatus = z.infer<typeof evalStatusSchema>;
 
+/**
+ * "jerry eval run" started from the dashboard: Core runs the CLI in the background, one run at a
+ * time, and reports how it goes. The run itself is recorded like any other (GET …/evals/runs).
+ */
+export const evalRunnerStateSchema = z.enum(['idle', 'running', 'finished', 'failed', 'stopped']);
+export const evalRunnerStatusSchema = z.object({
+  state: evalRunnerStateSchema,
+  startedAt: z.iso.datetime().nullable(),
+  finishedAt: z.iso.datetime().nullable(),
+  exitCode: z.number().int().nullable(),
+  suite: z.string().nullable(),
+  label: z.string(),
+  /** Where the CLI's output goes (JERRY_HOME/run/eval-runs). */
+  logFile: z.string().nullable(),
+  /** The last lines of that output. */
+  logTail: z.array(z.string()),
+  /** The run the CLI recorded, once it finished. */
+  runId: z.string().nullable(),
+  /** Why a run cannot start here (no CLI next to Core); null when it can. */
+  unavailable: z.string().nullable(),
+  /** The cases a run would start, per suite. */
+  suites: z.array(z.object({ suite: z.string(), cases: z.number().int().nonnegative() })),
+});
+export type EvalRunnerStatus = z.infer<typeof evalRunnerStatusSchema>;
+/** POST /api/v1/evals/runner/start: all cases, or one suite; an optional label for the run. */
+export const evalRunnerStartRequestSchema = z.object({
+  suite: z.string().regex(/^[a-z0-9-]{1,40}$/).nullable().default(null),
+  label: z
+    .string()
+    .trim()
+    .max(80)
+    .regex(/^[^\u0000-\u001f]*$/)
+    .default(''),
+});
+export type EvalRunnerStartRequest = z.infer<typeof evalRunnerStartRequestSchema>;
+
 /** GET /api/v1/findings query: status is a comma-separated list. */
 export const findingsQuerySchema = z.object({
   taskId: taskIdSchema.optional(),

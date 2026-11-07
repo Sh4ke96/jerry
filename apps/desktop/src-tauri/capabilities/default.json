@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "local-pages",
-  "description": "The app's own local pages (fallback and settings) may call Jerry's commands. No remote URL is listed, so the dashboard served by JERRY Core gets no capability at all.",
-  "windows": ["main", "settings"],
+  "description": "The app's own local pages (fallback and settings, both in the main window) may call Jerry's commands. No remote URL is listed here; the dashboard served by JERRY Core gets only the three settings commands, through core-dashboard.json.",
+  "windows": ["main"],
   "permissions": [
     "allow-core-info",
     "allow-start-core",

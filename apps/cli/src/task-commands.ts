@@ -5,6 +5,7 @@ import { readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platf
 import { diffPlans, isEmptyDiff, isTerminal, STATE_LABELS } from '@jerry/workflow';
 import { z } from 'zod';
 import { flag, mark, resultMark, severityMark, stateMark } from './emoji.js';
+import { confirmDecision, currentDecisionConfirmation } from './settings-commands.js';
 
 async function callCore(method: 'GET' | 'POST', apiPath: string, body?: unknown): Promise<unknown> {
   const info = readCoreRuntimeInfo(resolveJerryHome());
@@ -216,7 +217,8 @@ const CONTROL_VERBS = { 'task.paused': 'pause', 'task.resumed': 'resume', 'task.
 
 /**
  * Pause, resume and cancel are user decisions: they need an interactive terminal (agents' shell
- * tools have none), and cancelling, which cannot be undone, needs the task ID typed.
+ * tools have none). Cancelling, which cannot be undone, is confirmed as the decision confirmation
+ * setting says: the typed task ID, or a y/N question.
  */
 export async function controlTask(taskId: string, event: keyof typeof CONTROL_VERBS, reason: string): Promise<void> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
@@ -225,14 +227,8 @@ export async function controlTask(taskId: string, event: keyof typeof CONTROL_VE
   const task = await fetchTask(taskId);
   if (event === 'task.cancelled') {
     console.log(stateMark(task.state, `${task.taskId}  ${STATE_LABELS[task.state]}  ${task.title}`));
-    const prompt = readline.createInterface({ input: process.stdin, output: process.stdout });
-    const typed = (await prompt.question(`\nCancelling cannot be undone. Type ${task.taskId} to cancel it: `)).trim();
-    prompt.close();
-    if (typed !== task.taskId) {
-      console.log(mark('fail', 'Confirmation did not match. Nothing was changed.'));
-      process.exitCode = 1;
-      return;
-    }
+    console.log('\nCancelling cannot be undone.');
+    if (!(await confirmDecision({ question: `Cancel ${task.taskId}?`, typedPrompt: `Type ${task.taskId} to cancel it`, matches: (typed) => typed.trim() === task.taskId }))) return;
   }
   const updated = taskSchema.parse(await callCore('POST', `/api/v1/tasks/${encodeURIComponent(task.taskId)}/transitions`, { event, reason }));
   console.log(stateMark(updated.state, `${updated.taskId}: ${STATE_LABELS[task.state]} -> ${STATE_LABELS[updated.state]}`));
@@ -247,8 +243,9 @@ async function fetchTask(taskId: string): Promise<z.infer<typeof taskWithDecisio
 
 /**
  * Approving a plan and accepting an implementation are deliberate user gestures: they require an
- * interactive terminal and typing the task ID. Claude Code's shell tools have no TTY, so an agent
- * cannot complete this command (and the hard rules block it before it starts).
+ * interactive terminal and the confirmation Settings ask for (the typed task ID, or y/N). Claude
+ * Code's shell tools have no TTY, so an agent cannot complete this command (and the hard rules block
+ * it before it starts).
  */
 export async function decide(options: { taskId: string; stage: 'PLAN' | 'IMPLEMENTATION' | 'REVIEW_FIX'; version: number; decision: ApprovalRecord['decision']; comment: string; review?: boolean }): Promise<void> {
   const accepting = options.stage === 'IMPLEMENTATION' && options.decision === 'APPROVED';
@@ -302,12 +299,9 @@ export async function decide(options: { taskId: string; stage: 'PLAN' | 'IMPLEME
         review = answer === 'y' || answer === 'yes';
       }
     }
-    const typed = (await prompt.question(`\nType ${task.taskId} to ${verb} ${label}${accepting ? (review === true ? ' with independent review' : ' without review') : ''}: `)).trim();
-    if (typed !== task.taskId) {
-      console.log(mark('fail', 'Confirmation did not match. Nothing was recorded.'));
-      process.exitCode = 1;
-      return;
-    }
+    const what = `${verb} ${label}${accepting ? (review === true ? ' with independent review' : ' without review') : ''}`;
+    const io = { decisionConfirmation: currentDecisionConfirmation, ask: (question: string) => prompt.question(`\n${question}`) };
+    if (!(await confirmDecision({ question: `${what[0]!.toUpperCase()}${what.slice(1)} of ${task.taskId}?`, typedPrompt: `Type ${task.taskId} to ${what}`, matches: (typed) => typed.trim() === task.taskId }, io))) return;
   } finally {
     prompt.close();
   }
@@ -359,7 +353,7 @@ export async function showReview(taskId: string): Promise<void> {
   printReview(reviewStateSchema.parse(await callCore('GET', `/api/v1/tasks/${encodeURIComponent(taskId.toUpperCase())}/review`)));
 }
 
-/** Waiving the review is the user's decision: an interactive terminal, the typed task ID and a reason. */
+/** Waiving the review is the user's decision: an interactive terminal, a reason, and the confirmation Settings ask for. */
 export async function skipReview(taskId: string, options: { reason?: string }): Promise<void> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     throw new Error('Waiving a review requires an interactive terminal (PowerShell or the VS Code terminal). In Git Bash/mintty run it via "winpty".');
@@ -370,12 +364,8 @@ export async function skipReview(taskId: string, options: { reason?: string }): 
   try {
     const reason = options.reason?.trim() || (await prompt.question('\nWhy waive the review? ')).trim();
     if (reason === '') throw new Error('A reason is required; nothing changed.');
-    const typed = (await prompt.question(`Type ${id} to waive its review: `)).trim();
-    if (typed !== id) {
-      console.log(mark('fail', 'Confirmation did not match. Nothing was recorded.'));
-      process.exitCode = 1;
-      return;
-    }
+    const io = { decisionConfirmation: currentDecisionConfirmation, ask: (question: string) => prompt.question(question) };
+    if (!(await confirmDecision({ question: `Waive the review of ${id}?`, typedPrompt: `Type ${id} to waive its review`, matches: (typed) => typed.trim() === id }, io))) return;
     await callCore('POST', `/api/v1/tasks/${encodeURIComponent(id)}/review/skip`, { reason });
     printFinalCheck(taskDetailSchema.parse(await callCore('GET', `/api/v1/tasks/${encodeURIComponent(id)}`)));
   } finally {

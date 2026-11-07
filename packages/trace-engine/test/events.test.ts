@@ -84,6 +84,14 @@ describe('buildEventEnvelope: data minimization', () => {
     expect(JSON.stringify(event)).not.toMatch(/Private title|private body/);
   });
 
+  it('records which skill the Skill tool started, never its arguments', () => {
+    const event = buildEventEnvelope({ ...common, hook_event_name: 'PreToolUse', tool_name: 'Skill', tool_input: { skill: 'design-taste-frontend', args: 'ARGS-MARKER' } })!;
+    expect(event.payload).toMatchObject({ input: { skill: 'design-taste-frontend', argumentKeys: ['skill', 'args'] } });
+    expect(JSON.stringify(event)).not.toContain('ARGS-MARKER');
+    const odd = buildEventEnvelope({ ...common, hook_event_name: 'PreToolUse', tool_name: 'Skill', tool_input: { skill: 'not a name; rm -rf /' } })!;
+    expect(odd.payload['input']).not.toHaveProperty('skill');
+  });
+
   it('redacts and truncates tool failure messages', () => {
     const event = buildEventEnvelope({ ...common, hook_event_name: 'PostToolUseFailure', tool_name: 'Bash', tool_input: { command: 'deploy' }, error: `failed with token=${FAKE.assigned} ${'x'.repeat(1000)}`, is_interrupt: false })!;
     const error = event.payload['error'] as string;

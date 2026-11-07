@@ -21,7 +21,7 @@ const ANY_PROJECT = '*';
 /** The filters outlive the view: back from a task page, the list looks as it was left. */
 export const taskFilters = reactive<{ filter: TaskFilter; project: string; search: string }>({ filter: 'active', project: ANY_PROJECT, search: '' });
 
-/** The tasks as a grid of tiles, filtered at the top by state, project and a search. */
+/** The tasks as full-width bars, one per row, filtered at the top by state, project and a search. */
 export const Tasks = defineComponent({
   name: 'Tasks',
   setup() {
@@ -110,7 +110,7 @@ export const Tasks = defineComponent({
         {shown.value.length === 0 ? (
           empty()
         ) : (
-          <div class="task-grid grid grid-cols-1 items-start gap-4 md:grid-cols-2 2xl:grid-cols-3">
+          <div class="task-grid grid grid-cols-1 gap-3">
             {shown.value.map((task) => (
               <TaskTile key={task.taskId} task={task} />
             ))}

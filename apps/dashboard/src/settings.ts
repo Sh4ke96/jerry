@@ -12,10 +12,10 @@ export type WorkflowSettings = Omit<Settings, 'decisionConfirmation'> & { decisi
 export type SettingsUpdate = SettingsUpdateRequest;
 
 /**
- * How the dashboard confirms reversible decisions: one click unless the user chose to type the task
- * ID (also one click when Core does not send the setting). A one-click decision still sends the task
- * ID, which every Core accepts, so an older Core that requires it keeps working. Irreversible actions
- * always ask for their typed confirmation and do not read this.
+ * How the dashboard confirms every decision (plans, reports, cancelling, projects, data, skills,
+ * evals): one click unless the user chose to type the ID or name (also one click when Core does not
+ * send the setting). A one-click decision still sends the expected text, which Core checks, so
+ * nothing changes on Core's side.
  */
 export function decisionConfirmation(settings: WorkflowSettings | null): DecisionConfirmation {
   return settings?.decisionConfirmation === 'typed' ? 'typed' : 'click';

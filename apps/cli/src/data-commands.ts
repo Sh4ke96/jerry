@@ -1,7 +1,8 @@
 import path from 'node:path';
 import { dataUsageSchema, forgetPreviewSchema, forgetResultSchema, prunePreviewSchema, pruneResultSchema, type DataCategory, type PruneOptions } from '@jerry/contracts';
 import { flag, mark, type EmojiName } from './emoji.js';
-import { ask, callCore, formatBytes, requireTerminal, samePath } from './terminal.js';
+import { confirmDecision } from './settings-commands.js';
+import { callCore, formatBytes, requireTerminal, samePath } from './terminal.js';
 
 /**
  * `jerry data`: what JERRY stores and deleting old data. Showing is read-only. Deleting is the
@@ -78,12 +79,7 @@ export async function pruneData(options: PruneOptions): Promise<void> {
   console.log(`\n  Rows to delete: ${number(preview.totalRows)}`);
   for (const line of rowLines(preview.rows)) console.log(line);
   console.log('\n  Open tasks and the eval baselines are never deleted. A backup of the database is taken first.');
-  const typed = await ask('Type "delete" to delete this permanently: ');
-  if (typed !== 'delete') {
-    console.log(mark('fail', 'Confirmation did not match. Nothing was deleted.'));
-    process.exitCode = 1;
-    return;
-  }
+  if (!(await confirmDecision({ question: 'Delete this permanently?', typedPrompt: 'Type "delete" to delete this permanently', matches: (typed) => typed.trim() === 'delete' }))) return;
   const result = pruneResultSchema.parse(await callCore('POST', '/api/v1/data/prune', options, DELETE_TIMEOUT_MS));
   console.log(mark('pass', `Deleted ${number(result.totalRows)} row(s) and ${result.backups.count} backup file(s). Database ${formatBytes(result.databaseBytesBefore)} -> ${formatBytes(result.databaseBytesAfter)}.`));
   console.log(mark('checkpoint', `The database before the deletion: ${result.backupFile}`));
@@ -104,12 +100,7 @@ export async function forgetRepository(target: string): Promise<void> {
   console.log(`  ${preview.tasks.length} task(s) and ${number(preview.totalRows)} row(s) in all:`);
   for (const line of rowLines(preview.rows)) console.log(line);
   console.log(flag('This cannot be undone from JERRY (a backup of the database is taken first).'));
-  const typed = await ask(`Type the repository path to confirm (${preview.repoRoot}): `);
-  if (!samePath(typed, preview.repoRoot)) {
-    console.log(mark('fail', 'Confirmation did not match. Nothing was deleted.'));
-    process.exitCode = 1;
-    return;
-  }
+  if (!(await confirmDecision({ question: `Forget everything about ${preview.repoRoot}?`, typedPrompt: `Type the repository path to confirm (${preview.repoRoot})`, matches: (typed) => samePath(typed, preview.repoRoot) }))) return;
   const result = forgetResultSchema.parse(await callCore('POST', '/api/v1/data/forget', { path: preview.repoRoot }, DELETE_TIMEOUT_MS));
   console.log(mark('pass', `JERRY forgot ${result.repoRoot}: ${number(result.totalRows)} row(s) deleted. Database ${formatBytes(result.databaseBytesBefore)} -> ${formatBytes(result.databaseBytesAfter)}.`));
   console.log(mark('checkpoint', `The database before the deletion: ${result.backupFile}`));

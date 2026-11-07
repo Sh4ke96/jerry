@@ -20,22 +20,11 @@
         "center": true,
         "visible": false,
         "create": false
-      },
-      {
-        "label": "settings",
-        "title": "⚙️ Jerry settings",
-        "url": "settings.html",
-        "width": 520,
-        "height": 640,
-        "minWidth": 420,
-        "minHeight": 480,
-        "center": true,
-        "create": false
       }
     ],
     "security": {
       "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src ipc: http://ipc.localhost",
-      "capabilities": ["local-pages"]
+      "capabilities": ["local-pages", "core-dashboard"]
     }
   },
   "bundle": {

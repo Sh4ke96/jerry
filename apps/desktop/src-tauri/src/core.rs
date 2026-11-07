@@ -551,12 +551,31 @@ pub enum Navigation {
     /// Neither: nothing sensible to open.
     Block,
     /// The dashboard asks for the app's own settings (its "Desktop app settings…" link): cancel the
-    /// navigation and show the local settings window instead.
+    /// navigation and show the local settings page in the main window instead.
     OpenSettings,
 }
 
 /// The address on Core's origin that the dashboard links to for the app's settings.
 pub const DESKTOP_SETTINGS_PATH: &str = "/desktop/settings";
+
+/// The dashboard route the settings page returns to when it was opened from the dashboard's Settings.
+pub const SETTINGS_RETURN_ROUTE: &str = "#/settings";
+
+/// The local settings page, relative to the app's pages. Opened from the dashboard, it says so, and
+/// its Back button returns to the dashboard's Settings instead of the root.
+pub fn settings_page(from_dashboard: bool) -> &'static str {
+    if from_dashboard {
+        "settings.html?from=dashboard"
+    } else {
+        "settings.html"
+    }
+}
+
+/// Where the settings page's Back button goes: a dashboard route, or `None` for the dashboard's root.
+/// Only the known return route is accepted from the page; anything else lands on the root.
+pub fn back_route(requested: Option<&str>) -> Option<&'static str> {
+    (requested == Some(SETTINGS_RETURN_ROUTE)).then_some(SETTINGS_RETURN_ROUTE)
+}
 
 /// The marker the dashboard looks for in the main window's user agent.
 pub const USER_AGENT_MARKER: &str = "JerryDesktop/";
@@ -582,6 +601,13 @@ pub fn is_local_page(url: &Url, local_base: &Url) -> bool {
         _ => false,
     };
     standard || (url.origin().is_tuple() && url.origin() == local_base.origin())
+}
+
+/// Who may call the app's settings commands (get_settings, set_settings, send_test_notification):
+/// the app's own pages, and the dashboard of the Core the app knows (its Settings page shows the
+/// app's settings inline). Every other command stays for the app's own pages only.
+pub fn may_change_settings(url: &Url, core_port: Option<u16>, local_base: &Url) -> bool {
+    is_local_page(url, local_base) || is_core_page(url, core_port)
 }
 
 /// The dashboard of the running Core: http://127.0.0.1:<port>/...
@@ -1106,7 +1132,43 @@ mod tests {
     }
 
     #[test]
-    fn the_dashboards_settings_link_opens_the_local_settings_window() {
+    fn only_local_pages_and_the_known_cores_dashboard_may_change_the_settings() {
+        let base = Url::parse("http://tauri.localhost/").unwrap();
+        let may = |url: &str, port: Option<u16>| may_change_settings(&Url::parse(url).unwrap(), port, &base);
+        assert!(may("http://tauri.localhost/settings.html", None));
+        assert!(may("http://127.0.0.1:47823/#/settings", Some(47823)));
+        assert!(may("http://127.0.0.1:47823/", Some(47823)));
+        // Another port, no known Core, another host name, https, credentials or another site: no.
+        assert!(!may("http://127.0.0.1:51000/#/settings", Some(47823)));
+        assert!(!may("http://127.0.0.1:47823/#/settings", None));
+        assert!(!may("http://localhost:47823/#/settings", Some(47823)));
+        assert!(!may("https://127.0.0.1:47823/#/settings", Some(47823)));
+        assert!(!may("http://user@127.0.0.1:47823/", Some(47823)));
+        assert!(!may("https://example.com/", Some(47823)));
+    }
+
+    #[test]
+    fn the_settings_page_opens_in_the_main_window_and_goes_back_only_to_known_routes() {
+        let base = Url::parse("http://tauri.localhost/").unwrap();
+        // The page is one of the app's own pages, so the main window may show it.
+        for from_dashboard in [true, false] {
+            let page = base.join(settings_page(from_dashboard)).unwrap();
+            assert!(is_local_page(&page, &base));
+            assert_eq!(navigation_decision(&page, Some(47823), &base), Navigation::Allow);
+            assert_eq!(page.path(), "/settings.html");
+        }
+        assert_eq!(base.join(settings_page(true)).unwrap().query(), Some("from=dashboard"));
+        assert_eq!(base.join(settings_page(false)).unwrap().query(), None);
+        // Back: the dashboard's Settings, or the root; a route the page makes up is not followed.
+        assert_eq!(back_route(Some("#/settings")), Some("#/settings"));
+        assert!(is_dashboard_route(back_route(Some("#/settings")).unwrap()));
+        assert_eq!(back_route(None), None);
+        assert_eq!(back_route(Some("#/tasks/JRY-0001")), None);
+        assert_eq!(back_route(Some("javascript:alert(1)")), None);
+    }
+
+    #[test]
+    fn the_dashboards_settings_link_opens_the_local_settings_page() {
         let base = Url::parse("http://tauri.localhost/").unwrap();
         let decide = |url: &str, port: Option<u16>| navigation_decision(&Url::parse(url).unwrap(), port, &base);
         assert_eq!(decide("http://127.0.0.1:47823/desktop/settings", Some(47823)), Navigation::OpenSettings);

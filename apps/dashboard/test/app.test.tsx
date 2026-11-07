@@ -1184,6 +1184,65 @@ describe('Dashboard app', () => {
     wrapper.unmount();
   });
 
+  const idleRunner = { state: 'idle', startedAt: null, finishedAt: null, exitCode: null, suite: null, label: '', logFile: null, logTail: [], runId: null, unavailable: null, suites: [{ suite: 'capability', cases: 3 }, { suite: 'regression', cases: 5 }] };
+
+  it('runs the evals from the dashboard after a confirmation, follows the run and shows the run it recorded', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const base = globalThis.fetch;
+    let runner: Record<string, unknown> = idleRunner;
+    const fingerprint = { total: 'f', components: { skills: 'a', agents: 'b', hooks: 'c', rules: 'd' } };
+    const run = { runId: 'EVR-3', startedAt: NOW, finishedAt: NOW, jerryVersion: '0.0.1', fingerprint, label: 'nightly', counts: { PASS: 8, FAIL: 0, FLAKY: 0, ERROR: 0 }, isBaseline: false };
+    let runs: unknown[] = [];
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+      if (url === '/api/v1/evals/runs') return json(runs);
+      if (url === '/api/v1/evals/runs/EVR-3') return json({ ...run, results: [], comparison: { baselineRunId: null, cases: [], regressions: [], releaseBlocked: false } });
+      if (url === '/api/v1/evals/status') return json({ baselineRunId: null, latestRunId: null, fingerprint, changedSinceBaseline: [], releaseBlocked: false });
+      if (url === '/api/v1/evals/calibration') return json([]);
+      if (url === '/api/v1/evals/runner') return json(runner);
+      if (url === '/api/v1/evals/runner/start') {
+        calls.push({ url, init });
+        runner = { ...idleRunner, state: 'running', startedAt: NOW, suite: 'regression', label: 'nightly', logFile: 'C:/J/run/eval-runs/x.log', logTail: ['Running 5 case(s)'] };
+        return json(runner, 202);
+      }
+      return base(url, init);
+    });
+    try {
+      const wrapper = await mountApp();
+      await nav(wrapper, 'Evals').trigger('click');
+      await flushPromises();
+      expect(wrapper.text()).toContain('Start one with Run evals');
+      await wrapper.get('[data-run-evals]').trigger('click');
+      await flushPromises();
+      const dialog = body().get('[role="alertdialog"]');
+      expect(dialog.text()).toContain('Starts real Claude Code sessions');
+      expect(dialog.text()).toContain('8 case(s)');
+      expect(dialog.findAll('#eval-suite option').map((option) => option.text())).toEqual(['All (8)', 'capability (3)', 'regression (5)']);
+      await dialog.get('#eval-suite').setValue('regression');
+      expect(dialog.text()).toContain('5 case(s)');
+      await dialog.get('#eval-label').setValue('nightly');
+      if (dialog.find('#confirm-typed').exists()) await dialog.get('#confirm-typed').setValue('evals');
+      await dialog.get('form').trigger('submit');
+      await flushPromises();
+      expect(JSON.parse(String(calls.find((call) => call.url === '/api/v1/evals/runner/start')!.init?.body))).toEqual({ suite: 'regression', label: 'nightly' });
+      expect(wrapper.get('.eval-runner').attributes('data-runner-state')).toBe('running');
+      expect(wrapper.get('.eval-runner__log').text()).toContain('Running 5 case(s)');
+      expect(wrapper.get('[data-run-evals]').attributes('disabled')).toBeDefined();
+      expect(wrapper.find('[data-stop-evals]').exists()).toBe(true);
+
+      // It finishes: the page shows the run it recorded.
+      runner = { ...runner, state: 'finished', finishedAt: NOW, exitCode: 0, runId: 'EVR-3' };
+      runs = [run];
+      await vi.advanceTimersByTimeAsync(2100);
+      await flushPromises();
+      expect(wrapper.get('.eval-runner').attributes('data-runner-state')).toBe('finished');
+      expect(wrapper.text()).toContain('EVR-3 compared with no baseline');
+      wrapper.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('shows eval runs against the baseline and lets the user choose a new baseline', async () => {
     const base = globalThis.fetch;
     const fingerprint = { total: 'f', components: { skills: 'a', agents: 'b', hooks: 'c', rules: 'd' } };
@@ -1210,6 +1269,7 @@ describe('Dashboard app', () => {
       if (url === '/api/v1/evals/runs/EVR-2') return json(detail);
       if (url === '/api/v1/evals/status') return json({ baselineRunId: 'EVR-1', latestRunId: 'EVR-2', fingerprint, changedSinceBaseline: ['rules'], releaseBlocked: true });
       if (url === '/api/v1/evals/calibration') return json([{ rubricId: 'plan-quality', labels: 4, agreement: 0.75, calibrated: false }]);
+      if (url === '/api/v1/evals/runner') return json(idleRunner);
       if (url === '/api/v1/evals/baseline') {
         calls.push({ url, init });
         return json(summary(2, true));
@@ -1443,19 +1503,50 @@ describe('Dashboard app', () => {
     wrapper.unmount();
   });
 
-  it('keeps the typed task ID for cancelling, also in one-click mode', async () => {
+  it('cancels in one click in one-click mode, without typing the task ID, and still sends it to Core', async () => {
     decisionMode = 'click';
     const wrapper = await mountApp();
     await openTasks(wrapper);
     await menuItem(tile(wrapper, 'JRY-0002'), 'Cancel task');
     const dialog = body().get('[role="alertdialog"]');
+    expect(dialog.attributes('data-confirm-mode')).toBe('click');
+    expect(dialog.find('#confirm-typed').exists()).toBe(false);
+    expect(dialog.text()).toContain('Cancelling cannot be undone');
+    await dialog.get('form').trigger('submit');
+    await flushPromises();
+    expect(posted('/api/v1/tasks/JRY-0002/transitions')).toEqual([{ event: 'task.cancelled', confirmTaskId: 'JRY-0002' }]);
+    wrapper.unmount();
+  });
+
+  it('asks for the typed task ID to cancel when the user chose typed confirmations', async () => {
+    decisionMode = 'typed';
+    const wrapper = await mountApp();
+    await openTasks(wrapper);
+    await menuItem(tile(wrapper, 'JRY-0002'), 'Cancel task');
+    const dialog = body().get('[role="alertdialog"]');
     expect(dialog.attributes('data-confirm-mode')).toBe('typed');
-    expect(dialog.get('button[type="submit"]').attributes('disabled')).toBeDefined();
     await dialog.get('form').trigger('submit');
     await flushPromises();
     expect(calls.some((call) => call.url === '/api/v1/tasks/JRY-0002/transitions')).toBe(false);
     await confirmWith('JRY-0002');
     expect(posted('/api/v1/tasks/JRY-0002/transitions')).toEqual([{ event: 'task.cancelled', confirmTaskId: 'JRY-0002' }]);
+    wrapper.unmount();
+  });
+
+  it('lists tasks as full-width bars, one per row', async () => {
+    const wrapper = await mountApp();
+    await openTasks(wrapper);
+    const grid = wrapper.get('.task-grid');
+    expect(grid.classes()).toContain('grid-cols-1');
+    expect(grid.classes().some((name) => /^(md|lg|xl|2xl):grid-cols-/.test(name))).toBe(false);
+    const bar = tile(wrapper, 'JRY-0002');
+    const header = bar.get('.task-tile__header');
+    // One row from md up: state, title, where and when, actions.
+    expect(header.classes()).toContain('md:grid-cols-[auto_minmax(0,1fr)_auto_auto]');
+    expect(header.get('.task-tile__state').text()).toContain('JRY-0002');
+    expect(header.get('.task-tile__title').attributes('title')).toBe(header.get('.task-tile__title').text());
+    expect(header.find('.task-tile__meta').exists()).toBe(true);
+    expect(header.find('.task-tile__actions [data-expand]').exists()).toBe(true);
     wrapper.unmount();
   });
 

@@ -2,6 +2,7 @@
 import { DOMWrapper, flushPromises, mount } from '@vue/test-utils';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ConfirmDialog } from '../src/components/ConfirmDialog';
+import { state } from '../src/state';
 
 describe('ConfirmDialog', () => {
   const mounted: Array<ReturnType<typeof mount>> = [];
@@ -21,7 +22,7 @@ describe('ConfirmDialog', () => {
   });
 
   it('keeps the confirm button disabled until the exact text is typed', async () => {
-    const { wrapper, dialog } = await mountDialog();
+    const { wrapper, dialog } = await mountDialog({ mode: 'typed' });
     const confirm = dialog.get('button[type="submit"]');
     expect(confirm.attributes('disabled')).toBeDefined();
 
@@ -54,10 +55,21 @@ describe('ConfirmDialog', () => {
     expect(dialog.text()).toContain('Scope: src/**');
   });
 
-  it('asks for the typed text unless told otherwise', async () => {
-    const { dialog } = await mountDialog();
-    expect(dialog.attributes('data-confirm-mode')).toBe('typed');
-    expect(dialog.find('#confirm-typed').exists()).toBe(true);
+  it('without a mode follows the Settings option: one click by default, typed when the user chose it', async () => {
+    state.settings = null;
+    const plain = await mountDialog();
+    expect(plain.dialog.attributes('data-confirm-mode')).toBe('click');
+    expect(plain.dialog.find('#confirm-typed').exists()).toBe(false);
+    for (const wrapper of mounted.splice(0)) wrapper.unmount();
+
+    state.settings = { reviewMode: 'optional', qaLanguage: 'pl', usageShowBar: false, decisionConfirmation: 'typed' };
+    try {
+      const typed = await mountDialog();
+      expect(typed.dialog.attributes('data-confirm-mode')).toBe('typed');
+      expect(typed.dialog.find('#confirm-typed').exists()).toBe(true);
+    } finally {
+      state.settings = null;
+    }
   });
 
   it('in click mode decides at once from the focused button, still emitting the expected text', async () => {

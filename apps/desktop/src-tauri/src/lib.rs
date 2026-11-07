@@ -74,13 +74,25 @@ fn local_base(config: &tauri::Config) -> Url {
 }
 
 /// Commands answer only the app's own pages, never the dashboard served by Core (which has no
-/// capability anyway; this is a second lock on the same door).
+/// capability for them anyway; this is a second lock on the same door).
 fn ensure_local(webview: &Webview, state: &AppState) -> Result<(), String> {
     let url = webview.url().map_err(|error| error.to_string())?;
     if core::is_local_page(&url, &state.local_base) {
         Ok(())
     } else {
         Err("This command is only available to Jerry's own pages.".to_owned())
+    }
+}
+
+/// The settings commands also answer the dashboard of the Core the app knows (its Settings page
+/// shows these settings inline): its capability (capabilities/core-dashboard.json) grants only them,
+/// and this checks the origin and port again.
+fn ensure_settings_caller(webview: &Webview, state: &AppState) -> Result<(), String> {
+    let url = webview.url().map_err(|error| error.to_string())?;
+    if core::may_change_settings(&url, *lock(&state.core_port), &state.local_base) {
+        Ok(())
+    } else {
+        Err("The Jerry app's settings are only available to its own pages and the dashboard it opened.".to_owned())
     }
 }
 
@@ -136,12 +148,15 @@ async fn start_core(app: tauri::AppHandle, webview: Webview) -> Result<String, S
     Ok(message)
 }
 
-/// Try the dashboard again from the fallback page.
+/// Back to the dashboard from a local page: "Try again" on the fallback page, "Back to the
+/// dashboard" on the settings page. `route` may only name the dashboard's Settings (where the
+/// settings page was opened from); anything else opens the dashboard's root.
 #[tauri::command]
-async fn retry(app: tauri::AppHandle, webview: Webview) -> Result<(), String> {
+async fn retry(app: tauri::AppHandle, webview: Webview, route: Option<String>) -> Result<(), String> {
     ensure_local(&webview, &app.state::<AppState>())?;
     let handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || tray::open_dashboard(&handle))
+    let route = core::back_route(route.as_deref());
+    tauri::async_runtime::spawn_blocking(move || tray::open_dashboard_at(&handle, route))
         .await
         .map_err(|error| error.to_string())?
 }
@@ -149,7 +164,7 @@ async fn retry(app: tauri::AppHandle, webview: Webview) -> Result<(), String> {
 /// The stored settings, with "launch with Windows" as Windows actually has it.
 #[tauri::command]
 fn get_settings(app: tauri::AppHandle, webview: Webview, state: tauri::State<'_, AppState>) -> Result<Settings, String> {
-    ensure_local(&webview, &state)?;
+    ensure_settings_caller(&webview, &state)?;
     let mut current = lock(&state.settings).clone();
     if let Ok(enabled) = app.autolaunch().is_enabled() {
         current.launch_with_windows = enabled;
@@ -160,7 +175,7 @@ fn get_settings(app: tauri::AppHandle, webview: Webview, state: tauri::State<'_,
 /// Saves the settings and applies "launch with Windows" at once; returns what was really applied.
 #[tauri::command]
 fn set_settings(app: tauri::AppHandle, webview: Webview, state: tauri::State<'_, AppState>, settings: Settings) -> Result<Settings, String> {
-    ensure_local(&webview, &state)?;
+    ensure_settings_caller(&webview, &state)?;
     let autolaunch = app.autolaunch();
     let applied = if settings.launch_with_windows { autolaunch.enable() } else { autolaunch.disable() };
     let mut next = settings;
@@ -175,7 +190,7 @@ fn set_settings(app: tauri::AppHandle, webview: Webview, state: tauri::State<'_,
 /// or, without one, the saved sound. A click on it shows the dashboard.
 #[tauri::command]
 fn send_test_notification(app: tauri::AppHandle, webview: Webview, state: tauri::State<'_, AppState>, sound: Option<String>) -> Result<(), String> {
-    ensure_local(&webview, &state)?;
+    ensure_settings_caller(&webview, &state)?;
     let sound = match sound {
         Some(name) => settings::normalize_sound(&serde_json::Value::String(name)),
         None => lock(&state.settings).sound.clone(),

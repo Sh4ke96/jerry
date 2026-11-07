@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { projectSummarySchema, qaLanguageSchema, reviewModeSchema, settingsSchema, type ProjectSummary, type Settings } from '@jerry/contracts';
+import { projectSummarySchema, qaLanguageSchema, reviewModeSchema, settingsSchema, type DecisionConfirmation, type ProjectSummary, type Settings } from '@jerry/contracts';
 import { z } from 'zod';
 import { mark } from './emoji.js';
 import { ask, callCore, requireTerminal, samePath } from './terminal.js';
@@ -81,9 +81,46 @@ export async function setSetting(rawKey: string, rawValue: string, options: { pr
 }
 
 /** A y/N question; anything but yes changes nothing. */
-async function confirm(question: string): Promise<boolean> {
-  const answer = (await ask(`${question} [y/N] `)).toLowerCase();
+async function confirm(question: string, askUser: (question: string) => Promise<string> = ask): Promise<boolean> {
+  const answer = (await askUser(`${question} [y/N] `)).trim().toLowerCase();
   if (answer === 'y' || answer === 'yes') return true;
   console.log(mark('info', 'Nothing changed.'));
+  return false;
+}
+
+export type { DecisionConfirmation };
+
+export interface DecisionPrompt {
+  /** The y/N question in one-click mode, e.g. "Remove D:\Work\shop from JERRY's projects?". */
+  question: string;
+  /** The typed prompt in typed mode, e.g. "Type the repository path to remove it (D:\Work\shop)". */
+  typedPrompt: string;
+  /** Whether a typed answer matches (a path compares as a path, a name exactly). */
+  matches: (typed: string) => boolean;
+}
+
+/** How the prompt reads the setting and the user's answers; tests pass their own. */
+export interface DecisionIo {
+  decisionConfirmation: () => Promise<DecisionConfirmation>;
+  ask: (question: string) => Promise<string>;
+}
+
+/** The user's decision confirmation setting, from Core. */
+export async function currentDecisionConfirmation(): Promise<DecisionConfirmation> {
+  return settingsSchema.parse(await callCore('GET', '/api/v1/settings')).decisionConfirmation;
+}
+
+const coreDecisionIo: DecisionIo = { decisionConfirmation: currentDecisionConfirmation, ask };
+
+/**
+ * Confirms a decision in the terminal as the user chose in Settings, like the dashboard: with typed
+ * confirmations the name, path or word must be typed; otherwise a y/N question. Either way only in
+ * an interactive terminal (the callers check), and agents cannot run these commands at all.
+ */
+export async function confirmDecision(prompt: DecisionPrompt, io: DecisionIo = coreDecisionIo): Promise<boolean> {
+  if ((await io.decisionConfirmation()) !== 'typed') return confirm(prompt.question, io.ask);
+  if (prompt.matches(await io.ask(`${prompt.typedPrompt}: `))) return true;
+  console.log(mark('fail', 'Confirmation did not match. Nothing changed.'));
+  process.exitCode = 1;
   return false;
 }

@@ -4,8 +4,8 @@ import { api } from '../api';
 import { Emoji } from '../components/Emoji';
 import { Segmented } from '../components/Segmented';
 import { UsageSettings } from '../components/UsageSettings';
-import { Button } from '../components/ui/button';
-import { desktopSettingsUrl, inJerryDesktop } from '../lib/desktop';
+import { DesktopSettings } from '../components/DesktopSettings';
+import { inJerryDesktop } from '../lib/desktop';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Label } from '../components/ui/label';
@@ -112,18 +112,20 @@ export const Settings = defineComponent({
                 onUpdate:modelValue={(value: boolean) =>
                   void save(
                     { decisionConfirmation: value ? 'typed' : 'click' },
-                    value ? 'Saved: decisions need the task ID typed.' : 'Saved: decisions are one click in a confirmation dialog.',
+                    value ? 'Saved: decisions need the ID or name typed.' : 'Saved: decisions are one click in a confirmation dialog.',
                   )
                 }
               />
-              <Label for="settings-typed-confirmation">Type the task ID to confirm decisions</Label>
+              <Label for="settings-typed-confirmation">Type the ID or name to confirm decisions</Label>
             </div>
             <p class="text-muted-foreground text-sm">
               {typedDecisions
-                ? 'Approving, rejecting, accepting, skipping review and the other reversible decisions ask you to type the task ID.'
-                : 'Approving, rejecting, accepting, skipping review and the other reversible decisions are one click in a confirmation dialog.'}
+                ? 'Every decision asks you to type what it is about: the task ID, the repository path, the skill name or "delete".'
+                : 'Every decision is one click in a confirmation dialog that says what happens.'}
             </p>
-            <p class="text-muted-foreground text-xs">Irreversible actions (cancelling a task, removing a project, deleting or forgetting data) always ask for a typed confirmation.</p>
+            <p class="text-muted-foreground text-xs">
+              Covers plans, reports, reviews, cancelling a task, projects, deleting or forgetting data, skills and eval baselines, in the dashboard and in the jerry CLI.
+            </p>
           </div>
         </div>
       );
@@ -169,23 +171,7 @@ export const Settings = defineComponent({
             <p class="text-muted-foreground text-sm">System follows the operating system's light or dark mode.</p>
           </CardContent>
         </Card>
-        {desktop && (
-          <Card class="settings-desktop">
-            <CardHeader>
-              <CardTitle class="flex items-center">
-                <Emoji symbol={EMOJI.jerry} />
-                Desktop app
-              </CardTitle>
-              <CardDescription>Notifications, launching with Windows and the other settings of the Jerry app open in its own window.</CardDescription>
-            </CardHeader>
-            <CardContent>
-              {/* A plain link: the Jerry app catches this address and opens its settings window (no IPC). */}
-              <Button as="a" variant="outline" {...{ href: desktopSettingsUrl() }} data-desktop-settings>
-                Desktop app settings…
-              </Button>
-            </CardContent>
-          </Card>
-        )}
+        {desktop && <DesktopSettings />}
       </div>
     );
   },

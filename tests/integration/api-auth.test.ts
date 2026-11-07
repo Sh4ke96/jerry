@@ -113,7 +113,7 @@ describe('Core API access control', () => {
     expect(page.body).toContain('<div id="app"></div>');
     // Only the dashboard's own files: scripts, styles (no inline styles), bundled fonts, images and API.
     expect(page.headers['content-security-policy']).toBe(
-      "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+      "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self'; connect-src 'self' http://ipc.localhost ipc:; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
     );
     expect(page.headers['x-frame-options']).toBe('DENY');
     expect(page.body).not.toContain(TOKEN);

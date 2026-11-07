@@ -42,6 +42,9 @@ export function summarizeToolInput(toolName: string, input: unknown, redaction =
     summary['command'] = redaction.apply(command, MAX_COMMAND_LENGTH);
     summary['commandLength'] = command.length;
   }
+  // The Skill tool: which skill (so a skill's page can list its uses), never its arguments.
+  const skill = toolName === 'Skill' ? text(fields['skill']) : null;
+  if (skill !== null && /^\/?[\w:.-]{1,128}$/.test(skill)) summary['skill'] = skill.replace(/^\//, '');
   if (toolName.startsWith('mcp__') || (target === null && command === null)) {
     summary['argumentKeys'] = Object.keys(fields).slice(0, MAX_KEYS);
   }

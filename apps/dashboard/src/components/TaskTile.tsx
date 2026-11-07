@@ -98,8 +98,8 @@ export function findingsSummary(task: TaskSummary) {
 const INTERACTIVE = 'a, button, input, [role="menuitem"], [role="switch"], [data-slot="collapsible-content"]';
 
 /**
- * A task as a tile: who, where and what state at a glance. The chevron unfolds the key facts and the
- * decisions in place; a click on the header opens the task's own page.
+ * A task as a full-width bar: ID and state, title, where and when, in one row on wide screens. The
+ * chevron unfolds the key facts and the decisions in place; a click on the bar opens the task's page.
  */
 export const TaskTile = defineComponent({
   name: 'TaskTile',
@@ -138,30 +138,21 @@ export const TaskTile = defineComponent({
       return (
         <Card class={cn('task gap-0 py-0 transition-[border-color,box-shadow] hover:shadow-md', waiting && 'border-amber-500/50')} data-task-id={task.taskId} data-state={task.state}>
           <Collapsible open={open.value} onUpdate:open={(value: boolean) => (open.value = value)}>
-            <div class="task-tile__header grid cursor-pointer gap-2 p-4" onClick={openPage}>
-              <div class="flex items-start gap-2">
-                <div class="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
-                  <a class="font-mono text-sm font-medium hover:underline" {...linkTo(taskHref(task.taskId))}>
-                    {task.taskId}
-                  </a>
-                  <StatusBadge tone={stateTone(task.state)} emoji={STATE_EMOJI[task.state]}>
-                    {STATE_LABELS[task.state]}
-                  </StatusBadge>
-                  {waiting && <WaitingMarker />}
-                </div>
-                <div class="-mt-1 -mr-2 flex shrink-0 items-center">
-                  <TaskMenu task={task} />
-                  <CollapsibleTrigger asChild>
-                    <Button variant="ghost" size="icon-sm" aria-label={open.value ? `Fold ${task.taskId}` : `Unfold ${task.taskId}`} data-expand class="[&[data-state=open]>svg]:rotate-180">
-                      <ChevronDown class="transition-transform duration-200" />
-                    </Button>
-                  </CollapsibleTrigger>
-                </div>
+            {/* A full-width bar: one row from md up (ID and state, title, where and when, actions); stacked below. */}
+            <div class="task-tile__header grid cursor-pointer grid-cols-[1fr_auto] items-center gap-x-3 gap-y-2 px-4 py-3 md:grid-cols-[auto_minmax(0,1fr)_auto_auto]" onClick={openPage}>
+              <div class="task-tile__state flex min-w-0 flex-wrap items-center gap-1.5 md:flex-nowrap">
+                <a class="font-mono text-sm font-medium hover:underline" {...linkTo(taskHref(task.taskId))}>
+                  {task.taskId}
+                </a>
+                <StatusBadge tone={stateTone(task.state)} emoji={STATE_EMOJI[task.state]}>
+                  {STATE_LABELS[task.state]}
+                </StatusBadge>
+                {waiting && <WaitingMarker />}
               </div>
-              <a class="line-clamp-2 leading-snug font-semibold hover:underline" {...linkTo(taskHref(task.taskId))}>
+              <a class="task-tile__title col-span-2 row-start-2 line-clamp-2 leading-snug font-semibold hover:underline md:col-span-1 md:col-start-2 md:row-start-1 md:truncate" title={task.title} {...linkTo(taskHref(task.taskId))}>
                 {task.title}
               </a>
-              <p class="text-muted-foreground flex flex-wrap gap-x-1.5 text-xs">
+              <p class="task-tile__meta text-muted-foreground col-span-2 row-start-3 flex flex-wrap gap-x-1.5 text-xs md:col-span-1 md:col-start-3 md:row-start-1 md:flex-nowrap md:whitespace-nowrap">
                 {!props.hideProject && (
                   <span class="flex items-center" title={task.repoRoot}>
                     <Emoji symbol={EMOJI.repository} class="mr-1" />
@@ -173,10 +164,18 @@ export const TaskTile = defineComponent({
                 <span aria-hidden="true">·</span>
                 <span>{formatTime(lastActivity(task))}</span>
               </p>
+              <div class="task-tile__actions -mr-2 flex shrink-0 items-center justify-self-end md:col-start-4 md:row-start-1">
+                <TaskMenu task={task} />
+                <CollapsibleTrigger asChild>
+                  <Button variant="ghost" size="icon-sm" aria-label={open.value ? `Fold ${task.taskId}` : `Unfold ${task.taskId}`} data-expand class="[&[data-state=open]>svg]:rotate-180">
+                    <ChevronDown class="transition-transform duration-200" />
+                  </Button>
+                </CollapsibleTrigger>
+              </div>
             </div>
             <CollapsibleContent>
               <div class="task-tile__details grid gap-4 border-t p-4">
-                <Facts class="gap-x-4 text-xs sm:text-sm">
+                <Facts class="gap-x-4 text-xs sm:text-sm lg:grid-cols-[max-content_minmax(0,1fr)_max-content_minmax(0,1fr)]">
                   {task.goal !== undefined && <Fact label="Goal">{task.goal}</Fact>}
                   {task.goal === undefined && task.plan.document !== undefined && <Fact label="Goal">{task.plan.document.goal}</Fact>}
                   <Fact label="Next">

@@ -82,7 +82,20 @@ describe('Skills in the dashboard', () => {
       if (url === '/api/v1/settings') return json(settings);
       if (url === '/api/v1/usage') return json({ error: 'no usage' }, 404);
       if (url === '/api/v1/skills') return json(list);
-      if (url === '/api/v1/skills/pdf') return json({ skill: pdf, skillMd: '# PDF', files: [{ path: 'SKILL.md', size: 10, sha256: 'x' }], scan: [], history: [{ action: 'installed', channel: 'cli', at: NOW, details: {} }] } satisfies SkillDetail);
+      if (url === '/api/v1/skills/pdf') {
+        const current = list.added.find((skill) => skill.name === 'pdf') ?? pdf;
+        return json({
+          skill: current,
+          skillMd: '# PDF',
+          files: [{ path: 'SKILL.md', size: 10, sha256: 'x' }],
+          scan: [{ level: 'warning', rule: 'script', file: 'run.sh', line: null, message: 'A script', excerpt: null }],
+          history: [{ action: 'installed', channel: 'cli', at: NOW, details: {} }],
+          uses: [
+            { at: NOW, sessionId: 's1', taskId: 'JRY-0007', repoRoot: 'D:\\Work\\shop', verdict: 'PASS', ruleId: 'monitor.skill-in-state' },
+            { at: NOW, sessionId: 's1', taskId: 'JRY-0007', repoRoot: 'D:\\Work\\shop', verdict: 'WARN', ruleId: 'monitor.skill-out-of-state' },
+          ],
+        } satisfies SkillDetail);
+      }
       if (url === '/api/v1/skills/preview' && body?.['source'] === 'https://github.com/acme/nope') return json({ error: 'GitHub has no such repository, branch, tag or commit (private repositories are not supported).' }, 404);
       if (url === '/api/v1/skills/preview' && body?.['source'] === 'https://github.com/acme/many') {
         return json(
@@ -138,7 +151,10 @@ describe('Skills in the dashboard', () => {
     expect(window.location.hash).toBe('#/skills');
     const tile = wrapper.get('.added-skills [data-skill="pdf"]');
     expect(tile.text()).toContain('Turns PDFs into text.');
-    expect(tile.text()).toContain('1 amber');
+    // The scan is on the skill's page, not on its row; every list is one full-width column.
+    expect(tile.text()).not.toMatch(/amber|red/);
+    for (const listClass of ['.added-skills', '.own-skills', '.personal-skills']) expect(wrapper.get(listClass).classes()).toContain('grid-cols-1');
+    expect(wrapper.get('.added-skills').classes().some((name) => name.startsWith('md:grid-cols'))).toBe(false);
     expect(tile.get('a').attributes('href')).toBe('#/skills/pdf');
     expect(tile.get('[data-slot="switch"]').attributes('data-state')).toBe('checked');
     const own = wrapper.get('.own-skills [data-skill="jerry:plan"]');
@@ -150,8 +166,9 @@ describe('Skills in the dashboard', () => {
     wrapper.unmount();
   });
 
-  it('adds a skill from a GitHub URL: preview with the scan, then install only with the typed name', async () => {
+  it('adds a skill from a GitHub URL: preview with the scan, then install only with the typed name when typed confirmations are on', async () => {
     const wrapper = await mountApp();
+    state.settings = { ...state.settings!, decisionConfirmation: 'typed' };
     await wrapper.get('[data-add-skill]').trigger('click');
     await flushPromises();
     await body().get('#skill-source').setValue('https://github.com/acme/skills/tree/main/notes');
@@ -171,7 +188,6 @@ describe('Skills in the dashboard', () => {
     await body().get('[data-skill-confirm]').trigger('click');
     await flushPromises();
     const dialog = body().get('[role="alertdialog"]');
-    // Installing is always typed, even with one-click decisions.
     expect(dialog.attributes('data-confirm-mode')).toBe('typed');
     await dialog.get('#confirm-typed').setValue('note');
     expect(dialog.get('button[type="submit"]').attributes('disabled')).toBeDefined();
@@ -209,7 +225,7 @@ describe('Skills in the dashboard', () => {
     wrapper.unmount();
   });
 
-  it('switches with one click, says when an update is not needed, and removes only with the typed name', async () => {
+  it('switches with one click, says when an update is not needed, and removes in one click (one-click decisions)', async () => {
     const wrapper = await mountApp();
     await wrapper.get('.added-skills [data-skill="pdf"] [data-slot="switch"]').trigger('click');
     await flushPromises();
@@ -225,12 +241,30 @@ describe('Skills in the dashboard', () => {
     await flushPromises();
     const dialog = body().get('[role="alertdialog"]');
     expect(dialog.get('h2').text()).toBe('Remove pdf?');
-    await dialog.get('#confirm-typed').setValue('pdf');
+    expect(dialog.attributes('data-confirm-mode')).toBe('click');
+    expect(dialog.find('#confirm-typed').exists()).toBe(false);
     await dialog.get('form').trigger('submit');
     await flushPromises();
     expect(posts('/api/v1/skills/pdf/remove').map((call) => call.body)).toEqual([{ confirmation: 'pdf' }]);
     expect(state.notice).toContain('pdf removed (kept in C:\\J\\backups\\skills-pdf-1)');
     expect(wrapper.find('.added-skills').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('opens a skill page from a click on its row: scan summary, when JERRY starts it and its recent uses', async () => {
+    const wrapper = await mountApp();
+    // A click anywhere on the row (not on its controls) opens the page.
+    await wrapper.get('.added-skills [data-skill="pdf"] .skill-trigger').trigger('click');
+    await flushPromises();
+    expect(window.location.hash).toBe('#/skills/pdf');
+    const page = wrapper.get('[data-skill-page="pdf"]');
+    expect(page.get('.skill-scan-summary').text()).toContain('1 amber');
+    const uses = page.findAll('.skill-uses [data-skill-use]');
+    expect(uses.map((use) => use.attributes('data-skill-use'))).toEqual(['PASS', 'WARN']);
+    expect(uses[0]!.text()).toContain('started by JERRY');
+    expect(uses[0]!.get('a').attributes('href')).toBe('#/tasks/JRY-0007');
+    expect(uses[1]!.text()).toContain('outside its states (deviation)');
+    expect(page.text()).toContain("JERRY's next step for Claude names the skill");
     wrapper.unmount();
   });
 

@@ -10,7 +10,7 @@ import { StateStore } from '../../apps/core/src/state-store.js';
 import { contentHashOf, listSkillFiles } from '../../packages/skills/src/index.js';
 import { fakeGitHub, type FakeGitHub } from '../../packages/skills/test/github-fixture.js';
 import { makeZip, skillMd } from '../../packages/skills/test/zip-fixture.js';
-import { tempDir } from '../helpers/harness.js';
+import { createFixtureRepo, tempDir } from '../helpers/harness.js';
 
 const PORT = 47996;
 const ORIGIN = `http://127.0.0.1:${PORT}`;
@@ -269,6 +269,23 @@ describe('skills manager (Core API)', () => {
     expect(fs.readFileSync(path.join(result.backupDir!, 'SKILL.md'), 'utf8')).toBe(original);
     expect(fs.readFileSync(path.join(dir, 'SKILL.md'), 'utf8')).toMatch(/^user-invocable: false$/m);
     expect(settings()).toMatchObject({ skillOverrides: { 'report-writer': 'name-only' } });
+  });
+
+  it('lists the uses of a skill from the Skill tool calls JERRY checked, with their verdict', async () => {
+    const repo = createFixtureRepo(path.join(base, 'repo'));
+    const added = await asCli('POST', '/api/v1/projects', { path: repo });
+    expect(added.statusCode, added.body).toBeLessThan(300);
+    const check = async (skill: string) =>
+      (await asCli('POST', '/api/v1/gate/check', { sessionId: 's-uses', cwd: repo, toolName: 'Skill', toolInput: { skill, args: 'SECRET-ARGS' }, toolUseId: null, agentId: null })).json() as { verdict: string; ruleId: string };
+    // notes is started only in CODE_REVIEW and REVERIFICATION; no open task here, so a use is a deviation.
+    expect(await check('notes')).toMatchObject({ verdict: 'WARN', ruleId: 'monitor.skill-out-of-state' });
+    await check('report-writer');
+    await check('notes');
+    const detail = (await asCli('GET', '/api/v1/skills/notes')).json() as SkillDetail;
+    expect(detail.uses).toHaveLength(2);
+    expect(detail.uses[0]).toMatchObject({ sessionId: 's-uses', verdict: 'WARN', ruleId: 'monitor.skill-out-of-state' });
+    expect(((await asCli('GET', '/api/v1/skills/report-writer')).json() as SkillDetail).uses).toHaveLength(1);
+    expect(JSON.stringify(detail)).not.toContain('SECRET-ARGS');
   });
 
   it('shows a skill page with SKILL.md, files and history', async () => {

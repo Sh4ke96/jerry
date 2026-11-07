@@ -201,6 +201,20 @@ export type SkillsList = z.infer<typeof skillsListSchema>;
 export const skillEventSchema = z.object({ action: z.string(), channel: z.string(), at: z.iso.datetime(), details: z.record(z.string(), z.unknown()) });
 export type SkillEvent = z.infer<typeof skillEventSchema>;
 
+/**
+ * One time Claude used the skill (a Skill tool call JERRY saw): when, in which session and task,
+ * and whether it was in the task states JERRY starts the skill in (PASS) or a deviation (WARN).
+ */
+export const skillUseSchema = z.object({
+  at: z.iso.datetime(),
+  sessionId: z.string().nullable(),
+  taskId: z.string().nullable(),
+  repoRoot: z.string().nullable(),
+  verdict: z.string().nullable(),
+  ruleId: z.string().nullable(),
+});
+export type SkillUse = z.infer<typeof skillUseSchema>;
+
 /** GET /api/v1/skills/:name. */
 export const skillDetailSchema = z.object({
   skill: z.union([addedSkillSchema, otherSkillSchema]),
@@ -208,6 +222,8 @@ export const skillDetailSchema = z.object({
   files: z.array(skillFileSchema),
   scan: z.array(skillScanFindingSchema),
   history: z.array(skillEventSchema),
+  /** The latest uses of the skill, newest first (missing from an older Core). */
+  uses: z.array(skillUseSchema).default([]),
 });
 export type SkillDetail = z.infer<typeof skillDetailSchema>;
 

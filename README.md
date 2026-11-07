@@ -102,6 +102,8 @@ Skills you add are started only by JERRY, by task state, and used by Claude:
 
 - 🎯 On the skill's page you tick the task states it belongs to (for example **Code review** and **Re-verification**).
   While a task is in one of them, JERRY's next action tells Claude to use the skill, and Claude runs it.
+- 🧾 The skill list shows one full-width row per skill; a click opens its page with the scan, the task states and
+  **Recent uses**: when Claude ran it, in which task, and whether that was in its states or a recorded deviation.
 - 🙈 JERRY adds `user-invocable: false` to the skill's `SKILL.md`, so it is not in the `/` menu, and sets
   `skillOverrides` to `name-only`, so Claude sees only its name and never picks it on its own.
 - ⚠️ If Claude uses the skill in another state, JERRY warns and records a deviation; it does not block.
@@ -215,17 +217,22 @@ everything else stays until you prune it, which is fine: JERRY's data is usually
 - **Timeline:** session events;
 - **Skills:** JERRY's skills and the ones you added: add, preview, switch off, update, remove;
 - **Data:** what JERRY stores, with preview-first clean-up;
-- **Evals:** runs, regressions and calibration;
+- **Evals:** runs, regressions and calibration; **Run evals** starts `jerry eval run` in the background (after a
+  confirmation: it starts real Claude Code sessions), shows its output and the recorded run, and can stop it;
 - **⚙️ Settings** (bottom of the sidebar): review optional or required, QA language (Polish or English), how decisions
   are confirmed, Claude usage collection and the usage bar, theme; inside the Jerry app also its own settings (start
   with Windows, notifications).
 
 ✅ Decisions are one click by default: approving or rejecting a plan, accepting a report or requesting changes,
-approving or rejecting a fix plan and skipping the review each open a confirmation dialog that shows what you decide,
-with the decision button ready (Enter confirms, Escape cancels); pause and resume act at once. To type the task ID
-for these decisions as well, turn on **⚙️ Settings → Workflow → Type the task ID to confirm decisions**.
-Irreversible actions always ask for a typed confirmation, whatever this switch says: cancelling a task (its ID),
-adding or removing a project (its path), deleting data (`delete`) and forgetting a repository (its path).
+approving or rejecting a fix plan, skipping the review, cancelling a task, adding or removing a project, deleting data,
+forgetting a repository, installing or removing a skill and choosing an eval baseline each open a confirmation dialog
+that shows what you decide, with the decision button ready (Enter confirms, Escape cancels); pause and resume act at
+once. To type what a decision is about (the task ID, the path, the skill name or `delete`), turn on
+**⚙️ Settings → Workflow → Type the ID or name to confirm decisions**. The `jerry` CLI follows the same switch: a y/N
+question, or the typed ID, path or name.
+
+📋 Tasks are listed as full-width bars: ID and state, title, project and last activity in one row; the chevron unfolds
+the facts and the decisions in place.
 
 🎨 It uses the shadcn/ui look with the Geist font, in light, dark or your system's theme. It is reachable only from
 your machine and needs the one-time login link.
@@ -271,6 +278,10 @@ A small desktop app around the same dashboard. JERRY works fine without it.
 - 🖥️ **Dashboard window**, signed in automatically. Closing the window hides it to the tray.
 - 🛡️ **Tray icon** with JERRY's state and how many things wait for you. Menu: Open dashboard, Start Core / Stop Core,
   Settings…, Quit.
+- ⚙️ **Settings** are part of the dashboard's **⚙️ Settings** page, in a **Desktop app** card below Appearance (start
+  with Windows, notifications, sound, test notification), saved as you change them. The tray's Settings… opens that
+  page. The dashboard may call only these three settings commands of the app; while Core is not reachable the app
+  shows its own settings page instead.
 - 🔔 **Notifications** when a plan, a report or a fix plan waits for your decision, when a task is done or blocked,
   and when Core stops unexpectedly. Clicking one (while it is on screen) opens that task's page. Pick the sound in
   Settings: the Windows notification sounds or none (Windows does not allow custom sound files for this kind of app).

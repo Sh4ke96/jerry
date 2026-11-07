@@ -3,7 +3,9 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import {
+  type EvalRunnerStatus,
   type WorkflowState,
+  evalRunnerStartRequestSchema,
   approvalRequestSchema,
   decisionWaitQuerySchema,
   eventIngestRequestSchema,
@@ -89,6 +91,7 @@ import { OtlpError, parseOtlpMetrics } from './otlp.js';
 import { UsageStore } from './usage-store.js';
 import { registerSkillRoutes } from './skill-routes.js';
 import { SkillService } from './skill-service.js';
+import { EvalRunner, EvalRunnerError } from './eval-runner.js';
 import { SkillError, type GitHubFetchOptions } from '@jerry/skills';
 import { DASHBOARD_SECURITY_HEADERS, dashboardPlaceholderPage, HTML_SECURITY_HEADERS, signedOutPage } from './ui.js';
 
@@ -137,6 +140,8 @@ export interface CoreAppOptions {
   usage?: UsageStore;
   /** Where skills are downloaded from GitHub; tests pass a local fake. */
   skillsGitHub?: GitHubFetchOptions;
+  /** Runs "jerry eval run" for the dashboard (tests pass one with a fake CLI). */
+  evalRunner?: EvalRunner;
 }
 
 export const DEFAULT_RETENTION_DAYS = 90;
@@ -910,6 +915,38 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   app.get('/api/v1/evals/runs/:runId', { config: TOKEN_OR_SESSION }, async (request) => evals.run((request.params as { runId: string }).runId));
   app.get('/api/v1/evals/status', { config: TOKEN_OR_SESSION }, async () => evals.status(await ownFingerprint()));
   app.get('/api/v1/evals/calibration', { config: TOKEN_OR_SESSION }, async () => evals.calibration());
+
+  // "jerry eval run" from the dashboard: the CLI next to this Core runs in the background.
+  const distDir = options.dashboardDir === undefined ? null : path.resolve(options.dashboardDir, '..', '..');
+  const evalRunner =
+    options.evalRunner ??
+    new EvalRunner({ home: options.jerryHome, cliPath: distDir === null ? null : path.join(distDir, 'cli', 'jerry.mjs'), casesDir: distDir === null ? null : path.join(distDir, 'evals', 'cases') });
+  app.addHook('onClose', async () => {
+    evalRunner.stop();
+  });
+  const runnerStatus = async (): Promise<EvalRunnerStatus> => {
+    const status = evalRunner.status();
+    const since = evalRunner.lastStartedAt();
+    // The run the CLI recorded: the first one that started after this run did.
+    const recorded = since === null || status.state === 'running' ? undefined : (await evals.runs()).filter((run) => Date.parse(run.startedAt) >= since.getTime()).sort((a, b) => a.startedAt.localeCompare(b.startedAt))[0];
+    return { ...status, runId: recorded?.runId ?? null };
+  };
+  app.get('/api/v1/evals/runner', { config: TOKEN_OR_SESSION }, async () => runnerStatus());
+  /** Starts real Claude Code sessions: only from the dashboard (session and CSRF), where the user confirmed it. */
+  app.post('/api/v1/evals/runner/start', { config: SESSION_ONLY }, async (request, reply) => {
+    try {
+      evalRunner.start(parse(evalRunnerStartRequestSchema, request.body ?? {}));
+    } catch (error) {
+      if (error instanceof EvalRunnerError) throw new HttpError(error.statusCode, error.message);
+      throw error;
+    }
+    return reply.code(202).send(await runnerStatus());
+  });
+  app.post('/api/v1/evals/runner/stop', { config: SESSION_ONLY }, async () => {
+    evalRunner.stop();
+    await evalRunner.idle();
+    return runnerStatus();
+  });
 
   /** The user's baseline choice: the dashboard also needs the run ID typed. */
   app.post('/api/v1/evals/baseline', { config: TOKEN_OR_SESSION }, async (request) => {

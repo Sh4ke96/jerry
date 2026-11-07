@@ -206,7 +206,19 @@ describe('Projects and data in the dashboard', () => {
     wrapper.unmount();
   });
 
-  it('adds another repository from its row, only after its root is typed', async () => {
+  it('adds another repository from its row: one click by default, its root typed when the user chose it', async () => {
+    const quick = await mountApp();
+    await open(quick, 'Projects');
+    const row = quick.get('.other-repositories').findAll('.repository').find((candidate) => candidate.text().includes(SITE))!;
+    await buttonIn(row, 'Add project').trigger('click');
+    await flushPromises();
+    const clickDialog = body().get('[role="alertdialog"]');
+    expect(clickDialog.attributes('data-confirm-mode')).toBe('click');
+    await buttonIn(clickDialog, 'Cancel').trigger('click');
+    await flushPromises();
+    quick.unmount();
+
+    settings = { ...settings, decisionConfirmation: 'typed' };
     const wrapper = await mountApp();
     await open(wrapper, 'Projects');
     const site = wrapper.get('.other-repositories').findAll('.repository').find((row) => row.text().includes(SITE))!;
@@ -316,14 +328,15 @@ describe('Projects and data in the dashboard', () => {
     // One click by default: the switch is off.
     expect(await approveDialogMode()).toEqual(['click', false]);
     let card = await openSettings();
-    expect(card.text()).toContain('Type the task ID to confirm decisions');
-    expect(card.text()).toContain('always ask for a typed confirmation');
+    expect(card.text()).toContain('Type the ID or name to confirm decisions');
+    expect(card.text()).toContain('cancelling a task, projects, deleting or forgetting data, skills');
+    expect(card.text()).not.toContain('always ask for a typed confirmation');
     expect(card.get('[role="switch"]').attributes('aria-checked')).toBe('false');
 
     await card.get('[role="switch"]').trigger('click');
     await flushPromises();
     expect(posts('/api/v1/settings').map((call) => [call.body, call.csrf])).toEqual([[{ decisionConfirmation: 'typed' }, CSRF]]);
-    expect(state.notice).toBe('Saved: decisions need the task ID typed.');
+    expect(state.notice).toBe('Saved: decisions need the ID or name typed.');
     expect(state.settings?.decisionConfirmation).toBe('typed');
     expect(wrapper.get('.settings-confirmation [role="switch"]').attributes('aria-checked')).toBe('true');
     expect(await approveDialogMode()).toEqual(['typed', true]);
@@ -339,7 +352,8 @@ describe('Projects and data in the dashboard', () => {
     wrapper.unmount();
   });
 
-  it('adds a project only after its path is typed again', async () => {
+  it('adds a project only after its path is typed again, with typed confirmations on', async () => {
+    settings = { ...settings, decisionConfirmation: 'typed' };
     const wrapper = await mountApp();
     await open(wrapper, 'Projects');
     await buttonIn(wrapper.get('.projects'), 'Add project').trigger('click');
@@ -367,7 +381,8 @@ describe('Projects and data in the dashboard', () => {
     wrapper.unmount();
   });
 
-  it('removes a project from its page only with the typed path and passes on the open-tasks warning', async () => {
+  it('removes a project from its page only with the typed path (typed confirmations on) and passes on the open-tasks warning', async () => {
+    settings = { ...settings, decisionConfirmation: 'typed' };
     const wrapper = await mountApp();
     const page = await openProject(wrapper);
     await buttonIn(page.get('.project-page__header'), 'Remove').trigger('click');
@@ -405,7 +420,8 @@ describe('Projects and data in the dashboard', () => {
     wrapper.unmount();
   });
 
-  it('previews a clean-up and deletes it only after "delete" is typed', async () => {
+  it('previews a clean-up and deletes it only after "delete" is typed, with typed confirmations on', async () => {
+    settings = { ...settings, decisionConfirmation: 'typed' };
     const wrapper = await mountApp();
     await open(wrapper, 'Data');
     const cleanUp = wrapper.get('.clean-up');
@@ -452,7 +468,42 @@ describe('Projects and data in the dashboard', () => {
     wrapper.unmount();
   });
 
-  it('forgets a repository only with its typed root, and not while it has open tasks', async () => {
+  it('in one-click mode removes a project, deletes data and forgets a repository without typing, still sending the expected text', async () => {
+    const wrapper = await mountApp();
+    const page = await openProject(wrapper);
+    await buttonIn(page.get('.project-page__header'), 'Remove').trigger('click');
+    await flushPromises();
+    let dialog = body().get('[role="alertdialog"]');
+    expect(dialog.attributes('data-confirm-mode')).toBe('click');
+    await dialog.get('form').trigger('submit');
+    await flushPromises();
+    expect(posts('/api/v1/projects/remove').map((call) => call.body)).toEqual([{ path: SHOP, confirmation: SHOP }]);
+
+    await open(wrapper, 'Data');
+    const cleanUp = wrapper.get('.clean-up');
+    await cleanUp.get('#prune-eventsOlderThanDays').setValue('30');
+    await buttonIn(cleanUp, 'Preview').trigger('click');
+    await flushPromises();
+    await buttonIn(cleanUp, 'Delete').trigger('click');
+    await flushPromises();
+    dialog = body().get('[role="alertdialog"]');
+    expect(dialog.attributes('data-confirm-mode')).toBe('click');
+    await dialog.get('form').trigger('submit');
+    await flushPromises();
+    expect(posts('/api/v1/data/prune').map((call) => call.body)).toEqual([{ eventsOlderThanDays: 30, confirmation: 'delete' }]);
+
+    await buttonIn(repositoryRow(wrapper, SITE), 'Forget').trigger('click');
+    await flushPromises();
+    dialog = body().get('[role="alertdialog"]');
+    expect(dialog.attributes('data-confirm-mode')).toBe('click');
+    await dialog.get('form').trigger('submit');
+    await flushPromises();
+    expect(posts('/api/v1/data/forget').map((call) => call.body)).toEqual([{ path: SITE, confirmation: SITE }]);
+    wrapper.unmount();
+  });
+
+  it('forgets a repository only with its typed root (typed confirmations on), and not while it has open tasks', async () => {
+    settings = { ...settings, decisionConfirmation: 'typed' };
     const wrapper = await mountApp();
     await open(wrapper, 'Data');
     const shop = repositoryRow(wrapper, SHOP);

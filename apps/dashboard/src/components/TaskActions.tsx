@@ -6,7 +6,7 @@ import { defineComponent, ref, type PropType } from 'vue';
 import { api } from '../api';
 import { REVIEW_STATES, REVIEWER_STATES, projectOf } from '../lib/tasks';
 import { classProp, cn } from '../lib/utils';
-import { decisionConfirmation, projectReviewMode, taskReviewMode, type DecisionConfirmation, type ReviewMode } from '../settings';
+import { decisionConfirmation, projectReviewMode, taskReviewMode, type ReviewMode } from '../settings';
 import { handleError, perform, state } from '../state';
 import { ConfirmDialog } from './ConfirmDialog';
 import { Emoji } from './Emoji';
@@ -17,9 +17,9 @@ import { Label } from './ui/label';
 import { Switch } from './ui/switch';
 
 /**
- * Decisions confirmed in a dialog, like their CLI prompts. Reversible ones are one click unless the
- * user chose typed confirmations in Settings; cancelling cannot be undone and always needs the typed
- * task ID. Pause and resume are one click without a dialog.
+ * Decisions confirmed in a dialog, like their CLI prompts: one click, or the typed task ID when the
+ * user chose typed confirmations in Settings; cancelling too (its dialog says it cannot be undone).
+ * Pause and resume are one click without a dialog.
  */
 type ConfirmedAction = 'approve' | 'reject' | 'withdraw' | 'accept' | 'request-changes' | 'cancel' | 'skip-review' | 'approve-fixes' | 'reject-fixes' | 'recheck';
 
@@ -98,13 +98,6 @@ const DIALOG: Record<ConfirmedAction, { title: string; confirm: string; tone: 'p
   },
 };
 
-/** Actions that cannot be undone: always confirmed by typing the task ID, whatever the setting says. */
-const IRREVERSIBLE: ReadonlySet<ConfirmedAction> = new Set(['cancel']);
-
-/** How an action's dialog is confirmed: typed for irreversible actions, else as the user chose in Settings. */
-function confirmationMode(action: ConfirmedAction): DecisionConfirmation {
-  return IRREVERSIBLE.has(action) ? 'typed' : decisionConfirmation(state.settings);
-}
 
 function subjectOf(pending: Pending): string {
   const { task, action } = pending;
@@ -273,7 +266,7 @@ function useTaskDecisions(task: () => TaskSummary, changed: () => void) {
           key="decision"
           title={`${DIALOG[current.action].title} ${subjectOf(current)}`}
           expected={current.task.taskId}
-          mode={confirmationMode(current.action)}
+          mode={decisionConfirmation(state.settings)}
           confirmLabel={DIALOG[current.action].confirm}
           tone={DIALOG[current.action].tone}
           busy={busy.value}

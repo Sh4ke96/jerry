@@ -163,7 +163,7 @@ export async function fileToBase64(file: Blob): Promise<string> {
   return btoa(binary);
 }
 
-/** The preview of a skill: what it says, its files and the scan; installing needs the typed name. */
+/** The preview of a skill: what it says, its files and the scan; installing is confirmed as Settings says. */
 function previewBody(preview: SkillPreview) {
   const source = preview.source.kind === 'github' ? `${preview.source.source}${preview.source.commit === null ? '' : ` @ ${preview.source.commit.slice(0, 12)}`}` : preview.source.source;
   return (
@@ -220,8 +220,8 @@ function previewBody(preview: SkillPreview) {
 
 /**
  * Adding, updating, switching and removing skills, for the Skills view and a skill's page. Nothing
- * changes without a preview; installing and removing need the skill name typed, updating as the
- * decision confirmation setting says, switching is one click.
+ * changes without a preview; installing, updating and removing are confirmed as the decision
+ * confirmation setting says (one click or the typed skill name), switching is one click.
  */
 export function useSkillActions(afterChange: () => Promise<unknown> | void = () => undefined) {
   const asking = ref(false);
@@ -452,8 +452,7 @@ export function useSkillActions(afterChange: () => Promise<unknown> | void = () 
         title={preview.value.purpose === 'install' ? `Install ${preview.value.name}?` : `Update ${preview.value.name}?`}
         expected={preview.value.name}
         confirmLabel={preview.value.purpose === 'install' ? 'Install skill' : 'Update skill'}
-        // Installing is always typed; an update follows the decision confirmation setting.
-        mode={preview.value.purpose === 'install' ? 'typed' : decisionConfirmation(state.settings)}
+        mode={decisionConfirmation(state.settings)}
         busy={busy.value}
         onConfirm={apply}
         onCancel={() => (confirming.value = false)}
