@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { samplePlan } from '../../../tests/helpers/plan-fixture.js';
-import { planDocumentSchema } from '../src/index.js';
+import { sampleMultiRepoPlan, samplePlan } from '../../../tests/helpers/plan-fixture.js';
+import { planDocumentSchema, taskRepositoryRoots, unsafeGlobReason } from '../src/index.js';
 
 describe('planDocumentSchema', () => {
   it('accepts a complete plan', () => {
@@ -26,5 +26,37 @@ describe('planDocumentSchema', () => {
     expect(planDocumentSchema.safeParse({ ...plan, tests: [] }).success).toBe(false);
     expect(planDocumentSchema.safeParse({ ...plan, classification: ['marketing'] }).success).toBe(false);
     expect(planDocumentSchema.safeParse({ ...plan, goal: '   ' }).success).toBe(false);
+  });
+});
+
+describe('multi-repository plans', () => {
+  it('accepts repository scopes and repositories on changes and steps, without defaults on single-repository plans', () => {
+    const multi = planDocumentSchema.parse(sampleMultiRepoPlan(['D:/Work/api', 'D:/Work/shop']));
+    expect(multi.repositoryScopes).toEqual([{ repository: 'D:/Work/shop', include: ['src/**', 'tests/**'], exclude: [] }]);
+    expect(multi.changes.map((change) => change.repository)).toEqual(['D:/Work/api', 'D:/Work/shop']);
+    const single = planDocumentSchema.parse(samplePlan('D:/Work/repo'));
+    // No key appears that was not there: single-repository plans keep their hash.
+    expect('repositoryScopes' in single).toBe(false);
+    expect(single.changes.every((change) => !('repository' in change))).toBe(true);
+    expect(single.steps.every((step) => !('repository' in step))).toBe(true);
+  });
+
+  it('rejects a repository scope without globs', () => {
+    const plan = sampleMultiRepoPlan(['D:/Work/api', 'D:/Work/shop']);
+    expect(planDocumentSchema.safeParse({ ...plan, repositoryScopes: [{ repository: 'D:/Work/shop', include: [] }] }).success).toBe(false);
+  });
+
+  it('names globs that leave their repository', () => {
+    expect(unsafeGlobReason('src/**')).toBeNull();
+    expect(unsafeGlobReason('a..b/**')).toBeNull();
+    expect(unsafeGlobReason('/etc/**')).toMatch(/absolute/);
+    expect(unsafeGlobReason('C:/Work/**')).toMatch(/absolute/);
+    expect(unsafeGlobReason('src\\..\\..\\y')).toMatch(/leaves/);
+    expect(unsafeGlobReason('../shop/**')).toMatch(/leaves/);
+  });
+
+  it('lists every repository of a task, its own first', () => {
+    expect(taskRepositoryRoots({ repoRoot: 'D:/a', plan: null })).toEqual(['D:/a']);
+    expect(taskRepositoryRoots({ repoRoot: 'D:/a', plan: { repositories: [{ repoRoot: 'D:/b' }] } })).toEqual(['D:/a', 'D:/b']);
   });
 });

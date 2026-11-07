@@ -61,7 +61,11 @@ const DEFAULT_DEVIATION_WINDOW_MINUTES = 480;
 /** The plan document's JSON Schema, generated from the Zod schema Core validates with. */
 const PLAN_JSON_SCHEMA = (() => {
   const { $schema: _ignored, ...schema } = z.toJSONSchema(planDocumentSchema, { io: 'input' }) as Record<string, unknown>;
-  return { ...schema, description: 'The plan. scope.include lists the repo-relative globs JERRY checks edits against.' };
+  return {
+    ...schema,
+    description:
+      "The plan. scope.include lists the repo-relative globs JERRY checks edits against in the task's repository (repoPath). A change across several repositories of one workspace is one plan: repositoryScopes gives each other repository (its absolute root) its own globs, and each change and step names its repository; every repository gets only its own changes.",
+  };
 })();
 
 /** The analysis report's JSON Schema, generated from the Zod schema Core validates with. */
@@ -229,6 +233,14 @@ export const TOOLS: readonly ToolDefinition[] = [
       withCore(async () => {
         const status = coreStatusSchema.parse(await core('GET', '/api/v1/status'));
         const state = await repositoryState(args['path']);
+        // The common parent folder of a workspace's repositories: the workspace, and where to look next.
+        if (state.repoRoot === null && state.workspace != null) {
+          const waiting = state.workspace.repos.reduce((sum, repo) => sum + repo.waiting, 0);
+          return ok(
+            { guard: 'GUARDED', jerryVersion: status.version, repository: null, monitored: true, workspace: state.workspace, next: nextAction(state), hardRules: HARD_RULES_SUMMARY },
+            `${EMOJI.repository} workspace ${state.workspace.name} · ${state.workspace.repos.length} repositories · ${EMOJI.waiting} ${waiting} waiting for you`,
+          );
+        }
         if (notAdded(state)) {
           return ok(
             {
@@ -273,6 +285,8 @@ export const TOOLS: readonly ToolDefinition[] = [
           open: open.filter((task) => !coversEdits(task)).map(summarizeTask),
           // The user's settings here, read-only: QA scenarios go in qaLanguage; review follows reviewMode.
           ...(state.preferences === undefined ? {} : { preferences: state.preferences }),
+          // The workspace this repository belongs to, with what is open or waiting in its repositories.
+          ...(state.workspace == null ? {} : { workspace: state.workspace }),
           // Added skills JERRY starts, with the task states the user assigned them to (next names the ones due now).
           ...(state.skills === undefined || state.skills.length === 0 ? {} : { jerrySkills: state.skills.map((skill) => ({ name: skill.name, states: skill.states })) }),
           currentTask:
@@ -367,13 +381,13 @@ export const TOOLS: readonly ToolDefinition[] = [
     name: 'submit_plan',
     title: 'Submit a plan for approval',
     description:
-      "Submit a plan to JERRY for the user's approval (use the /jerry:plan skill to draft it). Without taskId it creates a task; with taskId it creates the next plan version, which voids that task's earlier approval. It never approves anything.",
+      "Submit a plan to JERRY for the user's approval (use the /jerry:plan skill to draft it). Without taskId it creates a task; with taskId it creates the next plan version, which voids that task's earlier approval. A plan may cover several repositories of one workspace (plan.repositoryScopes); JERRY refuses repositories outside the workspace or not added as projects. It never approves anything.",
     inputSchema: {
       type: 'object',
       properties: {
         taskId: { type: 'string', description: "Revise this task's plan: after an analysis (start_task), or when the user asked for plan changes." },
         title: { type: 'string', description: 'Short task title (required for a new task).' },
-        repoPath: { type: 'string', description: 'Repository of a new task (default: project directory).' },
+        repoPath: { type: 'string', description: "Repository of a new task (default: project directory); in a workspace's parent folder, the repository that leads the change." },
         plan: PLAN_JSON_SCHEMA,
       },
       required: ['plan'],
@@ -1101,12 +1115,30 @@ export function skillsInstruction(skills: RepositoryState['skills'], tasks: Read
   return lines.length === 0 ? '' : `${EMOJI.jerry} JERRY starts skills here. ${lines.join(' ')}`;
 }
 
+/** The workspace's other repositories with decisions waiting for the user, in one line; '' when none. */
+export function workspaceInstruction(state: RepositoryState): string {
+  const workspace = state.workspace;
+  if (workspace === undefined || workspace === null) return '';
+  const own = state.repoRoot?.toLowerCase();
+  const waiting = workspace.repos.filter((repo) => repo.waiting > 0 && repo.repoRoot.toLowerCase() !== own);
+  if (waiting.length === 0) return '';
+  return `${EMOJI.waiting} In workspace "${workspace.name}" decisions also wait in: ${waiting.map((repo) => `${repo.repoRoot} (${repo.waiting})`).join(', ')}.`;
+}
+
 export function nextAction(state: RepositoryState): { action: string; details: string } {
+  // A session in the common parent folder of a workspace's repositories.
+  if (state.repoRoot === null && state.workspace != null) {
+    const repos = state.workspace.repos.map((repo) => `${repo.repoRoot}: ${repo.openTasks} open task(s)${repo.waiting > 0 ? `, ${repo.waiting} waiting for the user` : ''}`).join('; ');
+    return {
+      action: 'workspace',
+      details: `${EMOJI.repository} This folder holds the repositories of workspace "${state.workspace.name}": ${repos}. One task may span several of them: plan it once, with repoPath set to the repository that leads the change and plan.repositoryScopes giving each other repository its own globs; name the repository of each change and step. Every repository gets only its own changes, and edits there are checked against that repository's scope. Call get_state with a path inside a repository for its tasks, and run commands that change files inside the repository, not in this folder (JERRY records those as deviations).`,
+    };
+  }
   const base = stateAction(state);
   if (state.repoRoot === null || notAdded(state)) return base;
   const open = state.tasks.filter((task) => !isTerminal(task.state));
-  const skills = skillsInstruction(state.skills, open);
-  return skills === '' ? base : { action: base.action, details: `${base.details}\n${skills}` };
+  const extra = [skillsInstruction(state.skills, open), workspaceInstruction(state)].filter((line) => line !== '');
+  return extra.length === 0 ? base : { action: base.action, details: [base.details, ...extra].join('\n') };
 }
 
 function stateAction(state: RepositoryState): { action: string; details: string } {

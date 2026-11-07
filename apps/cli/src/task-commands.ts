@@ -204,6 +204,15 @@ export async function showTask(taskId: string): Promise<void> {
       console.log(`  your uncommitted files then: ${baseline.userFiles.length === 0 ? 'none' : baseline.userFiles.join(', ')}${baseline.truncated ? ' (list truncated)' : ''}`);
     }
   }
+  // The other repositories of a multi-repository plan.
+  for (const other of task.baselines ?? []) {
+    console.log(`\n${mark('repository', `Git baseline of ${other.repoRoot} (${other.at}):`)}`);
+    if (other.error !== null) console.log(`  not available: ${other.error}`);
+    else {
+      console.log(`  ${other.branch ?? 'detached HEAD'} @ ${other.head?.slice(0, 12) ?? 'no commits'}`);
+      console.log(`  your uncommitted files then: ${other.userFiles.length === 0 ? 'none' : other.userFiles.join(', ')}${other.truncated ? ' (list truncated)' : ''}`);
+    }
+  }
 
   const [checkpoint] = task.checkpoints;
   if (checkpoint !== undefined) {
@@ -465,6 +474,11 @@ function printPlan(task: Task): void {
   const intake = task.goal !== undefined && task.plan.version === 1 && task.plan.document === undefined;
   console.log(intake ? '  plan:    none yet (analysis first)' : `  plan:    v${task.plan.version}  ${task.plan.contentHash}`);
   console.log(`  ${intake ? 'focus:  ' : 'scope:  '} ${task.plan.scope.join(', ')}`);
+  // A plan across several repositories of a workspace: each other one with its own scope.
+  for (const repository of task.plan.repositories ?? []) {
+    console.log(`  also:    ${repository.repoRoot}`);
+    console.log(`           scope: ${repository.scope.join(', ')}${repository.exclude.length === 0 ? '' : `; not: ${repository.exclude.join(', ')}`}`);
+  }
   if (task.plan.document?.analysis !== undefined) {
     const { reports, gaps } = task.plan.document.analysis;
     console.log(`  based on analysis report(s): ${reports.length === 0 ? 'none' : reports.map((id) => `#${id}`).join(', ')}${gaps.length === 0 ? '' : `; gaps: ${gaps.join('; ')}`}`);

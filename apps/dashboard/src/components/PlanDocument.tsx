@@ -2,11 +2,19 @@ import type { PlanDocument } from '@jerry/contracts';
 import { EMOJI } from '@jerry/contracts/emoji';
 import { defineComponent, type PropType } from 'vue';
 import { CHIP, LIST, PREWRAP, STEPS } from '../lib/classes';
+import { projectName } from '../lib/tasks';
 import { Section } from './Section';
 import { StatusBadge, type Tone } from './StatusBadge';
 
 const SEVERITY_TONE: Record<'low' | 'medium' | 'high', Tone> = { low: 'neutral', medium: 'warn', high: 'deny' };
 const CHANGE_LABEL: Record<'add' | 'change' | 'remove', string> = { add: 'Add', change: 'Change', remove: 'Remove' };
+
+/** A repository named by its folder, with its full root on hover. */
+const RepositoryBadge = (props: { root: string }) => (
+  <StatusBadge tone="accent" title={props.root} data-repository-badge={props.root}>
+    {projectName(props.root)}
+  </StatusBadge>
+);
 
 /** The full plan Claude submitted, as the user reviews it before approving. Empty sections are left out. */
 export const PlanDocumentView = defineComponent({
@@ -35,7 +43,8 @@ export const PlanDocumentView = defineComponent({
               <ul class={LIST}>
                 {plan.changes.map((change, index) => (
                   <li key={index}>
-                    <strong class="font-medium">{CHANGE_LABEL[change.kind]}</strong> <code class={CHIP}>{change.target}</code>: {change.description}
+                    <strong class="font-medium">{CHANGE_LABEL[change.kind]}</strong> {change.repository !== undefined && <RepositoryBadge root={change.repository} />}
+                    <code class={CHIP}>{change.target}</code>: {change.description}
                   </li>
                 ))}
               </ul>
@@ -64,6 +73,25 @@ export const PlanDocumentView = defineComponent({
                 <p class={PREWRAP}>{plan.rollback}</p>
               </Section>
             )}
+            {(plan.repositoryScopes ?? []).length > 0 && (
+              <Section title={`Other repositories (${(plan.repositoryScopes ?? []).length})`} defaultOpen emoji={EMOJI.repository}>
+                <ul class={LIST}>
+                  {(plan.repositoryScopes ?? []).map((scope) => (
+                    <li key={scope.repository} class="plan-repository" data-plan-repository={scope.repository}>
+                      <RepositoryBadge root={scope.repository} />
+                      <span class="ml-1 inline-flex flex-wrap gap-1.5">
+                        {scope.include.map((glob) => (
+                          <code class={CHIP} key={glob}>
+                            {glob}
+                          </code>
+                        ))}
+                      </span>
+                      {scope.exclude.length > 0 && <span class="text-muted-foreground"> · not {scope.exclude.join(', ')}</span>}
+                    </li>
+                  ))}
+                </ul>
+              </Section>
+            )}
             {plan.scope.exclude.length > 0 && (
               <Section title="Out of scope">
                 <p class="flex flex-wrap gap-1.5">
@@ -79,7 +107,7 @@ export const PlanDocumentView = defineComponent({
               <ol class={STEPS}>
                 {plan.steps.map((step, index) => (
                   <li key={index}>
-                    {step.step}
+                    {step.repository !== undefined && <RepositoryBadge root={step.repository} />} {step.step}
                     {step.dependsOn.length > 0 && <span class="text-muted-foreground"> (after {step.dependsOn.join(', ')})</span>}
                     {step.files.length > 0 && (
                       <div class="mt-1 flex flex-wrap gap-1.5">

@@ -64,6 +64,22 @@ jerry project add                   # asks you to type the path to confirm
 📁 JERRY monitors only projects you added. In any other repository only the hard rules apply (no Git changes, no
 tampering with JERRY), nothing is recorded, and Core is not contacted. JERRY starts its Core automatically.
 
+🗂️ Working on several repositories together (say `api`, `shop` and `admin`)? Group them into a **workspace**, like a
+VS Code workspace with several folders: **Projects → New workspace** (paste the folders, or let JERRY find the Git
+repositories in a parent folder), or `jerry workspace create shop D:\Work\api D:\Work\shop D:\Work\admin`
+(`--scan D:\Work` finds them). They become projects, the workspace gets its own page with the open tasks of all of
+them, Tasks can be filtered by it, and a Claude Code session in any of them, or in their common folder, is told about
+the workspace. Each repository keeps its own plans and tasks; deleting a workspace keeps the projects.
+
+🔀 One feature that touches several of a workspace's repositories is **one task with one plan**: Claude plans it
+from the repository that leads the change, gives every other repository its own scope (`repositoryScopes`) and names
+the repository of each change and step, so each repository gets only its own changes. You approve the plan once.
+JERRY then checks edits in each repository against that repository's scope, takes a Git baseline in each, keeps the
+report's evidence and the final checks per repository, and lists the task in every repository it covers (a task bar
+shows `+2` for two more). Only repositories of the same workspace that are projects can join a plan. A command that
+changes files run in the workspace's parent folder, rather than inside a repository, is recorded as a deviation of the
+workspace's open tasks.
+
 Open the dashboard with `jerry ui`.
 
 ---
@@ -171,6 +187,9 @@ need an interactive terminal, and Claude is not allowed to run them.
 | `jerry project add [path]` | Add a project: JERRY works there from now on (default: the current repository). 🔐 |
 | `jerry project remove <path>` | Stop working in a project; its open tasks stay. 🔐 |
 | `jerry project list` | Your projects, their open tasks and last activity. |
+| `jerry workspace list\|show <name>` | Workspaces: several repositories under one name, with their open tasks. |
+| `jerry workspace create <name> <folder>… [--scan <folder>]` | Create a workspace; its repositories become projects. 🔐 |
+| `jerry workspace add\|remove <name> <folder>`, `rename <name> <new>`, `delete <name>` | Change a workspace; removing and deleting keep the projects. 🔐 |
 | `jerry repo scan [path]` | What JERRY detects: languages, commands, CI, API schemas, migrations. |
 | `jerry repo profile [path]` | The project profile JERRY keeps, with commands as they run on this machine. |
 | `jerry repo graph` | Links between your repositories (shared packages, API contracts). |

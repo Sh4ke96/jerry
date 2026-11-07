@@ -37,14 +37,14 @@ export interface GateContext {
    * True when the file had the user's uncommitted changes when the task's plan was approved and
    * Claude was not warned about it yet. Absent where Git baselines are not known.
    */
-  isUserChangedFile?(taskId: string, relativePath: string): boolean;
+  isUserChangedFile?(taskId: string, relativePath: string, repoRoot?: string): boolean;
   /** Subagents the session started and has not finished; absent where unknown. */
   activeSubagents?(sessionId: string): number;
   /**
    * Implementer checks of an in-scope edit: concurrent writes to one file, and an
    * implementer outside its assignment. `agentId` is null for the main session. Warnings only.
    */
-  implementerCheck?(taskId: string, agentId: string | null, relativePath: string): { ruleId: string; reason: string } | null;
+  implementerCheck?(taskId: string, agentId: string | null, relativePath: string, repoRoot?: string): { ruleId: string; reason: string } | null;
   /** The plugin agent type of a subagent (e.g. "jerry:jerry-security-reviewer"), when known. */
   agentType?(agentId: string): string | null;
   /**
@@ -54,6 +54,11 @@ export interface GateContext {
   skillStates?(name: string): readonly WorkflowState[] | null;
   /** The repository's open tasks and their states. Absent where unknown. */
   openTasks?(repoRoot: string): ReadonlyArray<{ taskId: string; state: WorkflowState }>;
+  /**
+   * The workspace whose parent folder this is (a folder holding its repositories, not one of
+   * them), or null. Absent where unknown.
+   */
+  workspaceFolder?(absolutePath: string): { name: string; repoRoots: readonly string[] } | null;
 }
 
 /** JERRY's read-only roles: analysts and reviewers never write. */
@@ -66,7 +71,7 @@ const READ_ONLY_AGENT = /jerry-[\w-]*-(?:analyst|reviewer)$/;
  * changing a setting and turning JERRY's status line or usage collection on or off (they edit the
  * Claude Code settings).
  */
-const USER_ONLY_JERRY_COMMAND = /\bjerry(?:\.mjs|\.cmd|\.ps1)?\s+(?:approve|reject|install|uninstall|ui|repo\s+(?:exclude|include)|project\s+(?:add|remove)|data\s+(?:prune|forget)|task\s+(?:pause|resume|cancel|recheck)|core\s+(?:start|stop)|db\s+restore|settings\s+set|statusline\s+(?:enable|disable)|usage\s+(?:enable|disable)|skills?\s+(?:add|enable|disable|update|remove|states))\b/i;
+const USER_ONLY_JERRY_COMMAND = /\bjerry(?:\.mjs|\.cmd|\.ps1)?\s+(?:approve|reject|install|uninstall|ui|repo\s+(?:exclude|include)|project\s+(?:add|remove)|data\s+(?:prune|forget)|task\s+(?:pause|resume|cancel|recheck)|core\s+(?:start|stop)|db\s+restore|settings\s+set|statusline\s+(?:enable|disable)|usage\s+(?:enable|disable)|skills?\s+(?:add|enable|disable|update|remove|states)|workspaces?\s+(?:create|add|remove|rename|delete))\b/i;
 /** Tools that start a Claude Code subagent. */
 const SUBAGENT_TOOLS: ReadonlySet<string> = new Set(['Task', 'Agent']);
 /** The Core API and the dashboard login: an agent holding a session could approve its own plan. */
@@ -228,7 +233,7 @@ function monitorWrite(target: string, cwd: string, context: GateContext, agentId
     const ids = plans.map((plan) => `${plan.taskId} v${plan.planVersion}`).join(', ');
     return decision('WARN', 'monitor.out-of-scope', `${relative} is outside the approved scope of ${ids}. The edit proceeds and is recorded as a deviation.`, plans[0]?.taskId ?? null, repoRoot);
   }
-  if (context.isUserChangedFile?.(covering.taskId, relative) === true) {
+  if (context.isUserChangedFile?.(covering.taskId, relative, repoRoot) === true) {
     return decision(
       'WARN',
       'monitor.user-uncommitted-file',
@@ -237,7 +242,7 @@ function monitorWrite(target: string, cwd: string, context: GateContext, agentId
       repoRoot,
     );
   }
-  const implementer = context.implementerCheck?.(covering.taskId, agentId, relative) ?? null;
+  const implementer = context.implementerCheck?.(covering.taskId, agentId, relative, repoRoot) ?? null;
   if (implementer !== null) return decision('WARN', implementer.ruleId, implementer.reason, covering.taskId, repoRoot);
   return decision('PASS', 'monitor.in-approved-scope', `${relative} is within the approved scope of ${covering.taskId} v${covering.planVersion}`, covering.taskId, repoRoot);
 }
@@ -247,8 +252,11 @@ function monitorShell(cwd: string, context: GateContext, assessment: { readOnly:
   if (assessment.readOnly) {
     return decision('PASS', 'monitor.read-only-command', `Read-only command: ${assessment.reason}`);
   }
-  const repoRoot = context.findRepoRoot(absolutePath(context.realPath(absolutePath(cwd, cwd, platform)), cwd, platform));
+  const folder = absolutePath(context.realPath(absolutePath(cwd, cwd, platform)), cwd, platform);
+  const repoRoot = context.findRepoRoot(folder);
   if (repoRoot === null) {
+    const workspace = context.workspaceFolder?.(folder) ?? null;
+    if (workspace !== null) return monitorWorkspaceShell(workspace, context, assessment);
     return decision('PASS', 'monitor.outside-repository', `Working directory is not inside a Git repository (${assessment.reason})`);
   }
   if (!context.isMonitored(repoRoot)) {
@@ -259,6 +267,24 @@ function monitorShell(cwd: string, context: GateContext, assessment: { readOnly:
     return decision('WARN', 'monitor.no-approved-plan', `No approved JERRY plan for ${repoRoot}, and this command may modify files (${assessment.reason}). It proceeds and is recorded as a deviation.`, null, repoRoot);
   }
   return decision('PASS', 'monitor.command-with-approved-plan', `Approved plan exists; JERRY cannot verify the command's file scope (${assessment.reason})`, plans[0]?.taskId ?? null, repoRoot);
+}
+
+/**
+ * A command that may modify files, run in a workspace's parent folder: JERRY cannot tell which of
+ * its repositories it changes, so it is recorded as a deviation of the workspace's open tasks (the
+ * first one carries it) and Claude is told to run it inside the repository.
+ */
+function monitorWorkspaceShell(workspace: { name: string; repoRoots: readonly string[] }, context: GateContext, assessment: { readOnly: boolean; reason: string }): GateDecision {
+  const open = workspace.repoRoots.flatMap((root) => context.openTasks?.(root) ?? []);
+  const taskIds = [...new Set(open.map((task) => task.taskId))];
+  const owner = taskIds.length === 0 ? '' : ` It is recorded as a deviation of ${taskIds.join(', ')}.`;
+  return decision(
+    'WARN',
+    'monitor.workspace-folder-command',
+    `This command runs in the parent folder of the workspace ${workspace.name}, outside its repositories, and may modify files (${assessment.reason}). JERRY cannot tell which repository it changes; run it inside the repository instead.${owner}`,
+    taskIds[0] ?? null,
+    null,
+  );
 }
 
 const VERDICT_RANK: Readonly<Record<GateDecision['verdict'], number>> = { PASS: 0, WARN: 1, DENY: 2 };

@@ -6,6 +6,11 @@ import {
   type EvalRunnerStatus,
   type WorkflowState,
   evalRunnerStartRequestSchema,
+  workspaceCreateRequestSchema,
+  workspaceDeleteRequestSchema,
+  workspaceRenameRequestSchema,
+  workspaceRepoRequestSchema,
+  workspaceScanRequestSchema,
   approvalRequestSchema,
   decisionWaitQuerySchema,
   eventIngestRequestSchema,
@@ -65,10 +70,14 @@ import {
   type SessionRegistrationResponse,
   type Task,
   type TaskDetail,
+  type PlanDocument,
+  type PlanRepository,
+  unsafeGlobReason,
+  taskRepositoryRoots,
   type TaskSummary,
 } from '@jerry/contracts';
 import { EMOJI, SEVERITY_EMOJI, decorate } from '@jerry/contracts/emoji';
-import { absolutePath, approvedPlansForRepo, comparablePath, evaluateGate, gradePlan, isComparableInside, relativeInside } from '@jerry/policy-engine';
+import { absolutePath, approvedPlansForRepo, comparablePath, evaluateGate, gradePlan, isComparableInside, relativeInside, taskTouchesRepo } from '@jerry/policy-engine';
 import { isTerminal, WORK_STATES } from '@jerry/workflow';
 import { buildEventEnvelope } from '@jerry/trace-engine';
 import type { z } from 'zod';
@@ -92,6 +101,7 @@ import { UsageStore } from './usage-store.js';
 import { registerSkillRoutes } from './skill-routes.js';
 import { SkillService } from './skill-service.js';
 import { EvalRunner, EvalRunnerError } from './eval-runner.js';
+import { WorkspaceService } from './workspace-service.js';
 import { SkillError, type GitHubFetchOptions } from '@jerry/skills';
 import { DASHBOARD_SECURITY_HEADERS, dashboardPlaceholderPage, HTML_SECURITY_HEADERS, signedOutPage } from './ui.js';
 
@@ -157,21 +167,28 @@ export class HttpError extends Error {
 }
 
 /** The gate as Core evaluates it: real filesystem lookups plus the current state snapshot. */
-export function gateEvaluator(store: StateStore, protectedRoots: readonly string[], skillStates?: (name: string) => readonly WorkflowState[] | null): (request: GateCheckRequest) => GateDecision {
+export function gateEvaluator(
+  store: StateStore,
+  protectedRoots: readonly string[],
+  skillStates?: (name: string) => readonly WorkflowState[] | null,
+  workspaceFolder?: (absolutePath: string) => { name: string; repoRoots: readonly string[] } | null,
+): (request: GateCheckRequest) => GateDecision {
   return (request) => {
     const snapshot: CoreState = store.snapshot();
     return evaluateGate(request, {
       ...(skillStates === undefined ? {} : { skillStates }),
-      openTasks: (repoRoot) => snapshot.tasks.filter((task) => !isTerminal(task.state) && sameRepo(task.repoRoot, repoRoot)).map((task) => ({ taskId: task.taskId, state: task.state })),
+      ...(workspaceFolder === undefined ? {} : { workspaceFolder }),
+      // Open tasks that cover the repository: their own, or one of their plan's other repositories.
+      openTasks: (repoRoot) => snapshot.tasks.filter((task) => !isTerminal(task.state) && taskTouchesRepo(task, repoRoot, process.platform)).map((task) => ({ taskId: task.taskId, state: task.state })),
       platform: process.platform,
       protectedRoots,
       realPath: realPathOfNearestExisting,
       findRepoRoot: findGitRoot,
       approvedPlans: (repoRoot) => approvedPlansForRepo(snapshot, repoRoot, process.platform),
       isMonitored: (repoRoot) => store.isMonitored(repoRoot),
-      isUserChangedFile: (taskId, relativePath) => store.isUserChangedFile(taskId, relativePath),
+      isUserChangedFile: (taskId, relativePath, repoRoot) => store.isUserChangedFile(taskId, relativePath, repoRoot),
       activeSubagents: (sessionId) => store.activeSubagents(sessionId),
-      implementerCheck: (taskId, agentId, relativePath) => store.implementerCheck(taskId, agentId, relativePath),
+      implementerCheck: (taskId, agentId, relativePath, repoRoot) => store.implementerCheck(taskId, agentId, relativePath, repoRoot),
       agentType: (agentId) => store.agentTypeOf(agentId),
     });
   };
@@ -185,15 +202,66 @@ const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   const { store } = options;
   const sessions = options.sessions ?? new BrowserSessions();
+  // Workspaces: several repositories under one name (workspace-service.ts); routes further down.
+  const workspaces = new WorkspaceService({
+    db: store.kysely,
+    store,
+    findGitRoot,
+    realPath: realPathOfNearestExisting,
+    checkProjectRoot: (repoRoot) => checkedProjectRoot(repoRoot, options.jerryHome),
+  });
+  /**
+   * The other repositories of a multi-repository plan, checked: each is exactly a Git working tree
+   * root, a JERRY project, in the same workspace as the task's own repository, named once, and its
+   * globs stay inside it. Nothing is guessed: a plan that fails is refused with the reason.
+   */
+  const planRepositories = (ownRoot: string, document: PlanDocument | undefined): PlanRepository[] => {
+    const scopes = document?.repositoryScopes ?? [];
+    if (scopes.length === 0) return [];
+    const workspace = workspaces.workspaceOf(ownRoot);
+    if (workspace === null) throw new HttpError(400, `${ownRoot} is in no workspace; a plan covers other repositories only within a workspace (Projects → Workspaces).`);
+    const seen = new Set([comparablePath(ownRoot, ownRoot, process.platform)]);
+    const result: PlanRepository[] = [];
+    for (const scope of scopes) {
+      const real = realPathOfNearestExisting(scope.repository);
+      const root = findGitRoot(real);
+      if (root === null || comparablePath(root, root, process.platform) !== comparablePath(real, real, process.platform)) {
+        throw new HttpError(400, `${scope.repository} is not the root of a Git repository; name each repository by its root folder.`);
+      }
+      const key = comparablePath(root, root, process.platform);
+      if (seen.has(key)) throw new HttpError(400, `${scope.repository} is named twice (or is the task's own repository, whose scope is scope.include).`);
+      seen.add(key);
+      if (!store.isMonitored(root)) throw new HttpError(400, `${root} is not a JERRY project; add it to the workspace (or as a project) first.`);
+      if (!workspace.repos.some((repo) => comparablePath(repo.repoRoot, repo.repoRoot, process.platform) === key)) {
+        throw new HttpError(400, `${root} is not in the workspace ${workspace.name} of ${ownRoot}; a plan covers repositories of one workspace.`);
+      }
+      const unsafe = [...scope.include, ...scope.exclude].map(unsafeGlobReason).filter((reason): reason is string => reason !== null);
+      if (unsafe.length > 0) throw new HttpError(400, `The scope of ${root} is not valid: ${unsafe.join('; ')}.`);
+      result.push({ repoRoot: root, scope: [...scope.include], exclude: [...scope.exclude] });
+    }
+    // Changes and steps may name only the plan's repositories.
+    const roots = [ownRoot, ...result.map((repository) => repository.repoRoot)];
+    const named = [...(document?.changes ?? []).map((change) => change.repository), ...(document?.steps ?? []).map((step) => step.repository)].filter((value): value is string => value !== undefined && value.trim() !== '');
+    const unknown = [...new Set(named.filter((value) => !roots.some((root) => sameRepo(root, realPathOfNearestExisting(value)))))];
+    if (unknown.length > 0) throw new HttpError(400, `Changes or steps name repositories outside the plan: ${unknown.join(', ')}. Name one of ${roots.join(', ')}.`);
+    return result;
+  };
+
   // The skills service is built further down; the gate reads its states through this reference.
   let skillService: SkillService | null = null;
-  const evaluate = gateEvaluator(store, options.protectedRoots, (name) => skillService?.triggerStates(name) ?? null);
+  const evaluate = gateEvaluator(
+    store,
+    options.protectedRoots,
+    (name) => skillService?.triggerStates(name) ?? null,
+    (folder) => workspaces.parentFolderOf(folder),
+  );
   const profiles = options.profiles ?? new ProfileService(store);
   // Read once: a running Core serves the dashboard of its own version, even after a new build or install.
   const dashboard = loadDashboard(options.dashboardDir);
   const quality = options.quality ?? new QualityScheduler({ store, git: store.gitReader });
   const usage = options.usage ?? new UsageStore(store, options.startedAt);
   const app = Fastify({ logger: false, bodyLimit: MAX_BODY_BYTES, return503OnClosing: true });
+  app.addHook('onReady', async () => workspaces.reload());
   const origins = (): string[] => [`http://127.0.0.1:${options.port()}`, `http://localhost:${options.port()}`];
 
   app.decorateRequest('client', null);
@@ -322,7 +390,8 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     const decision = evaluate(gateRequest);
     // Outside the projects the user added only the hard rules apply, and nothing is recorded. The
     // bridge does not ask Core there; this keeps it so for any other caller.
-    if (!store.isMonitored(relevantPath(gateRequest.toolInput, gateRequest.cwd))) return decision;
+    // A modifying command in a workspace's parent folder is recorded as well (against the workspace's open tasks).
+    if (!store.isMonitored(relevantPath(gateRequest.toolInput, gateRequest.cwd)) && decision.ruleId !== 'monitor.workspace-folder-command') return decision;
     const event = buildEventEnvelope(
       {
         hook_event_name: 'PreToolUse',
@@ -348,9 +417,9 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     const target = gateRequest.toolInput['file_path'] ?? gateRequest.toolInput['notebook_path'];
     const relative =
       typeof target === 'string' && decision.repoRoot !== null ? relativeInside(absolutePath(realPathOfNearestExisting(absolutePath(target, gateRequest.cwd, process.platform)), gateRequest.cwd, process.platform), decision.repoRoot, process.platform) : null;
-    if (decision.ruleId === 'monitor.user-uncommitted-file' && decision.taskId !== null && relative !== null) store.markUserFileWarned(decision.taskId, relative);
+    if (decision.ruleId === 'monitor.user-uncommitted-file' && decision.taskId !== null && relative !== null) store.markUserFileWarned(decision.taskId, relative, decision.repoRoot ?? undefined);
     // Who edits which file: concurrent writes, and an implementer's first edit binds it to its assignment.
-    if (decision.verdict !== 'DENY' && decision.taskId !== null && relative !== null) await store.noteWrite(decision.taskId, relative, gateRequest.agentId ?? null, now);
+    if (decision.verdict !== 'DENY' && decision.taskId !== null && relative !== null) await store.noteWrite(decision.taskId, relative, gateRequest.agentId ?? null, now, decision.repoRoot ?? undefined);
     // New quality findings of the work this session does, each told once.
     const feedback = decision.verdict === 'DENY' ? null : await qualityFeedback(store, gateRequest.sessionId, now);
     const answer: GateDecision = feedback === null ? decision : { ...decision, feedback };
@@ -364,7 +433,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   app.post('/api/v1/events', { config: TOKEN_ONLY }, async (request, reply) => {
     const body = parse(eventIngestRequestSchema, request.body);
     // Events from outside the projects are not stored.
-    const events = body.events.filter((event) => isMonitoredEvent(store, event)).map((event) => withRepoRoot(evaluatePending(event, evaluate)));
+    const events = body.events.filter((event) => isMonitoredEvent(store, event, (folder) => workspaces.parentFolderOf(folder) !== null)).map((event) => withRepoRoot(evaluatePending(event, evaluate)));
     const inserted = await store.recordEvents(events, new Date(), false);
     // Edits feed the continuous quality checks; they run later, after a quiet period.
     for (const event of events) quality.observe(event);
@@ -399,7 +468,8 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     const sessionId = typeof query['sessionId'] === 'string' && query['sessionId'] !== '' ? query['sessionId'] : null;
     const repoRoot = findGitRoot(realPathOfNearestExisting(path));
     const snapshot = store.snapshot();
-    const tasks = repoRoot === null ? [] : snapshot.tasks.filter((task) => sameRepo(task.repoRoot, repoRoot));
+    // Tasks of the repository: its own and multi-repository tasks that cover it.
+    const tasks = repoRoot === null ? [] : snapshot.tasks.filter((task) => taskTouchesRepo(task, repoRoot, process.platform));
     const monitored = repoRoot !== null && store.isMonitored(repoRoot);
     const state: RepositoryState = {
       repoRoot,
@@ -409,6 +479,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
       sessionTasks: sessionId === null ? [] : (await store.tasksOfSession(sessionId)).filter((taskId) => tasks.some((task) => task.taskId === taskId)),
       preferences: { qaLanguage: store.settings().qaLanguage, reviewMode: store.effectiveReviewModeAt(repoRoot ?? realPathOfNearestExisting(path)) },
       skills: monitored ? (skillService?.triggers() ?? []) : [],
+      workspace: workspaces.workspaceOf(path),
     };
     return state;
   });
@@ -429,7 +500,9 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     const registration = parse(sessionRegistrationSchema, request.body);
     const repoRoot = findGitRoot(realPathOfNearestExisting(registration.cwd));
     // A session outside the projects is neither registered nor recorded; only hard rules apply there.
-    if (!store.isMonitored(realPathOfNearestExisting(registration.cwd))) {
+    // A workspace's common parent folder counts: the session works on the workspace's repositories.
+    const inWorkspaceFolder = repoRoot === null && workspaces.workspaceOf(registration.cwd) !== null;
+    if (!store.isMonitored(realPathOfNearestExisting(registration.cwd)) && !inWorkspaceFolder) {
       const response: SessionRegistrationResponse = { registered: true, repoRoot, excluded: true, monitored: false, approvedPlans: [], openTasks: [] };
       return response;
     }
@@ -448,6 +521,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
       monitored: true,
       approvedPlans: approvedPlans.map((plan) => ({ taskId: plan.taskId, planVersion: plan.planVersion, scope: [...plan.scope] })),
       openTasks: repoRoot === null ? [] : await openTasksFor(store, snapshot, repoRoot, registration.sessionId, new Set(approvedPlans.map((plan) => plan.taskId))),
+      workspace: workspaces.workspaceOf(registration.cwd),
     };
     // Refresh the project profile in the background, so it is ready when Claude asks for it.
     if (repoRoot !== null) setImmediate(() => void profiles.get(repoRoot, 'auto').catch(() => undefined));
@@ -492,7 +566,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
         repoRoot,
         excluded: !project,
         project,
-        openTasks: snapshot.tasks.filter((task) => sameRepo(task.repoRoot, repoRoot) && !isTerminal(task.state)).length,
+        openTasks: snapshot.tasks.filter((task) => taskTouchesRepo(task, repoRoot, process.platform) && !isTerminal(task.state)).length,
         profile: await profiles.get(repoRoot, 'cached'),
       });
     }
@@ -678,7 +752,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     const key = comparablePath(project.repoRoot, project.repoRoot, process.platform);
     const openTasks = store
       .snapshot()
-      .tasks.filter((task) => !isTerminal(task.state) && isComparableInside(comparablePath(task.repoRoot, task.repoRoot, process.platform), key))
+      .tasks.filter((task) => !isTerminal(task.state) && taskRepositoryRoots(task).some((root) => isComparableInside(comparablePath(root, root, process.platform), key)))
       .map((task) => task.taskId);
     const removed = await store.removeProject(project.repoRoot, new Date(), request.client?.kind === 'session' ? 'dashboard' : 'cli');
     const result: ProjectRemoveResult = {
@@ -687,6 +761,54 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
       warning: openTasks.length === 0 ? null : `${openTasks.join(', ')} stay open, but JERRY no longer monitors ${project.repoRoot}: edits there are not checked against their plans. Add the project again to continue them.`,
     };
     return result;
+  });
+
+  // --- Workspaces: several repositories under one name --------------------------------------------
+  // Changes are the user's: the CLI asks in a terminal; the dashboard needs CSRF and, when the
+  // decision confirmation setting is "typed" (or a confirmation is sent), the workspace's name typed.
+  const workspaceId = (request: FastifyRequest): number => {
+    const id = Number((request.params as { id: string }).id);
+    if (!Number.isInteger(id) || id <= 0) throw new HttpError(400, 'Not a workspace id');
+    return id;
+  };
+  const channelOf = (request: FastifyRequest): 'cli' | 'dashboard' => (request.client?.kind === 'session' ? 'dashboard' : 'cli');
+  const confirmName = (request: FastifyRequest, confirmation: string | undefined, name: string): void => {
+    if (request.client?.kind !== 'session') return;
+    const given = confirmation?.trim() ?? '';
+    if ((store.settings().decisionConfirmation === 'typed' || given !== '') && given.toLowerCase() !== name.trim().toLowerCase()) throw new HttpError(400, `Type the workspace name (${name}) to confirm`);
+  };
+  app.get('/api/v1/workspaces', { config: TOKEN_OR_SESSION }, async () => workspaces.list());
+  app.get('/api/v1/workspaces/:id', { config: TOKEN_OR_SESSION }, async (request) => workspaces.get(workspaceId(request)));
+  /** The Git repositories in a folder, to choose from; changes nothing. */
+  app.post('/api/v1/workspaces/scan', { config: TOKEN_OR_SESSION }, async (request) => workspaces.scan(parse(workspaceScanRequestSchema, request.body).folder));
+  app.post('/api/v1/workspaces', { config: PROJECT_ROUTES }, async (request, reply) => {
+    const body = parse(workspaceCreateRequestSchema, request.body);
+    confirmName(request, body.confirmation, body.name);
+    return reply.code(201).send(await workspaces.create(body.name, body.paths, channelOf(request)));
+  });
+  app.post('/api/v1/workspaces/:id/repos', { config: PROJECT_ROUTES }, async (request) => {
+    const id = workspaceId(request);
+    const body = parse(workspaceRepoRequestSchema, request.body);
+    confirmName(request, body.confirmation, workspaces.get(id).name);
+    return workspaces.addRepo(id, body.path, channelOf(request));
+  });
+  app.post('/api/v1/workspaces/:id/repos/remove', { config: PROJECT_ROUTES }, async (request) => {
+    const id = workspaceId(request);
+    const body = parse(workspaceRepoRequestSchema, request.body);
+    confirmName(request, body.confirmation, workspaces.get(id).name);
+    return workspaces.removeRepo(id, body.path);
+  });
+  app.post('/api/v1/workspaces/:id/rename', { config: PROJECT_ROUTES }, async (request) => {
+    const id = workspaceId(request);
+    const body = parse(workspaceRenameRequestSchema, request.body);
+    confirmName(request, body.confirmation, workspaces.get(id).name);
+    return workspaces.rename(id, body.name);
+  });
+  app.post('/api/v1/workspaces/:id/delete', { config: PROJECT_ROUTES }, async (request) => {
+    const id = workspaceId(request);
+    const body = parse(workspaceDeleteRequestSchema, request.body ?? {});
+    confirmName(request, body.confirmation, workspaces.get(id).name);
+    return workspaces.delete(id);
   });
 
   // --- Data: what JERRY stores, and deleting old data ---------------------------------------------
@@ -737,6 +859,8 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
       reports: await store.reportsOf(taskId),
       baseline: await store.taskBaseline(taskId),
     };
+    const baselines = await store.taskBaselines(taskId);
+    if (baselines !== undefined) detail.baselines = baselines;
     return detail;
   });
 
@@ -754,10 +878,14 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     const repoRoot = findGitRoot(realPathOfNearestExisting(body.repoPath));
     if (repoRoot === null) throw new HttpError(400, `${body.repoPath} is not inside a Git repository`);
     requireProject(store, repoRoot);
+    const repositories = planRepositories(repoRoot, body.document);
     const sessionId = await store.resolveOrigin(body.origin);
-    return reply
-      .code(201)
-      .send(await store.createTask({ repoRoot, title: body.title, scope: body.scope, ...(body.document === undefined ? {} : { document: body.document }), submittedBy: body.submittedBy, sessionId }, new Date()));
+    return reply.code(201).send(
+      await store.createTask(
+        { repoRoot, title: body.title, scope: body.scope, ...(body.document === undefined ? {} : { document: body.document }), ...(repositories.length === 0 ? {} : { repositories }), submittedBy: body.submittedBy, sessionId },
+        new Date(),
+      ),
+    );
   });
 
   /** Task intake before a plan: DISCOVERY with the area to analyse; nothing is approved. */
@@ -780,7 +908,10 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
       const unknown = cited.filter((id) => !known.has(id));
       if (unknown.length > 0) throw new HttpError(400, `the plan cites analysis report(s) ${unknown.join(', ')} that ${taskId} does not have`);
     }
-    return store.revisePlan(taskId, body.scope, new Date(), body.document, body.submittedBy, await store.resolveOrigin(body.origin));
+    const task = store.snapshot().tasks.find((candidate) => candidate.taskId === taskId);
+    if (task === undefined) throw new HttpError(404, `Unknown task ${taskId}`);
+    const repositories = planRepositories(task.repoRoot, body.document);
+    return store.revisePlan(taskId, body.scope, new Date(), body.document, body.submittedBy, await store.resolveOrigin(body.origin), repositories.length === 0 ? undefined : repositories);
   });
 
   /** An analyst's evidence-backed report (through MCP); Core checks its citations. */
@@ -1163,7 +1294,8 @@ async function projectSummaries(store: StateStore, projects: readonly Project[])
   const activity = await store.lastActivityByRepository();
   return projects.map((project): ProjectSummary => {
     const key = comparablePath(project.repoRoot, project.repoRoot, process.platform);
-    const tasks = snapshot.tasks.filter((task) => isComparableInside(comparablePath(task.repoRoot, task.repoRoot, process.platform), key));
+    // Its own tasks and multi-repository tasks that cover it.
+    const tasks = snapshot.tasks.filter((task) => taskRepositoryRoots(task).some((root) => isComparableInside(comparablePath(root, root, process.platform), key)));
     return {
       ...project,
       effectiveReviewMode: store.effectiveReviewModeAt(project.repoRoot),
@@ -1226,7 +1358,7 @@ async function summarize(store: StateStore, tasks: readonly Task[]): Promise<Tas
       findings: findingCounts.get(task.taskId) ?? null,
       lastTestRun: testRuns.get(task.taskId) ?? null,
       reviewRequested: reviewRequested(decision),
-      effectiveReviewMode: store.effectiveReviewModeAt(task.repoRoot),
+      effectiveReviewMode: store.effectiveReviewModeOf(task),
     });
   }
   return summaries;
@@ -1241,7 +1373,7 @@ const MAX_OPEN_TASKS = 10;
  * most recently active.
  */
 async function openTasksFor(store: StateStore, snapshot: CoreState, repoRoot: string, sessionId: string, covering: ReadonlySet<string>): Promise<OpenTask[]> {
-  const tasks = snapshot.tasks.filter((task) => sameRepo(task.repoRoot, repoRoot) && !isTerminal(task.state));
+  const tasks = snapshot.tasks.filter((task) => taskTouchesRepo(task, repoRoot, process.platform) && !isTerminal(task.state));
   if (tasks.length === 0) return [];
   const activity = await store.taskActivity();
   const mine = new Set(await store.tasksOfSession(sessionId));

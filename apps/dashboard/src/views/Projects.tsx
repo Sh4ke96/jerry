@@ -7,6 +7,7 @@ import { Emoji } from '../components/Emoji';
 import { ProjectsCard, useProjectActions } from '../components/ProjectsCard';
 import { stackText } from '../components/RepositoryProfile';
 import { StatusBadge } from '../components/StatusBadge';
+import { WorkspacesCard } from '../components/WorkspacesCard';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { formatTime } from '../format';
@@ -34,7 +35,7 @@ export function useDataUsage() {
   return { usage, load };
 }
 
-/** The projects as tiles, and the other repositories JERRY has seen, each with a way to add it. */
+/** The workspaces, the projects as tiles, and the other repositories JERRY has seen, each with a way to add it. */
 export const Projects = defineComponent({
   name: 'Projects',
   setup() {
@@ -71,6 +72,7 @@ export const Projects = defineComponent({
       const others = state.repositories.filter(notAdded);
       return (
         <div class="flex flex-col gap-4 md:gap-6">
+          <WorkspacesCard />
           <ProjectsCard usage={usage.value} />
           {others.length > 0 && (
             <Card class="other-repositories">

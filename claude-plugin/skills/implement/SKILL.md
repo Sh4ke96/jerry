@@ -15,6 +15,10 @@ line as you go and tells you about problems. The user stays in charge of approva
 - Read the plan's steps, files, tests and Definition of Done. Read `get_project_profile` for the
   project's commands and instruction files.
 - Check `git status` (read-only). The user's uncommitted changes stay as they are.
+- A plan across several repositories of a workspace: work in each repository only on that repository's
+  changes and steps, within its own scope (`repositoryScopes`). Edit files by their path in that repository,
+  and run its commands (tests, build) inside it, not in the workspace's parent folder. Check `git status` in
+  each repository.
 
 ## 2. Decide: alone or with implementers
 

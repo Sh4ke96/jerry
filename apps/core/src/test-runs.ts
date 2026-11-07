@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { EventEnvelope, TargetedTestsAnswer, Task } from '@jerry/contracts';
-import { comparablePath } from '@jerry/policy-engine';
+import { taskTouchesRepo } from '@jerry/policy-engine';
 import { exitCodeOf, isTestCommand, selectTargetedTests } from '@jerry/quality';
 import { WORK_STATES } from '@jerry/workflow';
 import type { StateStore } from './state-store.js';
@@ -52,7 +52,8 @@ async function testCommandsOf(store: StateStore, repoRoot: string): Promise<stri
 
 /** The task in implementation the session works on in this repository, if any. */
 async function workingTask(store: StateStore, sessionId: string | null, repoRoot: string): Promise<Task | null> {
-  const same = (task: Task): boolean => comparablePath(task.repoRoot, task.repoRoot, process.platform) === comparablePath(repoRoot, repoRoot, process.platform);
+  // Its own repository, or another one of its multi-repository plan.
+  const same = (task: Task): boolean => taskTouchesRepo(task, repoRoot, process.platform);
   const working = store.snapshot().tasks.filter((task) => WORK_STATES.has(task.state) && same(task));
   if (sessionId !== null) {
     const linked = new Set(await store.tasksOfSession(sessionId));

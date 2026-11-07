@@ -53,6 +53,7 @@ import {
   type TestRun,
   testRunSchema,
   type PlanDocument,
+  type PlanRepository,
   planSchema,
   type Task,
   type WorkflowActor,
@@ -74,7 +75,7 @@ import {
   type SettingsUpdateRequest,
 } from '@jerry/contracts';
 import { backupDatabase, openJerryDatabase, type JerryDatabase, type JerrySchema } from '@jerry/database';
-import { absolutePath, comparablePath, computePlanHash, computeReportHash, currentPlanDecision, decisionFor, isComparableInside, matchesAnyGlob, relativeInside } from '@jerry/policy-engine';
+import { absolutePath, comparablePath, computePlanHash, computeReportHash, currentPlanDecision, decisionFor, isComparableInside, matchesAnyGlob, relativeInside, taskRepositories, type TaskRepository } from '@jerry/policy-engine';
 import { writeFileAtomic } from '@jerry/platform';
 import { applyEvent, effectiveReviewMode, evaluateCompletion, globsOverlap, isTerminal, planLayers, resolveReviewChoice, WORK_STATES, type TransitionContext } from '@jerry/workflow';
 import { MAX_SUBAGENTS } from '@jerry/contracts/agents';
@@ -154,6 +155,38 @@ interface StoredSnapshot {
   fingerprints: Record<string, string>;
   createdAt: string;
 }
+
+/**
+ * A task seen from one of its repositories: that repository's root and scope, the same task ID.
+ * `primaryRoot` is the task's own repository; paths in another one are shown absolute.
+ */
+type RepoTask = Task & { primaryRoot: string };
+
+function repoView(task: Task, repository: TaskRepository): RepoTask {
+  return { ...task, repoRoot: repository.repoRoot, plan: { ...task.plan, scope: [...repository.scope] }, primaryRoot: task.repoRoot };
+}
+
+/** Every repository of a task as a view (the task's own first). */
+function repoViews(task: Task): RepoTask[] {
+  return taskRepositories(task).map((repository) => repoView(task, repository));
+}
+
+function isPrimary(view: Task | RepoTask): boolean {
+  return !('primaryRoot' in view) || sameRoot(view.primaryRoot, view.repoRoot);
+}
+
+/** A repo-relative path as the task shows it: relative in its own repository, absolute in another. */
+function shownPath(view: Task | RepoTask, relative: string): string {
+  return isPrimary(view) ? relative : `${view.repoRoot.replaceAll('\\', '/').replace(/\/+$/, '')}/${relative}`;
+}
+
+/** A comparable key of a repository root. */
+function rootKey(repoRoot: string): string {
+  return comparablePath(repoRoot, repoRoot, process.platform);
+}
+
+/** One reading per repository of a task. */
+type PreparedSnapshots = Array<{ view: RepoTask; prepared: PreparedSnapshot }>;
 
 /** A Git reading taken before a transaction (Git runs as a process; transactions stay short). */
 interface PreparedSnapshot {
@@ -254,7 +287,7 @@ export class StateStore {
     return { decision: matching.filter((approval) => approval.contentHash === round?.fix_plan_hash).at(-1) ?? null, state: task.state };
   }
 
-  async createTask(input: { repoRoot: string; title: string; scope: string[]; document?: PlanDocument; submittedBy?: 'user' | 'claude'; sessionId?: string | null }, now: Date): Promise<Task> {
+  async createTask(input: { repoRoot: string; title: string; scope: string[]; document?: PlanDocument; repositories?: PlanRepository[]; submittedBy?: 'user' | 'claude'; sessionId?: string | null }, now: Date): Promise<Task> {
     return this.openTask({ ...input, goal: null }, 'plan.submitted', now);
   }
 
@@ -267,7 +300,7 @@ export class StateStore {
   }
 
   private async openTask(
-    input: { repoRoot: string; title: string; scope: string[]; goal: string | null; document?: PlanDocument | undefined; submittedBy?: 'user' | 'claude' | undefined; sessionId?: string | null | undefined },
+    input: { repoRoot: string; title: string; scope: string[]; goal: string | null; document?: PlanDocument | undefined; repositories?: PlanRepository[] | undefined; submittedBy?: 'user' | 'claude' | undefined; sessionId?: string | null | undefined },
     event: 'plan.submitted' | 'task.started',
     now: Date,
   ): Promise<Task> {
@@ -280,7 +313,7 @@ export class StateStore {
       const actor = input.submittedBy ?? 'user';
       const state = validTransition(id, null, event, actor);
       await trx.insertInto('tasks').values({ task_id: id, title: input.title, repo_id: repoId, current_plan_version: 1, state, goal: input.goal, created_at: at, updated_at: at }).execute();
-      await insertPlan(trx, { taskId: id, title: input.title, repoRoot: input.repoRoot, version: 1, scope: input.scope, document: input.document, at });
+      await insertPlan(trx, { taskId: id, title: input.title, repoRoot: input.repoRoot, version: 1, scope: input.scope, document: input.document, repositories: input.repositories, at });
       await recordTransition(trx, { taskId: id, from: null, to: state, event, actor, reason: event === 'task.started' ? 'task intake: analysis first' : 'plan version 1', at });
       if (input.sessionId != null) await linkSession(trx, input.sessionId, id, event === 'task.started' ? 'analysis' : 'plan.submitted', at);
       await trx
@@ -288,7 +321,7 @@ export class StateStore {
         .values({ key: NEXT_TASK_NUMBER, value_json: JSON.stringify(number + 1), created_at: at, updated_at: at })
         .onConflict((conflict) => conflict.column('key').doUpdateSet({ value_json: JSON.stringify(number + 1), updated_at: at }))
         .execute();
-      const details = event === 'task.started' ? { repoRoot: input.repoRoot, focus: input.scope, goal: input.goal } : { repoRoot: input.repoRoot, scope: input.scope, withDocument: input.document !== undefined };
+      const details = event === 'task.started' ? { repoRoot: input.repoRoot, focus: input.scope, goal: input.goal } : { repoRoot: input.repoRoot, scope: input.scope, withDocument: input.document !== undefined, ...(input.repositories === undefined || input.repositories.length === 0 ? {} : { repositories: input.repositories.map((repository) => repository.repoRoot) }) };
       await audit(trx, at, event === 'task.started' ? 'task.intake' : 'task.create', id, details, actorOf(input.submittedBy));
       return id;
     });
@@ -297,7 +330,7 @@ export class StateStore {
   }
 
   /** Creates the next plan version. Earlier versions and their approvals stay in history but no longer match. */
-  async revisePlan(taskId: string, scope: string[], now: Date, document?: PlanDocument, submittedBy: 'user' | 'claude' = 'user', sessionId: string | null = null): Promise<Task> {
+  async revisePlan(taskId: string, scope: string[], now: Date, document?: PlanDocument, submittedBy: 'user' | 'claude' = 'user', sessionId: string | null = null, repositories?: PlanRepository[]): Promise<Task> {
     const task = this.requireTask(taskId);
     const at = now.toISOString();
     const version = task.plan.version + 1;
@@ -306,9 +339,9 @@ export class StateStore {
       if (task.state === 'PARALLEL_ANALYSIS') await this.transition(trx, taskId, 'analysis.completed', 'core', `plan version ${version} submitted`, at);
       await this.transition(trx, taskId, 'plan.revised', submittedBy, `plan version ${version}`, at);
       if (sessionId !== null) await linkSession(trx, sessionId, taskId, 'plan.revised', at);
-      await insertPlan(trx, { taskId, title: task.title, repoRoot: task.repoRoot, version, scope, document, at });
+      await insertPlan(trx, { taskId, title: task.title, repoRoot: task.repoRoot, version, scope, document, repositories, at });
       await trx.updateTable('tasks').set({ current_plan_version: version, updated_at: at }).where('task_id', '=', taskId).execute();
-      await audit(trx, at, 'plan.revise', taskId, { version, scope, withDocument: document !== undefined }, actorOf(submittedBy));
+      await audit(trx, at, 'plan.revise', taskId, { version, scope, withDocument: document !== undefined, ...(repositories === undefined || repositories.length === 0 ? {} : { repositories: repositories.map((repository) => repository.repoRoot) }) }, actorOf(submittedBy));
     });
     await this.reload();
     return this.requireTask(taskId);
@@ -329,12 +362,12 @@ export class StateStore {
     // Review is the user's choice at acceptance, within the review mode of the task's project.
     let review: boolean | null = null;
     if (accepting) {
-      const choice = resolveReviewChoice(this.effectiveReviewModeAt(task.repoRoot), request.review);
+      const choice = resolveReviewChoice(this.effectiveReviewModeOf(task), request.review);
       if (!choice.ok) throw new StateError(400, choice.reason);
       review = choice.review;
     }
     // Without review the final checks run at once and compare the repository with the report's snapshot.
-    const gitNow = approvingPlan ? await this.prepareSnapshot(task, 'plan.approved') : review === false ? await this.prepareSnapshot(task, 'report') : null;
+    const gitNow = approvingPlan ? await this.prepareSnapshots(task, 'plan.approved') : review === false ? await this.prepareSnapshots(task, 'report') : null;
     // The first review round covers every file changed since the plan was approved.
     const toReview = review === true ? await this.changesSincePlanApproval(task) : [];
     const record = await this.database.db.transaction().execute(async (trx) => {
@@ -348,6 +381,19 @@ export class StateStore {
       if (subject === null) throw new StateError(409, request.stage === 'REVIEW_FIX' ? `${taskId} has no fix plan to decide on` : `${taskId} has no implementation report to decide on`);
       if (request.version !== subject.version) {
         throw new StateError(409, `${taskId} ${label} is at version ${subject.version}; refusing a decision for version ${request.version}`);
+      }
+      // The plan is read again inside the transaction: a revision submitted meanwhile is not what the
+      // user saw, so the decision must not bind to it.
+      if (request.stage === 'PLAN') {
+        const stored = await trx
+          .selectFrom('tasks')
+          .innerJoin('plans', (join) => join.onRef('plans.task_id', '=', 'tasks.task_id').onRef('plans.version', '=', 'tasks.current_plan_version'))
+          .select(['plans.version', 'plans.content_hash'])
+          .where('tasks.task_id', '=', taskId)
+          .executeTakeFirst();
+        if (stored === undefined || stored.version !== subject.version || stored.content_hash !== subject.contentHash) {
+          throw new StateError(409, `${taskId} plan changed while the decision was being recorded (now version ${stored?.version ?? '?'}); decide on the current version`);
+        }
       }
       const record: ApprovalRecord = {
         approvalId: `apr_${randomUUID()}`,
@@ -383,7 +429,7 @@ export class StateStore {
         })
         .execute();
       await audit(trx, at, `approval.${record.decision.toLowerCase()}`, taskId, { stage: record.stage, version: record.version, contentHash: record.contentHash, channel, ...(review === null ? {} : { review }) });
-      if (event === 'plan.approved' && gitNow !== null) await insertSnapshot(trx, task, 'plan.approved', gitNow, at);
+      if (event === 'plan.approved' && gitNow !== null) await insertSnapshots(trx, gitNow, 'plan.approved', at);
       // Accepting the implementation with review starts the independent review, whose end runs the
       // final checks; without review the final checks run now.
       if (event === 'implementation.accepted' && review === true) {
@@ -409,7 +455,7 @@ export class StateStore {
         const dirty = [...new Set([...snapshot.staged, ...snapshot.unstaged, ...snapshot.untracked])];
         return { snapshot, error: null, fingerprints: fingerprintFiles(task.repoRoot, dirty), changed: dirty };
       }
-      const baseline = await latestSnapshot(this.database.db, task.taskId, 'plan.approved');
+      const baseline = await latestSnapshot(this.database.db, task.taskId, 'plan.approved', task.repoRoot);
       const changed = await this.git.changedSince(task.repoRoot, baseline?.head ?? snapshot.head);
       return { snapshot, error: null, fingerprints: fingerprintFiles(task.repoRoot, changed), changed };
     } catch (error) {
@@ -417,26 +463,66 @@ export class StateStore {
     }
   }
 
+  /** One Git reading per repository of the task (its own first), in parallel. */
+  private async prepareSnapshots(task: Task, kind: SnapshotKind): Promise<PreparedSnapshots> {
+    return Promise.all(repoViews(task).map(async (view) => ({ view, prepared: await this.prepareSnapshot(view, kind) })));
+  }
+
   /**
    * True when a file had the user's uncommitted changes when the task's plan was approved and
-   * Claude has not been warned about it yet. Pure lookup: previews do not use it up.
+   * Claude has not been warned about it yet. Pure lookup: previews do not use it up. The file is
+   * relative to `repoRoot` (the task's own repository when absent): the same path in two
+   * repositories is two files.
    */
-  isUserChangedFile(taskId: string, relativePath: string): boolean {
+  isUserChangedFile(taskId: string, relativePath: string, repoRoot?: string): boolean {
+    const repo = this.dirtyKey(taskId, repoRoot);
+    if (repo === null) return false;
     const key = fileKey(relativePath);
-    return this.userDirty.get(taskId)?.has(key) === true && !this.userFileWarnings.has(`${taskId}|${key}`);
+    return this.userDirty.get(repo)?.has(key) === true && !this.userFileWarnings.has(`${repo}|${key}`);
   }
 
   /** Called once the warning was recorded for a real edit. */
-  markUserFileWarned(taskId: string, relativePath: string): void {
-    this.userFileWarnings.add(`${taskId}|${fileKey(relativePath)}`);
+  markUserFileWarned(taskId: string, relativePath: string, repoRoot?: string): void {
+    const repo = this.dirtyKey(taskId, repoRoot);
+    if (repo !== null) this.userFileWarnings.add(`${repo}|${fileKey(relativePath)}`);
+  }
+
+  private dirtyKey(taskId: string, repoRoot: string | undefined): string | null {
+    const task = this.state.tasks.find((candidate) => candidate.taskId === taskId);
+    if (task === undefined) return null;
+    return `${taskId}|${rootKey(repoRoot ?? task.repoRoot)}`;
+  }
+
+  /** The review mode of a task: the strictest of its repositories' (a multi-repository task is reviewed if any requires it). */
+  effectiveReviewModeOf(task: Task): ReviewMode {
+    const modes = taskRepositories(task).map((repository) => this.effectiveReviewModeAt(repository.repoRoot));
+    return modes.includes('required') ? 'required' : (modes[0] ?? DEFAULT_REVIEW_MODE);
   }
 
   /** The Git baseline of the task's latest plan approval, as task details show it. */
   async taskBaseline(taskId: string): Promise<TaskDetail['baseline']> {
-    const row = await this.database.db.selectFrom('git_snapshots').selectAll().where('task_id', '=', taskId).where('kind', '=', 'plan.approved').orderBy('id', 'desc').limit(1).executeTakeFirst();
+    const task = this.requireTask(taskId);
+    const row = await this.baselineRow(taskId, task.repoRoot);
     if (row === undefined) return null;
-    const userFiles = [...new Set([...(JSON.parse(row.staged_json) as string[]), ...(JSON.parse(row.unstaged_json) as string[]), ...(JSON.parse(row.untracked_json) as string[])])].sort();
-    return { at: row.created_at, head: row.head, branch: row.branch, upstream: row.upstream, remoteUrl: row.remote_url, userFiles, truncated: row.truncated === 1, error: row.error };
+    return { at: row.created_at, head: row.head, branch: row.branch, upstream: row.upstream, remoteUrl: row.remote_url, userFiles: userFilesOf(row), truncated: row.truncated === 1, error: row.error };
+  }
+
+  /** The baselines of the other repositories of a multi-repository task; undefined for one repository. */
+  async taskBaselines(taskId: string): Promise<TaskDetail['baselines']> {
+    const task = this.requireTask(taskId);
+    const others = taskRepositories(task).filter((repository) => !repository.primary);
+    if (others.length === 0) return undefined;
+    const result: NonNullable<TaskDetail['baselines']> = [];
+    for (const repository of others) {
+      const row = await this.baselineRow(taskId, repository.repoRoot);
+      if (row !== undefined) result.push({ repoRoot: repository.repoRoot, at: row.created_at, head: row.head, branch: row.branch, userFiles: userFilesOf(row), truncated: row.truncated === 1, error: row.error });
+    }
+    return result;
+  }
+
+  private async baselineRow(taskId: string, repoRoot: string): Promise<Selectable<JerrySchema['git_snapshots']> | undefined> {
+    const rows = await this.database.db.selectFrom('git_snapshots').selectAll().where('task_id', '=', taskId).where('kind', '=', 'plan.approved').orderBy('id', 'desc').execute();
+    return rows.find((row) => sameRoot(row.repo_root, repoRoot));
   }
 
   /** What changed in the repository since the task's last checkpoint, if one was taken. */
@@ -445,17 +531,24 @@ export class StateStore {
    * files that were already changed then and have not changed since are left out.
    */
   async changesSincePlanApproval(task: Task): Promise<string[]> {
-    const now = await this.prepareSnapshot(task, 'report');
-    const baseline = await latestSnapshot(this.database.db, task.taskId, 'plan.approved');
-    const userAtBaseline = baseline?.fingerprints ?? {};
-    return now.changed
-      .filter((file) => !(file in userAtBaseline) || userAtBaseline[file] !== now.fingerprints[file])
-      .filter((file) => matchesAnyGlob(file, task.plan.scope, process.platform === 'win32'))
-      .sort();
+    const changed: string[] = [];
+    // Every repository of the task, each against its own scope; another repository's files are shown absolute.
+    for (const { view, prepared: now } of await this.prepareSnapshots(task, 'report')) {
+      const baseline = await latestSnapshot(this.database.db, task.taskId, 'plan.approved', view.repoRoot);
+      const userAtBaseline = baseline?.fingerprints ?? {};
+      changed.push(
+        ...now.changed
+          .filter((file) => !(file in userAtBaseline) || userAtBaseline[file] !== now.fingerprints[file])
+          .filter((file) => matchesAnyGlob(file, view.plan.scope, process.platform === 'win32'))
+          .sort()
+          .map((file) => shownPath(view, file)),
+      );
+    }
+    return changed;
   }
 
   async changesSinceCheckpoint(task: Task, budgetMs = 700): Promise<{ headBefore: string | null; headNow: string | null; changedFiles: number } | null> {
-    const checkpoint = await latestSnapshot(this.database.db, task.taskId, 'checkpoint');
+    const checkpoint = await latestSnapshot(this.database.db, task.taskId, 'checkpoint', task.repoRoot);
     if (checkpoint === null) return null;
     const now = await Promise.race([this.prepareSnapshot(task, 'checkpoint'), new Promise<null>((resolve) => setTimeout(() => resolve(null), budgetMs))]);
     if (now === null || now.snapshot === null) return null;
@@ -468,7 +561,7 @@ export class StateStore {
    * The DONE validator: Core gathers the facts, records the result, and sets DONE only
    * when every blocking condition passed. No model and no API call can set DONE otherwise.
    */
-  private async runFinalChecks(trx: Transaction<JerrySchema>, task: Task, at: string, gitNow: PreparedSnapshot | null): Promise<CompletionCheck> {
+  private async runFinalChecks(trx: Transaction<JerrySchema>, task: Task, at: string, gitNow: PreparedSnapshots | null): Promise<CompletionCheck> {
     const reportRow = await trx.selectFrom('implementation_reports').selectAll().where('task_id', '=', task.taskId).orderBy('version', 'desc').limit(1).executeTakeFirst();
     const report = reportRow === undefined ? null : reportFromRow(reportRow);
     // The review: approved fixes after the report are legitimate, so edits count
@@ -479,13 +572,25 @@ export class StateStore {
     // made between the user's approval of a fix plan and the fixes report are the approved fixes;
     // the re-review covered them. Everything else after the report still counts.
     const fixWindows = rounds.filter((round) => round.fixes_approved_at !== null).map((round) => ({ from: round.fixes_approved_at!, until: round.fixes_reported_at ?? at }));
-    const hookEdits = report === null ? [] : await fileEditsInScopeBetween(trx, task, report.createdAt, at, fixWindows);
     const lastFixes = rounds.map((round) => round.fixes_reported_at).filter((value): value is string => value !== null).sort().at(-1) ?? null;
-    const reviewSnapshot = lastFixes === null ? null : await latestSnapshot(trx, task.taskId, 'review');
-    const baselineSnapshot = reviewSnapshot !== null && reviewSnapshot.createdAt >= lastFixes! ? reviewSnapshot : await latestSnapshot(trx, task.taskId, 'report');
-    const gitEdits = report === null || baselineSnapshot === null || gitNow === null || gitNow.snapshot === null ? [] : changedInScope(task, baselineSnapshot.fingerprints, gitNow.fingerprints);
-    // Later approved work of other tasks on the same files does not hold this task back.
-    const { remaining, laterWork } = await attributeEditsSinceReport(trx, task, hookEdits, gitEdits);
+    // Every repository of the task, each with its own scope and snapshots; another repository's files
+    // are shown absolute.
+    const remaining: string[] = [];
+    const laterByTask = new Map<string, string[]>();
+    const unreadable: string[] = [];
+    for (const view of repoViews(task)) {
+      const now = gitNow?.find((entry) => sameRoot(entry.view.repoRoot, view.repoRoot))?.prepared ?? null;
+      if (!isPrimary(view) && now !== null && now.snapshot === null) unreadable.push(`${view.repoRoot}: ${now.error ?? 'Git could not be read'}`);
+      const hookEdits = report === null ? [] : await fileEditsInScopeBetween(trx, view, report.createdAt, at, fixWindows);
+      const reviewSnapshot = lastFixes === null ? null : await latestSnapshot(trx, task.taskId, 'review', view.repoRoot);
+      const baselineSnapshot = reviewSnapshot !== null && reviewSnapshot.createdAt >= lastFixes! ? reviewSnapshot : await latestSnapshot(trx, task.taskId, 'report', view.repoRoot);
+      const gitEdits = report === null || baselineSnapshot === null || now === null || now.snapshot === null ? [] : changedInScope(view, baselineSnapshot.fingerprints, now.fingerprints);
+      // Later approved work of other tasks on the same files does not hold this task back.
+      const attributed = await attributeEditsSinceReport(trx, view, hookEdits, gitEdits);
+      remaining.push(...attributed.remaining.map((file) => shownPath(view, file)));
+      for (const work of attributed.laterWork) laterByTask.set(work.taskId, [...(laterByTask.get(work.taskId) ?? []), ...work.files.map((file) => shownPath(view, file))]);
+    }
+    const laterWork: LaterWork[] = [...laterByTask].sort(([a], [b]) => a.localeCompare(b)).map(([taskId, files]) => ({ taskId, files }));
     const decisions = await trx.selectFrom('approvals').selectAll().where('task_id', '=', task.taskId).orderBy('approved_at').orderBy(sql`rowid`).execute();
     const approvals = decisions.map(approvalFromRow);
     const acceptance = report === null ? null : decisionFor(approvals, { taskId: task.taskId, stage: 'IMPLEMENTATION', version: report.version, contentHash: report.contentHash });
@@ -517,7 +622,19 @@ export class StateStore {
       definitionOfDone: task.plan.document?.definitionOfDone ?? [],
       ...(review === undefined ? {} : { review }),
     });
-    const check: CompletionCheck = { taskId: task.taskId, reportVersion: report?.version ?? null, at, passed: result.passed, conditions: result.conditions, definitionOfDone: task.plan.document?.definitionOfDone ?? [], laterWork };
+    // A multi-repository task: each of its repositories must still be readable, or JERRY cannot tell
+    // what changed there.
+    const conditions = [...result.conditions];
+    if (taskRepositories(task).length > 1 && gitNow !== null) {
+      conditions.push({
+        id: 'repositories.readable',
+        blocking: true,
+        passed: unreadable.length === 0,
+        detail: unreadable.length === 0 ? 'every repository of the task could be read' : `repositories JERRY could not read: ${unreadable.join('; ')}`,
+      });
+    }
+    const passed = result.passed && unreadable.length === 0;
+    const check: CompletionCheck = { taskId: task.taskId, reportVersion: report?.version ?? null, at, passed, conditions, definitionOfDone: task.plan.document?.definitionOfDone ?? [], laterWork };
     await trx
       .insertInto('task_completion_checks')
       .values({ task_id: task.taskId, report_version: check.reportVersion, passed: check.passed ? 1 : 0, conditions_json: JSON.stringify(check.conditions), definition_of_done_json: JSON.stringify(check.definitionOfDone), created_at: at })
@@ -547,7 +664,7 @@ export class StateStore {
   async rerunFinalChecks(taskId: string, now: Date, channel: Channel): Promise<{ check: CompletionCheck; state: WorkflowState }> {
     const task = this.requireTask(taskId);
     if (task.state !== 'FINAL_REPORT') throw new StateError(409, `${taskId} is ${task.state}; final checks can be re-run only while the task is waiting in FINAL_REPORT`);
-    const gitNow = await this.prepareSnapshot(task, 'report');
+    const gitNow = await this.prepareSnapshots(task, 'report');
     const at = now.toISOString();
     const check = await this.database.db.transaction().execute(async (trx) => {
       // The state is read again inside the transaction: a concurrent request may have moved the task on.
@@ -567,15 +684,20 @@ export class StateStore {
   async submitReport(taskId: string, document: ImplementationReport, submittedBy: 'user' | 'claude', sessionId: string | null, now: Date): Promise<ImplementationReportRecord> {
     const task = this.requireTask(taskId);
     const at = now.toISOString();
-    const gitNow = await this.prepareSnapshot(task, 'report');
+    // A change names its repository only when it is another one of the task's.
+    const roots = taskRepositories(task).map((repository) => repository.repoRoot);
+    const unknown = [...new Set(document.changes.map((change) => change.repository.trim()).filter((repository) => repository !== '' && !roots.some((root) => sameRoot(root, repository))))];
+    if (unknown.length > 0) {
+      throw new StateError(400, `The report names repositories that are not part of ${taskId}'s plan: ${unknown.join(', ')}. Use one of ${roots.join(', ')}, or leave repository empty for ${task.repoRoot}.`);
+    }
+    const gitNow = await this.prepareSnapshots(task, 'report');
     const quality = await this.qualityEvidence(task, document);
     const record = await this.database.db.transaction().execute(async (trx) => {
       const previous = await latestReportSubject(trx, taskId);
       const version = (previous?.version ?? 0) + 1;
       await this.transition(trx, taskId, 'report.submitted', submittedBy, `implementation report version ${version}`, at);
-      const baseline = await latestSnapshot(trx, taskId, 'plan.approved');
-      const evidence = { ...(await collectEvidence(trx, task, document, at, gitEvidence(baseline, gitNow))), quality };
-      await insertSnapshot(trx, task, 'report', gitNow, at);
+      const evidence = { ...(await evidenceOfRepositories(trx, gitNow, document, at)), quality };
+      await insertSnapshots(trx, gitNow, 'report', at);
       const record: ImplementationReportRecord = {
         taskId,
         version,
@@ -995,7 +1117,9 @@ export class StateStore {
    *   - an implementer edits outside its assignment, or a file assigned to another implementer.
    * Warnings only. `agentId` is null for the main session.
    */
-  implementerCheck(taskId: string, agentId: string | null, file: string): { ruleId: string; reason: string } | null {
+  implementerCheck(taskId: string, agentId: string | null, relative: string, repoRoot?: string): { ruleId: string; reason: string } | null {
+    // In another repository of the task the file is named absolute, as plans and assignments name it there.
+    const file = this.taskFile(taskId, relative, repoRoot);
     const key = `${taskId}|${fileKey(file)}`;
     const writer = this.recentWriters.get(key);
     if (writer !== undefined && writer.agentId !== agentId && this.isAgentActive(writer.agentId)) {
@@ -1017,8 +1141,9 @@ export class StateStore {
   }
 
   /** After a real edit: remember the writer, and bind an implementer to its assignment by its first edit. */
-  async noteWrite(taskId: string, file: string, agentId: string | null, now: Date): Promise<void> {
+  async noteWrite(taskId: string, relative: string, agentId: string | null, now: Date, repoRoot?: string): Promise<void> {
     if (agentId === null) return;
+    const file = this.taskFile(taskId, relative, repoRoot);
     this.recentWriters.set(`${taskId}|${fileKey(file)}`, { agentId, at: now.getTime() });
     if (!(this.agentTypeOf(agentId) ?? '').includes('jerry-implementer')) return;
     const assignments = this.assignments.get(taskId) ?? [];
@@ -1029,6 +1154,13 @@ export class StateStore {
     const chosen = candidates[0]!;
     chosen.agentId = agentId;
     await this.database.db.updateTable('implementer_assignments').set({ agent_id: agentId }).where('task_id', '=', taskId).where('label', '=', chosen.label).where('released_at', 'is', null).execute();
+  }
+
+  /** A file of a task as the task names it: relative in its own repository, absolute in another one. */
+  private taskFile(taskId: string, relative: string, repoRoot: string | undefined): string {
+    const task = this.state.tasks.find((candidate) => candidate.taskId === taskId);
+    if (task === undefined || repoRoot === undefined || sameRoot(repoRoot, task.repoRoot)) return relative;
+    return shownPath({ ...task, repoRoot, primaryRoot: task.repoRoot }, relative);
   }
 
   /** Where the work strays from the plan: files no step names, steps not started. */
@@ -1127,15 +1259,17 @@ export class StateStore {
     const submitted = new Set((await this.database.db.selectFrom('review_submissions').select('role').where('task_id', '=', taskId).where('round', '=', round.round).execute()).map((row) => row.role));
     submitted.add(review.role);
     const completes = REVIEWER_ROLES.every((role) => submitted.has(role));
-    const gitNow = completes ? await this.prepareSnapshot(task, 'report') : null;
+    const gitNow = completes ? await this.prepareSnapshots(task, 'report') : null;
     const independence = this.independenceOf(task, agentId);
     await this.database.db.transaction().execute(async (trx) => {
       // A resubmission of a role in the same round replaces the earlier one.
       await trx.deleteFrom('review_finding_sources').where('task_id', '=', taskId).where('round', '=', round.round).where('role', '=', review.role).execute();
       await trx.deleteFrom('review_submissions').where('task_id', '=', taskId).where('round', '=', round.round).where('role', '=', review.role).execute();
       for (const finding of review.findings) {
-        const file = repoRelative(task, finding.file);
-        const fingerprint = createHash('sha256').update(`${fileKey(file)}\n${finding.title.trim().toLowerCase().replace(/\s+/g, ' ')}`, 'utf8').digest('hex').slice(0, 16);
+        // A file in another repository of the task is stored relative to that repository.
+        const located = locateFile(task, finding.file);
+        const file = located.relative;
+        const fingerprint = createHash('sha256').update(`${fileKey(located.shown)}\n${finding.title.trim().toLowerCase().replace(/\s+/g, ' ')}`, 'utf8').digest('hex').slice(0, 16);
         const existing = await trx.selectFrom('findings').selectAll().where('task_id', '=', taskId).where('rule_id', '=', 'review').where('file', '=', file).where('fingerprint', '=', fingerprint).executeTakeFirst();
         let findingId: number;
         if (existing === undefined) {
@@ -1143,7 +1277,7 @@ export class StateStore {
             .insertInto('findings')
             .values({
               task_id: taskId,
-              repo_root: task.repoRoot,
+              repo_root: located.repoRoot,
               file,
               rule_id: 'review',
               rule_version: '1',
@@ -1217,7 +1351,7 @@ export class StateStore {
     const roles = (await this.database.db.selectFrom('review_submissions').select('role').where('task_id', '=', taskId).where('round', '=', round.round).execute()).map((row) => row.role);
     if (roles.length === 0) throw new StateError(409, `No reviewer reported in round ${round.round} yet; start the reviewers first`);
     const missing = REVIEWER_ROLES.filter((role) => !roles.includes(role));
-    const gitNow = await this.prepareSnapshot(task, 'report');
+    const gitNow = await this.prepareSnapshots(task, 'report');
     const at = now.toISOString();
     await this.database.db.transaction().execute(async (trx) => {
       await this.completeRound(trx, task, round.round, 'claude', `closed by Claude without ${missing.join(', ') || 'no one'}`, at, gitNow);
@@ -1230,7 +1364,7 @@ export class StateStore {
    * Ends a round: earlier review findings no reviewer reported again (in files this round covered)
    * are FIXED; with no open P1–P3 review finding left the review passes and the final checks run.
    */
-  private async completeRound(trx: Transaction<JerrySchema>, task: Task, round: number, actor: 'core' | 'claude', reason: string, at: string, gitNow: PreparedSnapshot | null): Promise<void> {
+  private async completeRound(trx: Transaction<JerrySchema>, task: Task, round: number, actor: 'core' | 'claude', reason: string, at: string, gitNow: PreparedSnapshots | null): Promise<void> {
     const covered = new Set<string>();
     const roundRow = await trx.selectFrom('review_rounds').selectAll().where('task_id', '=', task.taskId).where('round', '=', round).executeTakeFirstOrThrow();
     for (const file of JSON.parse(roundRow.changed_files_json) as string[]) covered.add(fileKey(file));
@@ -1241,7 +1375,8 @@ export class StateStore {
       const reported = new Set((await trx.selectFrom('review_finding_sources').select('finding_id').where('task_id', '=', task.taskId).where('round', '=', round).execute()).map((row) => row.finding_id));
       const open = await trx.selectFrom('findings').selectAll().where('task_id', '=', task.taskId).where('source', '=', 'review').where('status', 'in', ['OPEN', 'ACCEPTED']).execute();
       for (const finding of open) {
-        if (reported.has(finding.id) || !covered.has(fileKey(finding.file))) continue;
+        const shown = sameRoot(finding.repo_root, task.repoRoot) ? finding.file : shownPath({ ...task, repoRoot: finding.repo_root, primaryRoot: task.repoRoot }, finding.file);
+        if (reported.has(finding.id) || !covered.has(fileKey(shown))) continue;
         const why = `not reported again in review round ${round}`;
         await trx.updateTable('findings').set({ status: 'FIXED', status_reason: why, updated_at: at }).where('id', '=', finding.id).execute();
         await insertFindingEvent(trx, finding.id, findingStatusSchema.parse(finding.status), 'FIXED', 'core', why, at);
@@ -1249,7 +1384,7 @@ export class StateStore {
     }
     await trx.updateTable('review_rounds').set({ completed_at: at, completed_by: actor }).where('id', '=', roundRow.id).execute();
     await this.transition(trx, task.taskId, 'review.reported', actor, `review round ${round}: ${reason}`, at);
-    if (gitNow !== null) await insertSnapshot(trx, task, 'review', gitNow, at);
+    if (gitNow !== null) await insertSnapshots(trx, gitNow, 'review', at);
     const blocking = await trx.selectFrom('findings').select('id').where('task_id', '=', task.taskId).where('source', '=', 'review').where('status', 'in', ['OPEN', 'ACCEPTED']).where('severity', 'in', ['P1', 'P2', 'P3']).execute();
     if (blocking.length === 0) {
       await trx.updateTable('review_rounds').set({ passed_at: at }).where('id', '=', roundRow.id).execute();
@@ -1269,7 +1404,7 @@ export class StateStore {
     const cited = [...plan.items.flatMap((item) => item.findings), ...plan.notFixed.map((entry) => entry.finding)];
     const unknown = cited.filter((id) => !reviewFindings.has(id));
     if (unknown.length > 0) throw new StateError(400, `The fix plan cites findings that are not open review findings of ${taskId}: ${unknown.join(', ')}`);
-    const outside = plan.items.flatMap((item) => item.files).filter((file) => !matchesAnyGlob(file.replaceAll('\\', '/'), task.plan.scope, process.platform === 'win32'));
+    const outside = plan.items.flatMap((item) => item.files).filter((file) => !inTaskScope(task, file));
     if (outside.length > 0) throw new StateError(400, `The fix plan touches files outside the approved scope: ${outside.join(', ')}; revise the plan with the user first`);
     const at = now.toISOString();
     const hash = `sha256:${createHash('sha256').update(JSON.stringify({ taskId, round: round.round, plan }), 'utf8').digest('hex')}`;
@@ -1306,14 +1441,14 @@ export class StateStore {
   /** The user waives the (rest of the) review with a reason; the final checks run. */
   async skipReview(taskId: string, reason: string, now: Date, channel: Channel): Promise<ReviewState> {
     const task = this.requireTask(taskId);
-    const gitNow = await this.prepareSnapshot(task, 'report');
+    const gitNow = await this.prepareSnapshots(task, 'report');
     const at = now.toISOString();
     await this.database.db.transaction().execute(async (trx) => {
       await this.transition(trx, taskId, 'review.skipped', 'user', reason, at);
       const round = await trx.selectFrom('review_rounds').select('id').where('task_id', '=', taskId).orderBy('round', 'desc').limit(1).executeTakeFirst();
       if (round !== undefined) await trx.updateTable('review_rounds').set({ skipped_at: at, skip_reason: reason }).where('id', '=', round.id).execute();
       else await trx.insertInto('review_rounds').values({ task_id: taskId, round: 1, started_at: at, changed_files_json: '[]', skipped_at: at, skip_reason: reason }).execute();
-      await insertSnapshot(trx, task, 'review', gitNow, at);
+      await insertSnapshots(trx, gitNow, 'review', at);
       await audit(trx, at, 'review.skip', taskId, { reason, channel });
       await this.runFinalChecks(trx, task, at, gitNow);
     });
@@ -1452,8 +1587,16 @@ export class StateStore {
   async planVersions(taskId: string): Promise<Plan[]> {
     this.requireTask(taskId);
     const rows = await this.database.db.selectFrom('plans').selectAll().where('task_id', '=', taskId).orderBy('version').execute();
+    const repositories = await planRepositoriesOf(this.database.db, [taskId]);
     return rows.map((row) =>
-      planSchema.parse({ version: row.version, contentHash: row.content_hash, scope: JSON.parse(row.scope_json), createdAt: row.created_at, ...(row.document_json === null ? {} : { document: JSON.parse(row.document_json) }) }),
+      planSchema.parse({
+        version: row.version,
+        contentHash: row.content_hash,
+        scope: JSON.parse(row.scope_json),
+        createdAt: row.created_at,
+        ...(row.document_json === null ? {} : { document: JSON.parse(row.document_json) }),
+        ...(repositories.has(`${taskId}|${row.version}`) ? { repositories: repositories.get(`${taskId}|${row.version}`) } : {}),
+      }),
     );
   }
 
@@ -1682,7 +1825,20 @@ export class StateStore {
    */
   writeProjectsFile(): void {
     if (this.projectsFile === null) return;
-    writeFileAtomic(this.projectsFile, `${JSON.stringify({ version: 1, roots: this.projectList.map((project) => project.repoRoot) }, null, 2)}\n`);
+    // The workspaces' common parent folders too: the bridge then asks Core about a session started
+    // there (Core still monitors only the projects; the folder itself is no project).
+    const roots = [...this.projectList.map((project) => project.repoRoot), ...this.workspaceFolders];
+    writeFileAtomic(this.projectsFile, `${JSON.stringify({ version: 1, roots }, null, 2)}\n`);
+  }
+
+  private workspaceFolders: string[] = [];
+
+  /** The common parent folders of the workspaces (WorkspaceService keeps them current). */
+  setWorkspaceFolders(folders: readonly string[]): void {
+    const next = [...new Set(folders)].sort();
+    if (next.join('\n') === this.workspaceFolders.join('\n')) return;
+    this.workspaceFolders = next;
+    this.writeProjectsFile();
   }
 
   /** Latest activity per repository root (comparable key): sessions seen there and task activity. */
@@ -1921,6 +2077,7 @@ export class StateStore {
       .orderBy('tasks.task_id')
       .execute();
     const approvals = await db.selectFrom('approvals').selectAll().orderBy('approved_at').orderBy(sql`rowid`).execute();
+    const planRepositories = await planRepositoriesOf(db);
     const sessions = await db.selectFrom('sessions').selectAll().orderBy('last_seen_at', 'desc').limit(SNAPSHOT_SESSIONS).execute();
     const excluded = await db.selectFrom('repositories').select(['root_path', 'excluded_at']).where('excluded_at', 'is not', null).execute();
     const sessionTotal = await db.selectFrom('sessions').select((eb) => eb.fn.countAll<number>().as('count')).executeTakeFirstOrThrow();
@@ -1952,7 +2109,14 @@ export class StateStore {
         createdAt: row.created_at,
         state: row.state,
         ...(row.goal === null ? {} : { goal: row.goal }),
-        plan: { version: row.version, contentHash: row.content_hash, scope: JSON.parse(row.scope_json), createdAt: row.plan_created_at, ...(row.document_json === null ? {} : { document: JSON.parse(row.document_json) }) },
+        plan: {
+          version: row.version,
+          contentHash: row.content_hash,
+          scope: JSON.parse(row.scope_json),
+          createdAt: row.plan_created_at,
+          ...(row.document_json === null ? {} : { document: JSON.parse(row.document_json) }),
+          ...(planRepositories.has(`${row.task_id}|${row.version}`) ? { repositories: planRepositories.get(`${row.task_id}|${row.version}`) } : {}),
+        },
       })),
       approvals: approvals.map(approvalFromRow),
       sessions: sessions.reverse().map((row) => ({ sessionId: row.session_id, cwd: row.cwd, source: row.source, firstSeenAt: row.first_seen_at, lastSeenAt: row.last_seen_at })),
@@ -1960,11 +2124,13 @@ export class StateStore {
     });
     this.sessionTotal = Number(sessionTotal.count);
 
-    // The user's uncommitted files at each open task's latest plan approval.
+    // The user's uncommitted files at each open task's latest plan approval, per repository.
     const userDirty = new Map<string, Set<string>>();
     for (const task of this.state.tasks.filter((candidate) => !isTerminal(candidate.state))) {
-      const baseline = await latestSnapshot(db, task.taskId, 'plan.approved');
-      if (baseline !== null) userDirty.set(task.taskId, new Set(Object.keys(baseline.fingerprints).map(fileKey)));
+      for (const view of repoViews(task)) {
+        const baseline = await latestSnapshot(db, task.taskId, 'plan.approved', view.repoRoot);
+        if (baseline !== null) userDirty.set(`${task.taskId}|${rootKey(view.repoRoot)}`, new Set(Object.keys(baseline.fingerprints).map(fileKey)));
+      }
     }
     this.userDirty = userDirty;
     await this.loadAssignments();
@@ -2084,18 +2250,53 @@ async function upsertRepository(trx: Transaction<JerrySchema> | Kysely<JerrySche
   return repoId;
 }
 
-async function insertPlan(trx: Transaction<JerrySchema>, plan: { taskId: string; title: string; repoRoot: string; version: number; scope: string[]; document?: PlanDocument | undefined; at: string }): Promise<void> {
+async function insertPlan(
+  trx: Transaction<JerrySchema>,
+  plan: { taskId: string; title: string; repoRoot: string; version: number; scope: string[]; document?: PlanDocument | undefined; repositories?: PlanRepository[] | undefined; at: string },
+): Promise<void> {
+  const repositories = plan.repositories ?? [];
   await trx
     .insertInto('plans')
     .values({
       task_id: plan.taskId,
       version: plan.version,
-      content_hash: computePlanHash({ taskId: plan.taskId, title: plan.title, repoRoot: plan.repoRoot, version: plan.version, scope: plan.scope, ...(plan.document === undefined ? {} : { document: plan.document }) }),
+      content_hash: computePlanHash({
+        taskId: plan.taskId,
+        title: plan.title,
+        repoRoot: plan.repoRoot,
+        version: plan.version,
+        scope: plan.scope,
+        ...(plan.document === undefined ? {} : { document: plan.document }),
+        ...(repositories.length === 0 ? {} : { repositories }),
+      }),
       scope_json: JSON.stringify(plan.scope),
       document_json: plan.document === undefined ? null : JSON.stringify(plan.document),
       created_at: plan.at,
     })
     .execute();
+  // A multi-repository plan: each other repository with its scope, frozen with this version.
+  for (const repository of repositories) {
+    const repoId = await upsertRepository(trx, repository.repoRoot, plan.at);
+    await trx
+      .insertInto('plan_repositories')
+      .values({ task_id: plan.taskId, version: plan.version, repo_id: repoId, root_path: repository.repoRoot, scope_json: JSON.stringify(repository.scope), exclude_json: JSON.stringify(repository.exclude), created_at: plan.at })
+      .execute();
+  }
+}
+
+/** The other repositories of each (task, version), in the order the plan named them. */
+async function planRepositoriesOf(db: Kysely<JerrySchema> | Transaction<JerrySchema>, taskIds?: readonly string[]): Promise<Map<string, PlanRepository[]>> {
+  let query = db.selectFrom('plan_repositories').selectAll().orderBy(sql`rowid`);
+  if (taskIds !== undefined) {
+    if (taskIds.length === 0) return new Map();
+    query = query.where('task_id', 'in', [...taskIds]);
+  }
+  const result = new Map<string, PlanRepository[]>();
+  for (const row of await query.execute()) {
+    const key = `${row.task_id}|${row.version}`;
+    result.set(key, [...(result.get(key) ?? []), { repoRoot: row.root_path, scope: JSON.parse(row.scope_json) as string[], exclude: JSON.parse(row.exclude_json) as string[] }]);
+  }
+  return result;
 }
 
 /** Upsert; events can arrive out of order (spool), so the times only ever widen. */
@@ -2183,10 +2384,86 @@ function fileKey(relative: string): string {
   return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
 }
 
-async function latestSnapshot(trx: Transaction<JerrySchema> | Kysely<JerrySchema>, taskId: string, kind: SnapshotKind): Promise<StoredSnapshot | null> {
-  const row = await trx.selectFrom('git_snapshots').select(['head', 'fingerprints_json', 'created_at', 'error']).where('task_id', '=', taskId).where('kind', '=', kind).orderBy('id', 'desc').limit(1).executeTakeFirst();
+async function latestSnapshot(trx: Transaction<JerrySchema> | Kysely<JerrySchema>, taskId: string, kind: SnapshotKind, repoRoot: string): Promise<StoredSnapshot | null> {
+  const row = await trx
+    .selectFrom('git_snapshots')
+    .select(['head', 'fingerprints_json', 'created_at', 'error'])
+    .where('task_id', '=', taskId)
+    .where('kind', '=', kind)
+    .where(process.platform === 'win32' ? sql`lower(replace(repo_root, '\\', '/'))` : sql`repo_root`, '=', process.platform === 'win32' ? repoRoot.replaceAll('\\', '/').toLowerCase() : repoRoot)
+    .orderBy('id', 'desc')
+    .limit(1)
+    .executeTakeFirst();
   if (row === undefined || row.error !== null) return null;
   return { head: row.head, fingerprints: JSON.parse(row.fingerprints_json) as Record<string, string>, createdAt: row.created_at };
+}
+
+async function insertSnapshots(trx: Transaction<JerrySchema>, list: PreparedSnapshots, kind: SnapshotKind, at: string): Promise<void> {
+  for (const { view, prepared } of list) await insertSnapshot(trx, view, kind, prepared, at);
+}
+
+function userFilesOf(row: Selectable<JerrySchema['git_snapshots']>): string[] {
+  return [...new Set([...(JSON.parse(row.staged_json) as string[]), ...(JSON.parse(row.unstaged_json) as string[]), ...(JSON.parse(row.untracked_json) as string[])])].sort();
+}
+
+/**
+ * Where a file a reviewer or a fix plan names lies: in another repository of the task when its
+ * absolute path is inside one, else in the task's own (relative to it).
+ */
+function locateFile(task: Task, file: string): { repoRoot: string; relative: string; shown: string } {
+  const platform = process.platform;
+  const trimmed = file.trim();
+  for (const view of repoViews(task).filter((candidate) => !isPrimary(candidate))) {
+    const relative = relativeInside(absolutePath(trimmed, task.repoRoot, platform), view.repoRoot, platform);
+    if (relative !== null && relative !== '') {
+      const normalized = relative.replaceAll('\\', '/');
+      return { repoRoot: view.repoRoot, relative: normalized, shown: shownPath(view, normalized) };
+    }
+  }
+  const relative = repoRelative(task, trimmed);
+  return { repoRoot: task.repoRoot, relative, shown: relative };
+}
+
+/** True when a file (relative to the task's own repository, or absolute in another) lies in the task's scope there. */
+function inTaskScope(task: Task, file: string): boolean {
+  const located = locateFile(task, file);
+  const repository = taskRepositories(task).find((candidate) => sameRoot(candidate.repoRoot, located.repoRoot));
+  return repository !== undefined && matchesAnyGlob(located.relative, repository.scope, process.platform === 'win32');
+}
+
+/**
+ * A report's evidence across the task's repositories: the task's own as before, and for a
+ * multi-repository task the same facts per repository, merged into the flat lists with the other
+ * repositories' paths absolute.
+ */
+async function evidenceOfRepositories(trx: Transaction<JerrySchema>, gitNow: PreparedSnapshots, document: ImplementationReport, until: string): Promise<ReportEvidence> {
+  const perRepository: Array<{ view: RepoTask; evidence: ReportEvidence }> = [];
+  for (const { view, prepared } of gitNow) {
+    const baseline = await latestSnapshot(trx, view.taskId, 'plan.approved', view.repoRoot);
+    perRepository.push({ view, evidence: await collectEvidence(trx, view, document, until, gitEvidence(baseline, prepared)) });
+  }
+  const [own, ...others] = perRepository;
+  if (own === undefined) throw new Error('a task has at least one repository');
+  if (others.length === 0) return own.evidence;
+  const shown = (entry: { view: RepoTask }, files: readonly string[]): string[] => files.map((file) => shownPath(entry.view, file));
+  const all = [own, ...others];
+  return {
+    ...own.evidence,
+    deviations: all
+      .flatMap((entry) => entry.evidence.deviations)
+      .sort((a, b) => a.at.localeCompare(b.at))
+      .slice(0, MAX_EVIDENCE_DEVIATIONS),
+    deviationCount: all.reduce((sum, entry) => sum + entry.evidence.deviationCount, 0),
+    blockedCount: all.reduce((sum, entry) => sum + entry.evidence.blockedCount, 0),
+    observedEdits: all.flatMap((entry) => shown(entry, entry.evidence.observedEdits)),
+    unreportedEdits: all.flatMap((entry) => shown(entry, entry.evidence.unreportedEdits)),
+    repositories: all.map((entry) => ({ repoRoot: entry.view.repoRoot, observedEdits: entry.evidence.observedEdits, unreportedEdits: entry.evidence.unreportedEdits, git: entry.evidence.git })),
+  };
+}
+
+/** True when a report's change belongs to this repository of the task (an empty repository means the task's own). */
+function reportsRepository(view: Task | RepoTask, repository: string): boolean {
+  return repository.trim() === '' ? isPrimary(view) : sameRoot(repository, view.repoRoot);
 }
 
 async function insertSnapshot(trx: Transaction<JerrySchema>, task: Task, kind: SnapshotKind, prepared: PreparedSnapshot, at: string): Promise<void> {
@@ -2268,8 +2545,7 @@ async function collectEvidence(trx: Transaction<JerrySchema>, task: Task, docume
       if (relative !== null && relative !== '') observed.set(key(relative), relative);
     }
   }
-  const sameRepo = (repository: string): boolean => repository.trim() === '' || comparablePath(repository, task.repoRoot, platform) === comparablePath(task.repoRoot, task.repoRoot, platform);
-  const reported = new Set(document.changes.filter((change) => sameRepo(change.repository)).map((change) => key(change.path.trim().replaceAll('\\', '/').replace(/^\.\//, ''))));
+  const reported = new Set(document.changes.filter((change) => reportsRepository(task, change.repository)).map((change) => key(change.path.trim().replaceAll('\\', '/').replace(/^\.\//, ''))));
   const observedEdits = [...observed.values()].sort();
   // Git also sees what shell commands and generators changed.
   const changed = new Map(observed);
@@ -2286,9 +2562,11 @@ async function collectEvidence(trx: Transaction<JerrySchema>, task: Task, docume
   };
 }
 
-/** Files in the plan's scope edited with the file tools in the repository during (from, until]. */
+/** Files in the plan's scope edited with the file tools in the task's repositories during (from, until]; another repository's shown absolute. */
 async function editsInScopeBetween(trx: Transaction<JerrySchema>, task: Task, from: string, until: string, excluded: ReadonlyArray<{ from: string; until: string }> = []): Promise<string[]> {
-  return [...new Set((await fileEditsInScopeBetween(trx, task, from, until, excluded)).map((edit) => edit.file))].sort();
+  const files: string[] = [];
+  for (const view of repoViews(task)) files.push(...(await fileEditsInScopeBetween(trx, view, from, until, excluded)).map((edit) => shownPath(view, edit.file)));
+  return [...new Set(files)].sort();
 }
 
 /** One file-tool edit in a task's scope, with the gate decision recorded on its event. */
@@ -2392,7 +2670,9 @@ async function reportedFiles(trx: Transaction<JerrySchema>, task: Task, otherTas
   const row = await trx.selectFrom('implementation_reports').selectAll().where('task_id', '=', otherTaskId).orderBy('version', 'desc').limit(1).executeTakeFirst();
   if (row === undefined) return () => false;
   const platform = process.platform;
-  const sameRepo = (repository: string): boolean => repository.trim() === '' || comparablePath(repository, task.repoRoot, platform) === comparablePath(task.repoRoot, task.repoRoot, platform);
+  // The other task's report names this repository its own way: empty for the other task's own repository.
+  const otherTask = await trx.selectFrom('tasks').innerJoin('repositories', 'repositories.repo_id', 'tasks.repo_id').select('repositories.root_path').where('tasks.task_id', '=', otherTaskId).executeTakeFirst();
+  const sameRepo = (repository: string): boolean => sameRoot(repository.trim() === '' ? (otherTask?.root_path ?? '') : repository, task.repoRoot);
   const exact = new Set<string>();
   const globs: string[] = [];
   for (const change of reportFromRow(row).document.changes.filter((entry) => sameRepo(entry.repository))) {

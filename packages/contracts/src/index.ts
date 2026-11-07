@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { CORE_TOKEN_PATTERN, EVENT_SCHEMA_VERSION, GATE_VERDICTS, HOOK_EVENT_TYPES, TASK_ID_PATTERN, WORKFLOW_ACTORS, WORKFLOW_EVENTS, WORKFLOW_STATES } from './constants.js';
+import { repositoryWorkspaceSchema } from './workspaces.js';
 
 /**
  * Shared, versioned contracts between the Claude Code hook bridge, JERRY Core and the CLI.
@@ -12,6 +13,7 @@ export * from './constants.js';
 export * from './agents.js';
 export * from './emoji.js';
 export * from './skills.js';
+export * from './workspaces.js';
 
 // ---------------------------------------------------------------------------
 // Claude Code hook input (stdin of a command hook)
@@ -144,6 +146,28 @@ export const planScopeSchema = z.array(z.string().min(1)).min(1);
 const text = z.string().trim().min(1);
 
 /**
+ * Why a scope glob cannot be one: it must stay inside its repository (no absolute path, drive
+ * letter or ".."). Null when it is fine. Checked on new plans; stored plans are not re-judged.
+ */
+export function unsafeGlobReason(glob: string): string | null {
+  const value = glob.trim().replaceAll('\\', '/');
+  if (value.startsWith('/') || /^[A-Za-z]:/.test(value)) return `"${glob}" is an absolute path; scope globs are relative to their repository`;
+  if (value.split('/').includes('..')) return `"${glob}" leaves its repository ("..")`;
+  return null;
+}
+
+/**
+ * The scope of one more repository of a multi-repository plan: the repository's root (absolute)
+ * and the globs, relative to it, that JERRY checks edits there against.
+ */
+export const repositoryScopeSchema = z.object({
+  repository: text,
+  include: planScopeSchema,
+  exclude: z.array(text).default([]),
+});
+export type RepositoryScope = z.infer<typeof repositoryScopeSchema>;
+
+/**
  * The plan document (18 sections). Claude drafts it with the /jerry:plan
  * skill and submits it through MCP; the user approves exactly this document (its hash). The
  * sections that make a plan reviewable are required; the rest may be empty lists.
@@ -157,8 +181,8 @@ export const planDocumentSchema = z.object({
   repositories: z.array(text).min(1),
   /** 4. Current state and discovery findings; unknowns are written as UNKNOWN, never guessed. */
   currentState: text,
-  /** 5. Proposed changes. */
-  changes: z.array(z.object({ kind: z.enum(['add', 'change', 'remove']), target: text, description: text })).min(1),
+  /** 5. Proposed changes; in a multi-repository plan each names its repository (absolute root; absent: the task's own). */
+  changes: z.array(z.object({ kind: z.enum(['add', 'change', 'remove']), target: text, description: text, repository: z.string().optional() })).min(1),
   /** 6. Impact on architecture and modules. */
   architectureImpact: text,
   /** 7. Dependencies and contracts between repositories. */
@@ -169,8 +193,14 @@ export const planDocumentSchema = z.object({
   rollback: z.string().default(''),
   /** 9. Files and areas in scope (repo-relative globs; this is what JERRY checks edits against) and out of scope. */
   scope: z.object({ include: planScopeSchema, exclude: z.array(text).default([]) }),
-  /** 10 and 11. Implementation steps, with their order and dependencies. */
-  steps: z.array(z.object({ step: text, files: z.array(text).default([]), dependsOn: z.array(z.number().int().positive()).default([]) })).min(1),
+  /**
+   * 9b. A plan across several repositories of one workspace: the scope of each repository other
+   * than the task's own (whose scope is `scope`). Optional and without a default, so single-repository
+   * plans keep their hash.
+   */
+  repositoryScopes: z.array(repositoryScopeSchema).optional(),
+  /** 10 and 11. Implementation steps, with their order and dependencies; in a multi-repository plan each may name its repository. */
+  steps: z.array(z.object({ step: text, files: z.array(text).default([]), dependsOn: z.array(z.number().int().positive()).default([]), repository: z.string().optional() })).min(1),
   /** 12. Tests to add or run. */
   tests: z.array(z.object({ kind: z.enum(['unit', 'component', 'integration', 'api', 'e2e', 'manual']), description: text })).min(1),
   /** 13. Regression plan. */
@@ -193,6 +223,10 @@ export const planDocumentSchema = z.object({
 });
 export type PlanDocument = z.infer<typeof planDocumentSchema>;
 
+/** One more repository a plan version covers, with its own scope (the task's own uses plan.scope). */
+export const planRepositorySchema = z.object({ repoRoot: z.string().min(1), scope: planScopeSchema, exclude: z.array(z.string()).default([]) });
+export type PlanRepository = z.infer<typeof planRepositorySchema>;
+
 export const planSchema = z.object({
   version: z.number().int().positive(),
   contentHash: contentHashSchema,
@@ -200,6 +234,8 @@ export const planSchema = z.object({
   createdAt: z.iso.datetime(),
   /** The full plan when Claude submitted one; plans created with only a scope (CLI) have none. */
   document: planDocumentSchema.optional(),
+  /** The other repositories of a multi-repository plan, frozen with this version; absent for a single repository. */
+  repositories: z.array(planRepositorySchema).optional(),
 });
 export type Plan = z.infer<typeof planSchema>;
 
@@ -367,6 +403,20 @@ export const reportEvidenceSchema = z.object({
       unplannedFiles: z.array(z.string()),
       untouchedSteps: z.array(z.string()),
     })
+    .optional(),
+  /**
+   * A multi-repository task: the same facts per repository (the task's own first). The flat lists
+   * above hold every repository, the task's own paths relative and the others' absolute.
+   */
+  repositories: z
+    .array(
+      z.object({
+        repoRoot: z.string(),
+        observedEdits: z.array(z.string()),
+        unreportedEdits: z.array(z.string()),
+        git: z.object({ baselineHead: z.string().nullable(), baselineAt: z.iso.datetime().nullable(), changed: z.array(z.string()), userChanged: z.array(z.string()) }).nullable(),
+      }),
+    )
     .optional(),
 });
 export type ReportEvidence = z.infer<typeof reportEvidenceSchema>;
@@ -612,6 +662,8 @@ export const sessionRegistrationResponseSchema = z.object({
   approvedPlans: z.array(approvedPlanSummarySchema),
   /** Missing only from an older Core. */
   openTasks: z.array(openTaskSchema).optional(),
+  /** The workspace of the session's repository, or of the repositories under its folder; null when none. */
+  workspace: repositoryWorkspaceSchema.nullable().optional(),
 });
 export type SessionRegistrationResponse = z.infer<typeof sessionRegistrationResponseSchema>;
 
@@ -1260,8 +1312,30 @@ export const taskDetailSchema = taskSummarySchema.extend({
       error: z.string().nullable(),
     })
     .nullable(),
+  /** A multi-repository task: the baseline of each other repository of the current plan. */
+  baselines: z
+    .array(
+      z.object({
+        repoRoot: z.string(),
+        at: z.iso.datetime(),
+        head: z.string().nullable(),
+        branch: z.string().nullable(),
+        userFiles: z.array(z.string()),
+        truncated: z.boolean(),
+        error: z.string().nullable(),
+      }),
+    )
+    .optional(),
 });
 export type TaskDetail = z.infer<typeof taskDetailSchema>;
+
+/**
+ * Every repository a task covers: its own first, then the other repositories of its current plan
+ * (a multi-repository plan). One entry for an ordinary task.
+ */
+export function taskRepositoryRoots(task: { repoRoot: string; plan?: { repositories?: { repoRoot: string }[] | undefined } | null | undefined }): string[] {
+  return [task.repoRoot, ...(task.plan?.repositories ?? []).map((repository) => repository.repoRoot)];
+}
 
 /** Everything JERRY knows about the repository containing a path (used by MCP tools and the dashboard). */
 export const repositoryStateSchema = z.object({
@@ -1280,6 +1354,11 @@ export const repositoryStateSchema = z.object({
    * an open task is in one of their states. Missing only from an older Core.
    */
   skills: z.array(z.object({ name: z.string(), description: z.string(), states: z.array(workflowStateSchema) })).optional(),
+  /**
+   * The workspace the repository (or, for a session in their common parent folder, its repositories)
+   * belongs to, with every repository of it; null when none. Missing only from an older Core.
+   */
+  workspace: repositoryWorkspaceSchema.nullable().optional(),
 });
 export type RepositoryState = z.infer<typeof repositoryStateSchema>;
 

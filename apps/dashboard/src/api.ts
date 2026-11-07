@@ -1,4 +1,4 @@
-import type { ApprovalRecord, ArtifactDecision, CoreStatus, FinalChecksRerun, FinalReport, EvalRunnerStatus, EvalRunDetail, EvalRunSummary, EvalStatus, Finding, Plan, PlanDrift, ReviewState, ProjectProfile, ProjectAddResult, ProjectRemoveResult, ProjectSummary, DataUsage, PruneOptions, PrunePreview, PruneResult, ForgetPreview, ForgetResult, RepositorySummary, SkillChangeResult, SkillDetail, SkillPreview, SkillsList, StoredEvent, Task, TaskSummary, WorkflowState, WorkflowTransition, WorkspaceGraph } from '@jerry/contracts';
+import type { ApprovalRecord, ArtifactDecision, CoreStatus, FinalChecksRerun, FinalReport, EvalRunnerStatus, EvalRunDetail, EvalRunSummary, EvalStatus, Finding, Plan, PlanDrift, ReviewState, ProjectProfile, ProjectAddResult, ProjectRemoveResult, ProjectSummary, DataUsage, PruneOptions, PrunePreview, PruneResult, ForgetPreview, ForgetResult, RepositorySummary, SkillChangeResult, SkillDetail, SkillPreview, SkillsList, StoredEvent, Task, TaskSummary, WorkflowState, WorkflowTransition, Workspace, WorkspaceChangeResult, WorkspaceGraph, WorkspaceScan } from '@jerry/contracts';
 
 import type { ProjectReviewMode, SettingsUpdate, WorkflowSettings } from './settings.js';
 
@@ -98,6 +98,19 @@ export const api = {
   evalRuns: () => request<EvalRunSummary[]>('GET', '/api/v1/evals/runs'),
   evalRun: (runId: string) => request<EvalRunDetail>('GET', `/api/v1/evals/runs/${encodeURIComponent(runId)}`),
   evalStatus: () => request<EvalStatus>('GET', '/api/v1/evals/status'),
+  /** Workspaces: several repositories under one name. */
+  workspaces: () => request<Workspace[]>('GET', '/api/v1/workspaces'),
+  workspace: (id: number) => request<Workspace>('GET', `/api/v1/workspaces/${id}`),
+  /** The Git repositories in a folder, to choose from; changes nothing. */
+  scanWorkspaceFolder: (folder: string) => request<WorkspaceScan>('POST', '/api/v1/workspaces/scan', { folder }),
+  /** Creates a workspace; its repositories become projects. */
+  createWorkspace: (name: string, paths: string[], confirmation: string) => request<WorkspaceChangeResult>('POST', '/api/v1/workspaces', { name, paths, confirmation }),
+  addWorkspaceRepo: (id: number, path: string, confirmation: string) => request<WorkspaceChangeResult>('POST', `/api/v1/workspaces/${id}/repos`, { path, confirmation }),
+  /** Takes a repository out of the workspace; it stays a project. */
+  removeWorkspaceRepo: (id: number, path: string, confirmation: string) => request<WorkspaceChangeResult>('POST', `/api/v1/workspaces/${id}/repos/remove`, { path, confirmation }),
+  renameWorkspace: (id: number, name: string, confirmation: string) => request<WorkspaceChangeResult>('POST', `/api/v1/workspaces/${id}/rename`, { name, confirmation }),
+  /** Deletes the workspace only: its repositories stay projects. */
+  deleteWorkspace: (id: number, confirmation: string) => request<WorkspaceChangeResult>('POST', `/api/v1/workspaces/${id}/delete`, { confirmation }),
   /** "jerry eval run" started from here: its state, output tail and the run it recorded. */
   evalRunner: () => request<EvalRunnerStatus>('GET', '/api/v1/evals/runner'),
   /** Starts real Claude Code sessions in the background; the user confirmed it first. */

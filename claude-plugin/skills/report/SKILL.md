@@ -20,6 +20,9 @@ the repository, not what the plan intended.
 
 - What changed: `git status` and `git diff --stat` (read-only Git only; never stage or commit). List every
   changed file with a repo-relative path. Include files changed by shell commands or generators.
+- A task across several repositories of a workspace: do this in each repository. A change in another
+  repository than the task's own sets `repository` to that repository's absolute root, with `path` relative
+  to it; JERRY refuses repositories that are not in the plan. Run each repository's own checks.
 - Checks: run the project's real test, build, lint and typecheck commands. `get_project_profile` lists
   the ones the project defines (`package.json`, Composer, `Makefile` or convention), in the form that runs on
   this machine (`run`, e.g. through corepack); CI config shows what CI runs.

@@ -53,12 +53,14 @@ export function withRepoRoot(event: EventEnvelope): EventEnvelope {
  * True when the event happened inside a project the user added: its target path if it has one,
  * else its working directory. Events from anywhere else are not stored.
  */
-export function isMonitoredEvent(store: StateStore, event: EventEnvelope): boolean {
+export function isMonitoredEvent(store: StateStore, event: EventEnvelope, inWorkspaceFolder?: (folder: string) => boolean): boolean {
   const input = event.payload['input'];
   const target = typeof input === 'object' && input !== null && typeof (input as Record<string, unknown>)['path'] === 'string' ? ((input as Record<string, unknown>)['path'] as string) : null;
   const base = event.cwd ?? event.repoRoot;
   if (base === null) return target !== null && path.isAbsolute(target) && store.isMonitored(realPathOfNearestExisting(target));
-  return store.isMonitored(realPathOfNearestExisting(target === null ? base : path.resolve(base, target)));
+  const where = realPathOfNearestExisting(target === null ? base : path.resolve(base, target));
+  // A workspace's parent folder: what Claude runs there is recorded against the workspace's open tasks.
+  return store.isMonitored(where) || (target === null && inWorkspaceFolder?.(where) === true);
 }
 
 /** Moves events from the spool into the database. Returns how many files were processed. */

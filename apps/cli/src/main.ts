@@ -14,6 +14,7 @@ import { forgetRepository, pruneData, showDataUsage } from './data-commands.js';
 import { graphCommand, profileCommand, scanCommand } from './scan-command.js';
 import { setSetting, showSettings } from './settings-commands.js';
 import { addSkill, listSkills, removeSkill, setSkillEnabled, setSkillStates, showSkill, updateSkill } from './skill-commands.js';
+import { addToWorkspace, createWorkspace, deleteWorkspace, listWorkspaces, removeFromWorkspace, renameWorkspace, showWorkspace } from './workspace-commands.js';
 import { showStatus } from './status-command.js';
 import { disableStatusline, enableStatusline, statuslineStatus } from './statusline-commands.js';
 import { controlTask, createTask, decide, listTasks, recheckTask, revisePlan, showFinalReport, showPlanDiff, showReview, showTask, skipReview } from './task-commands.js';
@@ -203,6 +204,27 @@ settings
   .description('Change a setting (interactive: y/N): review.mode optional|required, qa.language pl|en')
   .option('--project <path>', 'review.mode of one project only; "inherit" follows the global setting again')
   .action((key: string, value: string, options: { project?: string }) => setSetting(key, value, options));
+
+const workspace = program.command('workspace').description('Workspaces: several repositories under one name; each stays its own project');
+workspace
+  .command('list', { isDefault: true })
+  .description('List workspaces with their repositories, open tasks and waiting decisions')
+  .option('--json', 'print them as JSON', false)
+  .action((options: { json: boolean }) => listWorkspaces(options));
+workspace
+  .command('show <name>')
+  .description('Show one workspace')
+  .option('--json', 'print it as JSON', false)
+  .action((name: string, options: { json: boolean }) => showWorkspace(name, options));
+workspace
+  .command('create <name> [folders...]')
+  .description('Create a workspace from repository folders; they become projects (interactive confirmation)')
+  .option('--scan <folder>', 'also add the Git repositories found in this folder (two levels deep)')
+  .action((name: string, folders: string[], options: { scan?: string }) => createWorkspace(name, folders, options));
+workspace.command('add <name> <folder>').description('Add a repository to a workspace; it becomes a project (interactive confirmation)').action((name: string, folder: string) => addToWorkspace(name, folder));
+workspace.command('remove <name> <folder>').description('Take a repository out of a workspace; it stays a project (interactive confirmation)').action((name: string, folder: string) => removeFromWorkspace(name, folder));
+workspace.command('rename <name> <new-name>').description('Rename a workspace (interactive confirmation)').action((name: string, next: string) => renameWorkspace(name, next));
+workspace.command('delete <name>').description('Delete a workspace; its repositories stay projects (interactive confirmation)').action((name: string) => deleteWorkspace(name));
 
 const project = program.command('project').description('Projects: the repositories JERRY monitors (elsewhere only hard rules apply)');
 project

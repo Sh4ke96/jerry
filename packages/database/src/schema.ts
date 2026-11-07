@@ -488,6 +488,39 @@ export interface SkillsTable {
   updated_at: string;
 }
 
+/** A named group of repositories (the user's workspace); a grouping only. */
+export interface WorkspacesTable {
+  id: Generated<number>;
+  name: string;
+  /** The name compared case-insensitively (unique). */
+  name_key: string;
+  created_at: string;
+  /** cli or dashboard. */
+  created_by: string;
+}
+
+/** Another repository of a multi-repository plan version, with its own scope. */
+export interface PlanRepositoriesTable {
+  task_id: string;
+  version: number;
+  repo_id: string;
+  /** Git working tree root as found on disk. */
+  root_path: string;
+  scope_json: string;
+  exclude_json: string;
+  created_at: string;
+}
+
+/** A repository in a workspace; a repository belongs to at most one. */
+export interface WorkspaceReposTable {
+  workspace_id: number;
+  /** Git working tree root as found on disk. */
+  repo_root: string;
+  /** The root compared like JERRY compares paths (unique). */
+  repo_key: string;
+  added_at: string;
+}
+
 /** History of a skill: installed, updated, enabled, disabled, removed, states-set. */
 export interface SkillEventsTable {
   id: Generated<number>;
@@ -510,6 +543,9 @@ export interface UsageJerryShareTable {
 }
 
 export interface JerrySchema {
+  workspaces: WorkspacesTable;
+  workspace_repos: WorkspaceReposTable;
+  plan_repositories: PlanRepositoriesTable;
   skills: SkillsTable;
   skill_events: SkillEventsTable;
   usage_tokens: UsageTokensTable;

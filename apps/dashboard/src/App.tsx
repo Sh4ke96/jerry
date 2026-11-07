@@ -35,6 +35,7 @@ import { linkTo, route, startRouter, type Section } from './router';
 import { signOut, state } from './state';
 import { Data } from './views/Data';
 import { EvalRunPage } from './views/EvalRunPage';
+import { shownWorkspace, WorkspacePage } from './views/WorkspacePage';
 import { Evals } from './views/Evals';
 import { Overview } from './views/Overview';
 import { ProjectPage } from './views/ProjectPage';
@@ -91,7 +92,7 @@ const SectionLink = defineComponent({
   setup(props) {
     const { setOpenMobile } = useSidebar();
     return () => {
-      const link = linkTo({ section: props.section });
+      const link = linkTo(`#/${props.section}`);
       const active = props.current === props.section;
       return (
         <SidebarMenuButton
@@ -146,7 +147,8 @@ export const App = defineComponent({
     onMounted(() => (stopRouter = startRouter()));
     onUnmounted(() => stopRouter?.());
 
-    const view = computed(() => route.value.section);
+    // A workspace page belongs to Projects in the sidebar and the header.
+    const view = computed(() => (route.value.section === 'workspaces' ? 'projects' : route.value.section));
     const waiting = computed(() => state.tasks.filter(waitsForUser).length);
     const title = computed(() => (view.value === 'settings' ? 'Settings' : (VIEWS.find((item) => item.id === view.value)?.label ?? '')));
     /** The page inside a section (a task, a project), shown after the section's name. */
@@ -156,6 +158,7 @@ export const App = defineComponent({
       if (current.section === 'projects' && current.repoRoot !== undefined) return projectName(current.repoRoot);
       if (current.section === 'skills' && current.name !== undefined) return current.name;
       if (current.section === 'evals' && current.runId !== undefined) return current.runId;
+      if (current.section === 'workspaces') return shownWorkspace.value?.id === current.id ? shownWorkspace.value.name : 'Workspace';
       return null;
     });
 
@@ -174,6 +177,8 @@ export const App = defineComponent({
           return <Timeline />;
         case 'data':
           return <Data />;
+        case 'workspaces':
+          return <WorkspacePage key={current.id} id={current.id} />;
         case 'evals':
           return current.runId === undefined ? <Evals /> : <EvalRunPage key={current.runId} runId={current.runId} />;
         case 'settings':

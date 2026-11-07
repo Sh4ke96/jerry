@@ -241,7 +241,7 @@ function emit(decision: GateDecision): never {
  * rules Claude is told about.
  */
 const HARD_RULES_TEXT =
-  'Hard rules, always enforced: you may not run any Git command that changes anything (commit, push, merge, rebase, checkout, switch, reset, restore, stash, fetch, pull, tag, branch changes, config changes, gh/npm version and similar), and you may not use MCP tools of Git servers that push, commit, create branches or files, or open or merge pull requests; the user does all Git operations manually. Read-only Git (status, diff, log, show, blame) is fine. You may not write inside .git, modify JERRY data or the Claude Code settings that enable JERRY, run "jerry approve/reject/install/uninstall/ui", "jerry repo exclude/include", "jerry project add/remove", "jerry data prune/forget", "jerry core start/stop" or "jerry db restore", or call the JERRY API or dashboard.';
+  'Hard rules, always enforced: you may not run any Git command that changes anything (commit, push, merge, rebase, checkout, switch, reset, restore, stash, fetch, pull, tag, branch changes, config changes, gh/npm version and similar), and you may not use MCP tools of Git servers that push, commit, create branches or files, or open or merge pull requests; the user does all Git operations manually. Read-only Git (status, diff, log, show, blame) is fine. You may not write inside .git, modify JERRY data or the Claude Code settings that enable JERRY, run "jerry approve/reject/install/uninstall/ui", "jerry repo exclude/include", "jerry project add/remove", "jerry data prune/forget", "jerry core start/stop" or "jerry db restore", or call the JERRY API or dashboard. The user alone also runs "jerry task pause/resume/cancel/recheck", "jerry settings set", "jerry statusline enable/disable", "jerry usage enable/disable", "jerry skill add/enable/disable/update/remove/states" and "jerry workspace create/add/remove/rename/delete".';
 
 /** The whole session context outside the projects the user added, followed by the hard rules. */
 const NOT_A_PROJECT_LINE = decorate(EMOJI.jerry, 'JERRY: this project is not added; only hard rules apply. The user can add it with jerry project add.');
@@ -306,8 +306,9 @@ function monitoredSessionContext(registration: SessionRegistrationResponse): str
   // Core says the directory is not in a project (the bridge could not tell without projects.json).
   if (registration.monitored === false || registration.excluded) return `${NOT_A_PROJECT_LINE}\n${HARD_RULES_TEXT}`;
   const lines = [decorate(EMOJI.jerry, 'JERRY: monitoring this session; it never blocks edits, it records deviations from the approved plan and warns you.')];
+  const workspace = workspaceContext(registration);
   if (registration.repoRoot === null) {
-    lines.push('Not inside a Git repository.');
+    lines.push(workspace === null ? 'Not inside a Git repository.' : 'This folder holds the repositories of a JERRY workspace; each repository has its own plans and tasks (name its repository when you plan).');
   } else if (registration.approvedPlans.length === 0) {
     lines.push(`There is no approved JERRY plan for ${registration.repoRoot}.`);
   } else {
@@ -315,12 +316,31 @@ function monitoredSessionContext(registration: SessionRegistrationResponse): str
     lines.push(decorate(EMOJI.plan, `Approved plan: ${plans}.`));
   }
   if (registration.repoRoot !== null) lines.push(...resumeContext(registration.openTasks ?? []));
+  if (workspace !== null) lines.push(workspace);
   lines.push(
     'Mention JERRY warnings in your summary. If you need the current plan state (it can change mid-session), use the JERRY Guardian MCP tools (get_state).',
     decorate(EMOJI.security, HARD_RULES_TEXT),
     'If JERRY blocks an action, report the reason to the user instead of working around it.',
   );
   return lines.join(' ');
+}
+
+/**
+ * The session's workspace in one line: its name and its repositories with what is open or waiting
+ * there (the session's own repository marked); null outside a workspace.
+ */
+function workspaceContext(registration: SessionRegistrationResponse): string | null {
+  const workspace = registration.workspace;
+  if (workspace === undefined || workspace === null) return null;
+  const own = registration.repoRoot === null ? null : comparablePath(registration.repoRoot, registration.repoRoot, process.platform);
+  const repos = workspace.repos
+    .map((repo) => {
+      const here = own !== null && comparablePath(repo.repoRoot, repo.repoRoot, process.platform) === own ? ' (this session)' : '';
+      const state = repo.openTasks === 0 ? 'no open task' : `${repo.openTasks} open task(s)${repo.waiting > 0 ? `, ${repo.waiting} waiting for the user` : ''}`;
+      return `${repo.repoRoot}${here}: ${state}${repo.project ? '' : ' (not monitored)'}`;
+    })
+    .join('; ');
+  return decorate(EMOJI.repository, `Workspace "${oneLine(workspace.name, 60)}": ${repos}.`);
 }
 
 /** Open tasks shown in full at session start; the rest are counted (get_state lists them). */

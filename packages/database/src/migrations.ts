@@ -690,4 +690,49 @@ export const MIGRATIONS: Readonly<Record<string, Migration>> = {
       await db.schema.alterTable('skills').addColumn('jerry_triggered', 'integer', (column) => column.notNull().defaultTo(0)).execute();
     },
   },
+
+  '0024_workspaces': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // Several repositories under one name the user chose. A grouping only: each repository stays
+      // its own project with its own tasks; a repository belongs to at most one workspace.
+      await db.schema
+        .createTable('workspaces')
+        .addColumn('id', 'integer', (column) => column.primaryKey().autoIncrement())
+        .addColumn('name', 'text', (column) => column.notNull())
+        .addColumn('name_key', 'text', (column) => column.notNull().unique())
+        .addColumn('created_at', 'text', (column) => column.notNull())
+        .addColumn('created_by', 'text', (column) => column.notNull())
+        .execute();
+      await db.schema
+        .createTable('workspace_repos')
+        .addColumn('workspace_id', 'integer', (column) => column.notNull().references('workspaces.id').onDelete('cascade'))
+        .addColumn('repo_root', 'text', (column) => column.notNull())
+        .addColumn('repo_key', 'text', (column) => column.notNull().unique())
+        .addColumn('added_at', 'text', (column) => column.notNull())
+        .execute();
+      await db.schema.createIndex('workspace_repos_workspace').on('workspace_repos').column('workspace_id').execute();
+    },
+  },
+
+  '0025_plan_repositories': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // A plan across several repositories of a workspace: the other repositories of a plan
+      // version, each with its own scope. The task's own repository keeps plans.scope_json; plans
+      // of one repository have no rows here.
+      await db.schema
+        .createTable('plan_repositories')
+        .addColumn('task_id', 'text', (column) => column.notNull().references('tasks.task_id'))
+        .addColumn('version', 'integer', (column) => column.notNull())
+        .addColumn('repo_id', 'text', (column) => column.notNull().references('repositories.repo_id'))
+        .addColumn('root_path', 'text', (column) => column.notNull())
+        .addColumn('scope_json', 'text', (column) => column.notNull())
+        .addColumn('exclude_json', 'text', (column) => column.notNull())
+        .addColumn('created_at', 'text', (column) => column.notNull())
+        .addPrimaryKeyConstraint('plan_repositories_pk', ['task_id', 'version', 'repo_id'])
+        .execute();
+      await db.schema.createIndex('plan_repositories_repo').on('plan_repositories').column('repo_id').execute();
+      // Snapshots are now read per repository of a task.
+      await db.schema.createIndex('git_snapshots_task_repo').on('git_snapshots').columns(['task_id', 'repo_root', 'kind', 'id']).execute();
+    },
+  },
 };

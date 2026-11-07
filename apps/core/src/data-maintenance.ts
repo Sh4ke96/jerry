@@ -74,6 +74,7 @@ const TABLE_CATEGORY: Readonly<Record<string, DataCategory>> = {
 
 /** Tables whose rows belong to a task through their task_id column, deleted with the task. */
 const TASK_TABLES = [
+  'plan_repositories',
   'approvals',
   'workflow_transitions',
   'session_tasks',
@@ -300,7 +301,11 @@ function planForget(raw: Raw, store: StateStore, repoRoot: string): ForgetPlan {
   const repos = (raw.prepare('SELECT repo_id FROM repositories WHERE jerry_inside(root_path, ?)').all(repoRoot) as Array<{ repo_id: string }>).map((row) => row.repo_id);
   const repoIds = JSON.stringify(repos);
   const tasks = raw.prepare(`SELECT task_id, state FROM tasks WHERE repo_id ${IN_JSON} ORDER BY task_id`).all(repoIds) as Array<{ task_id: string; state: string }>;
-  const openTasks = tasks.filter((task) => !isTerminal(task.state as WorkflowState)).map((task) => task.task_id);
+  // Open tasks of other repositories whose current plan also covers this one keep it too.
+  const covering = raw
+    .prepare(`SELECT DISTINCT t.task_id, t.state FROM plan_repositories p JOIN tasks t ON t.task_id = p.task_id AND t.current_plan_version = p.version WHERE p.repo_id ${IN_JSON} ORDER BY t.task_id`)
+    .all(repoIds) as Array<{ task_id: string; state: string }>;
+  const openTasks = [...new Set([...tasks, ...covering].filter((task) => !isTerminal(task.state as WorkflowState)).map((task) => task.task_id))].sort();
   const taskIds = tasks.map((task) => task.task_id);
   const findings = 'SELECT id FROM findings WHERE jerry_inside(repo_root, ?)';
   const sessions = 'SELECT session_id FROM sessions WHERE jerry_inside(cwd, ?)';
@@ -320,6 +325,8 @@ function planForget(raw: Raw, store: StateStore, repoRoot: string): ForgetPlan {
     { table: 'usage_snapshots', where: 'jerry_inside(repo_root, ?)', params: [repoRoot] },
     { table: 'usage_jerry_share', where: 'jerry_inside(repo_root, ?)', params: [repoRoot] },
     { table: 'project_profiles', where: `repo_id ${IN_JSON}`, params: [repoIds] },
+    // Finished tasks of other repositories that also covered this one forget it.
+    { table: 'plan_repositories', where: `repo_id ${IN_JSON}`, params: [repoIds] },
     { table: 'projects', where: 'jerry_inside(repo_root, ?)', params: [repoRoot] },
     { table: 'repositories', where: `repo_id ${IN_JSON}`, params: [repoIds] },
     { table: 'audit_log', where: 'jerry_inside(subject, ?) OR jerry_mentions(details_json, ?)', params: [repoRoot, repoRoot] },

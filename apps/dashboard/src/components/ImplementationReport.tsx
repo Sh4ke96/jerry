@@ -3,6 +3,7 @@ import { EMOJI } from '@jerry/contracts/emoji';
 import { defineComponent, type PropType } from 'vue';
 import { formatTime } from '../format';
 import { ATTENTION, CHIP, LIST, PREWRAP, STEPS } from '../lib/classes';
+import { projectName } from '../lib/tasks';
 import { cn } from '../lib/utils';
 import { QA_LANGUAGE_LABEL, reportQaLanguage } from '../settings';
 import { Emoji, resultEmoji } from './Emoji';
@@ -58,6 +59,19 @@ export const ImplementationReportView = defineComponent({
                   </code>
                 ))}
               </p>
+            )}
+            {(evidence.repositories ?? []).length > 1 && (
+              <ul class="evidence-repositories grid gap-0.5 text-xs">
+                {(evidence.repositories ?? []).map((repository) => (
+                  <li key={repository.repoRoot} data-evidence-repository={repository.repoRoot}>
+                    <span class="font-medium" title={repository.repoRoot}>
+                      {projectName(repository.repoRoot)}
+                    </span>
+                    : {repository.observedEdits.length} file(s) edited · {repository.git === null ? 'Git not read' : `${repository.git.changed.length} changed in Git`}
+                    {repository.unreportedEdits.length > 0 && <span class="text-amber-700 dark:text-amber-400"> · {repository.unreportedEdits.length} not in the report</span>}
+                  </li>
+                ))}
+              </ul>
             )}
             {problems.length > 0 && (
               <p class={ATTENTION}>
@@ -120,7 +134,12 @@ export const ImplementationReportView = defineComponent({
               <ul class={LIST}>
                 {document.changes.map((change, index) => (
                   <li key={index}>
-                    <strong class="font-medium">{change.kind}</strong> <code class={CHIP}>{change.repository === '' ? change.path : `${change.repository}: ${change.path}`}</code>: {change.description}
+                    <strong class="font-medium">{change.kind}</strong> {change.repository !== '' && (
+                      <StatusBadge tone="accent" title={change.repository}>
+                        {projectName(change.repository)}
+                      </StatusBadge>
+                    )}{' '}
+                    <code class={CHIP}>{change.path}</code>: {change.description}
                   </li>
                 ))}
               </ul>

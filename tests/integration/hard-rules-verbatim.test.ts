@@ -17,10 +17,29 @@ describe('hard rules stay verbatim', () => {
     const bridge = fs.readFileSync(path.join(ROOT, 'apps', 'hook-bridge', 'src', 'main.ts'), 'utf8');
     const text = /const HARD_RULES_TEXT =\s*\n\s*'([^']*)';/.exec(bridge)?.[1];
     expect(text).toBeDefined();
-    // Last changed with the owner's explicit approval: "jerry project add/remove" and
-    // "jerry data prune/forget" added to the user-only commands.
-    expect(sha256(text ?? '')).toBe('140792725acdd57d214a6274c240662ea730d8f5375e271362e917f27fabc6b0');
+    // Last changed with the owner's explicit approval (JRY-0024, additions only): the other
+    // user-only commands the gate blocks are named after the earlier statement, which stays word for word.
+    expect(sha256(text ?? '')).toBe('6f98d6de3b475110483a72748a7157a1c58746ed1489ca781e845f42d4833569');
     expect(text).toContain('"jerry project add/remove", "jerry data prune/forget"');
+    const before =
+      'Hard rules, always enforced: you may not run any Git command that changes anything (commit, push, merge, rebase, checkout, switch, reset, restore, stash, fetch, pull, tag, branch changes, config changes, gh/npm version and similar), and you may not use MCP tools of Git servers that push, commit, create branches or files, or open or merge pull requests; the user does all Git operations manually. Read-only Git (status, diff, log, show, blame) is fine. You may not write inside .git, modify JERRY data or the Claude Code settings that enable JERRY, run "jerry approve/reject/install/uninstall/ui", "jerry repo exclude/include", "jerry project add/remove", "jerry data prune/forget", "jerry core start/stop" or "jerry db restore", or call the JERRY API or dashboard.';
+    expect(sha256(before)).toBe('140792725acdd57d214a6274c240662ea730d8f5375e271362e917f27fabc6b0');
+    expect(text?.startsWith(before)).toBe(true);
+  });
+
+  it('names every user-only command the gate blocks', () => {
+    const bridge = fs.readFileSync(path.join(ROOT, 'apps', 'hook-bridge', 'src', 'main.ts'), 'utf8');
+    const text = /const HARD_RULES_TEXT =\s*\n\s*'([^']*)';/.exec(bridge)?.[1] ?? '';
+    for (const command of [
+      'task pause/resume/cancel/recheck',
+      'settings set',
+      'statusline enable/disable',
+      'usage enable/disable',
+      'skill add/enable/disable/update/remove/states',
+      'workspace create/add/remove/rename/delete',
+    ]) {
+      expect(text).toContain(`"jerry ${command}"`);
+    }
   });
 
   it('keeps every hard-rule DENY reason of the gate', () => {

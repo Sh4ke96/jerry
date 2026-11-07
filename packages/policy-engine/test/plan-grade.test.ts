@@ -101,3 +101,30 @@ describe('plan completeness grader', () => {
     expect(failed(grade(plan({ risks: [], analysis: { reports: [1, 2], gaps: ['x'] } }), { analyses }))).toEqual(['risks.listed', 'analysis.risks-addressed']);
   });
 });
+
+describe('a plan across several repositories', () => {
+  it('checks each change and step file against the scope of the repository it names', () => {
+    const multi = plan({
+      repositories: ['/api', '/shop'],
+      crossRepoDependencies: 'shop calls the api.',
+      scope: { include: ['src/**'], exclude: [] },
+      repositoryScopes: [{ repository: '/shop', include: ['web/**'], exclude: [] }],
+      changes: [
+        { kind: 'add', target: 'src/a.ts', description: 'api part', repository: '/api' },
+        { kind: 'add', target: 'web/b.ts', description: 'shop part', repository: '/shop' },
+      ],
+      steps: [
+        { step: 'api', files: ['src/a.ts'], dependsOn: [] },
+        { step: 'shop', files: ['web/b.ts'], dependsOn: [1], repository: '/shop/' },
+      ],
+    });
+    const passed = (document: PlanDocument, id: string) => grade(document).checks.find((check) => check.id === id)?.passed;
+    expect(passed(multi, 'changes.in-scope')).toBe(true);
+    expect(passed(multi, 'steps.files-in-scope')).toBe(true);
+    // The shop's scope does not cover src/, even though the api's does.
+    const wrong = { ...multi, changes: [...multi.changes, { kind: 'add' as const, target: 'src/c.ts', description: 'misplaced', repository: '/shop' }] };
+    const check = grade(wrong).checks.find((item) => item.id === 'changes.in-scope')!;
+    expect(check.passed).toBe(false);
+    expect(check.detail).toContain('src/c.ts (/shop)');
+  });
+});

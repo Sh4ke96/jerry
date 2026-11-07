@@ -29,7 +29,9 @@ review.
 ## 1. Start the round
 
 - Call `get_review` with the task ID. It lists `filesToCover`, the reviewers that have not reported yet,
-  and open findings from earlier rounds.
+  and open findings from earlier rounds. In a task across several repositories, files of the task's own
+  repository are relative and files of its other repositories are absolute; reviewers report them the same
+  way.
 - Start the missing reviewers in parallel, in one message, at most three:
   - `jerry:jerry-correctness-reviewer`;
   - `jerry:jerry-security-reviewer`;

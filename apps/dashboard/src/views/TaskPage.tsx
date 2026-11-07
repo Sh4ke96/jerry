@@ -270,7 +270,7 @@ export const TaskPage = defineComponent({
             <Fact label="Next step">{nextStepText(current)}</Fact>
             <Fact label="Plan">{isIntake(current) ? `none yet: analysis first · taken in ${formatTime(current.plan.createdAt)}` : `version ${current.plan.version} · created ${formatTime(current.plan.createdAt)}`}</Fact>
             {/* An intake's scope is only the area to analyse; nothing is approved yet. */}
-            <Fact label={isIntake(current) ? 'Analysis focus' : 'Scope'}>
+            <Fact label={isIntake(current) ? 'Analysis focus' : (current.plan.repositories ?? []).length > 0 ? `Scope in ${projectName(current.repoRoot)}` : 'Scope'}>
               <div class="flex flex-wrap gap-1.5">
                 {current.plan.scope.map((glob) => (
                   <code class={CHIP} key={glob}>
@@ -279,6 +279,19 @@ export const TaskPage = defineComponent({
                 ))}
               </div>
             </Fact>
+            {/* A plan across several repositories of a workspace: each other one with its own scope. */}
+            {(current.plan.repositories ?? []).map((repository) => (
+              <Fact key={repository.repoRoot} label={`Scope in ${projectName(repository.repoRoot)}`}>
+                <div class="task-repository flex flex-wrap items-center gap-1.5" data-task-repository={repository.repoRoot} title={repository.repoRoot}>
+                  {repository.scope.map((glob) => (
+                    <code class={CHIP} key={glob}>
+                      {glob}
+                    </code>
+                  ))}
+                  {repository.exclude.length > 0 && <span class="text-muted-foreground text-xs">not {repository.exclude.join(', ')}</span>}
+                </div>
+              </Fact>
+            ))}
             <Fact label="Hash">
               <code class="text-muted-foreground font-mono text-xs break-all">{current.plan.contentHash}</code>
             </Fact>

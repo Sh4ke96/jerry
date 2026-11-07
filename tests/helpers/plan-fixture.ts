@@ -29,3 +29,22 @@ export function samplePlan(repoRoot: string, scope: string[] = ['src/greeting/**
     openQuestions: ['Should greetings be localised?'],
   };
 }
+
+/**
+ * A plan across several repositories of a workspace: the first is the task's own (plan scope), the
+ * others get their own scopes. Every change and step names its repository.
+ */
+export function sampleMultiRepoPlan(repoRoots: string[], scope: string[] = ['src/**', 'tests/**']): PlanDocument {
+  const [own, ...others] = repoRoots;
+  if (own === undefined) throw new Error('sampleMultiRepoPlan needs at least one repository');
+  const base = samplePlan(own, scope);
+  return {
+    ...base,
+    goal: 'Add a greeting feature across the workspace: each repository gets only its own part.',
+    repositories: repoRoots,
+    changes: repoRoots.map((repository) => ({ kind: 'add' as const, target: 'src/greeting/greet.ts', description: `greeting in ${repository}`, repository })),
+    crossRepoDependencies: 'shop and admin call the greeting endpoint of api.',
+    repositoryScopes: others.map((repository) => ({ repository, include: scope, exclude: [] })),
+    steps: repoRoots.map((repository, index) => ({ step: `Greeting in ${repository}`, files: ['src/greeting/greet.ts'], dependsOn: index === 0 ? [] : [1], repository })),
+  };
+}

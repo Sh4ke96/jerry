@@ -40,14 +40,20 @@ const TEXT_SECTIONS: ReadonlyArray<[keyof PlanDocument, string]> = [
 const LIST_SECTIONS: ReadonlyArray<[string, (plan: PlanDocument) => string[]]> = [
   ['Classification', (plan) => plan.classification],
   ['Repositories', (plan) => plan.repositories],
-  ['Changes', (plan) => plan.changes.map((change) => `${change.kind} ${change.target}: ${change.description}`)],
+  ['Changes', (plan) => plan.changes.map((change) => `${change.kind} ${change.target}${inRepository(change.repository)}: ${change.description}`)],
   ['Risks', (plan) => plan.risks.map((risk) => `[${risk.severity}] ${risk.risk} → ${risk.mitigation}`)],
   ['Out of scope', (plan) => plan.scope.exclude],
+  // A multi-repository plan: each other repository's globs, one line per glob.
+  [
+    'Repository scopes',
+    (plan) => (plan.repositoryScopes ?? []).flatMap((scope) => [...scope.include.map((glob) => `${scope.repository}: ${glob}`), ...scope.exclude.map((glob) => `${scope.repository}: not ${glob}`)]),
+  ],
   [
     'Steps',
     (plan) =>
       plan.steps.map((step) => {
         const details = [step.files.length > 0 ? `files: ${step.files.join(', ')}` : '', step.dependsOn.length > 0 ? `after step ${step.dependsOn.join(', ')}` : ''].filter(Boolean);
+        if (step.repository !== undefined) details.unshift(`in ${step.repository}`);
         return details.length === 0 ? step.step : `${step.step} (${details.join('; ')})`;
       }),
   ],
@@ -59,6 +65,9 @@ const LIST_SECTIONS: ReadonlyArray<[string, (plan: PlanDocument) => string[]]> =
   ['Analysis reports', (plan) => (plan.analysis?.reports ?? []).map((id) => `#${id}`)],
   ['Analysis gaps', (plan) => plan.analysis?.gaps ?? []],
 ];
+
+/** " (in <repository>)" when a change names its repository. */
+const inRepository = (repository: string | undefined): string => (repository === undefined ? '' : ` (in ${repository})`);
 
 /** Items of `after` not matched in `before`, counting duplicates (a multiset difference). */
 function only(after: readonly string[], before: readonly string[]): string[] {

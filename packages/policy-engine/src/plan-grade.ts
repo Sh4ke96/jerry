@@ -46,19 +46,27 @@ export function gradePlan(input: PlanGradeInput): PlanGrade {
   const add = (id: string, weight: PlanGradeCheck['weight'], passed: boolean, ok: string, missing: string): void => {
     checks.push({ id, weight, passed, detail: passed ? ok : missing });
   };
-  const inScope = (target: string): boolean => {
-    const path = normalized(target);
-    return matchesAnyGlob(path, plan.scope.include, input.caseInsensitive) || matchesAnyGlob(path.replace(/\/$/, '') + '/x', plan.scope.include, input.caseInsensitive);
+  // A multi-repository plan: a change or step that names another repository is checked against
+  // that repository's scope; the rest against the plan's own.
+  const repoKey = (root: string): string => {
+    const value = normalized(root).replace(/\/+$/, '');
+    return input.caseInsensitive ? value.toLowerCase() : value;
   };
+  const scopes = new Map((plan.repositoryScopes ?? []).map((scope) => [repoKey(scope.repository), scope.include]));
+  const scopeFor = (repository: string | undefined): readonly string[] => (repository === undefined ? undefined : scopes.get(repoKey(repository))) ?? plan.scope.include;
+  const inScope = (target: string, repository?: string): boolean => {
+    const path = normalized(target);
+    const include = scopeFor(repository);
+    return matchesAnyGlob(path, include, input.caseInsensitive) || matchesAnyGlob(path.replace(/\/$/, '') + '/x', include, input.caseInsensitive);
+  };
+  const named = (target: string, repository: string | undefined): string => (repository === undefined || !scopes.has(repoKey(repository)) ? target : `${target} (${repository})`);
 
   // Scope: what JERRY checks edits against.
-  const broad = plan.scope.include.filter((glob) => WHOLE_REPO.has(glob.trim()));
-  add('scope.narrow', 'minor', broad.length === 0, 'the scope names specific areas', `the scope covers the whole repository (${broad.join(', ')}): edits anywhere count as planned`);
-  const changeTargets = plan.changes.map((change) => change.target).filter(looksLikePath);
-  const changesOutside = changeTargets.filter((target) => !inScope(target));
+  const broad = [plan.scope.include, ...(plan.repositoryScopes ?? []).map((scope) => scope.include)].flat().filter((glob) => WHOLE_REPO.has(glob.trim()));
+  add('scope.narrow', 'minor', broad.length === 0, 'the scope names specific areas', `the scope covers the whole repository (${[...new Set(broad)].join(', ')}): edits anywhere count as planned`);
+  const changesOutside = plan.changes.filter((change) => looksLikePath(change.target) && !inScope(change.target, change.repository)).map((change) => named(change.target, change.repository));
   add('changes.in-scope', 'major', changesOutside.length === 0, 'every change target lies in the scope', `changes outside the scope (edits there will be deviations): ${list(changesOutside)}`);
-  const stepFiles = plan.steps.flatMap((step) => step.files).filter(looksLikePath);
-  const stepsOutside = [...new Set(stepFiles.filter((file) => !inScope(file)))];
+  const stepsOutside = [...new Set(plan.steps.flatMap((step) => step.files.filter((file) => looksLikePath(file) && !inScope(file, step.repository)).map((file) => named(file, step.repository))))];
   add('steps.files-in-scope', 'major', stepsOutside.length === 0, 'every step file lies in the scope', `step files outside the scope: ${list(stepsOutside)}`);
 
   // Steps: an order that can be followed.

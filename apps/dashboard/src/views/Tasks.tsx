@@ -1,4 +1,4 @@
-import type { ArtifactDecision } from '@jerry/contracts';
+import type { ArtifactDecision, Workspace } from '@jerry/contracts';
 import { EMOJI } from '@jerry/contracts/emoji';
 import { ChevronDown, FolderGit2, Search } from '@lucide/vue';
 import { computed, defineComponent, onMounted, reactive, ref } from 'vue';
@@ -12,11 +12,13 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadio
 import { Input } from '../components/ui/input';
 import { Tabs, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { CHIP } from '../lib/classes';
-import { insideRoot, projectName, TASK_FILTERS, type TaskFilter } from '../lib/tasks';
+import { insideRoot, projectName, TASK_FILTERS, taskTouches, type TaskFilter } from '../lib/tasks';
 import { handleError, state } from '../state';
 
 /** All projects in the project filter. */
 const ANY_PROJECT = '*';
+/** A workspace in the project filter: "workspace:<id>". */
+const WORKSPACE_PREFIX = 'workspace:';
 
 /** The filters outlive the view: back from a task page, the list looks as it was left. */
 export const taskFilters = reactive<{ filter: TaskFilter; project: string; search: string }>({ filter: 'active', project: ANY_PROJECT, search: '' });
@@ -28,8 +30,21 @@ export const Tasks = defineComponent({
     const artifacts = ref<ArtifactDecision[]>([]);
     onMounted(() => void api.artifacts().then((list) => (artifacts.value = list), handleError));
 
+    const workspaces = ref<Workspace[]>([]);
+    onMounted(() => void api.workspaces().then((list) => (workspaces.value = list), () => undefined));
+    const chosenWorkspace = computed(() => (taskFilters.project.startsWith(WORKSPACE_PREFIX) ? workspaces.value.find((workspace) => `${WORKSPACE_PREFIX}${workspace.id}` === taskFilters.project) : undefined));
+
     const newestFirst = computed(() => [...state.tasks].reverse());
-    const inProject = computed(() => (taskFilters.project === ANY_PROJECT ? newestFirst.value : newestFirst.value.filter((task) => insideRoot(task.repoRoot, taskFilters.project))));
+    const inProject = computed(() => {
+      if (taskFilters.project === ANY_PROJECT) return newestFirst.value;
+      // A workspace: the tasks of any of its repositories.
+      if (taskFilters.project.startsWith(WORKSPACE_PREFIX)) {
+        const repos = chosenWorkspace.value?.repos ?? [];
+        return newestFirst.value.filter((task) => repos.some((repo) => taskTouches(task, repo.repoRoot)));
+      }
+      // Its own tasks and tasks across several repositories that cover it.
+      return newestFirst.value.filter((task) => taskTouches(task, taskFilters.project));
+    });
     const searched = computed(() => {
       const query = taskFilters.search.trim().toLowerCase();
       return query === '' ? inProject.value : inProject.value.filter((task) => task.taskId.toLowerCase().includes(query) || task.title.toLowerCase().includes(query));
@@ -48,7 +63,7 @@ export const Tasks = defineComponent({
         <DropdownMenuTrigger asChild>
           <Button variant="outline" size="sm" class="project-filter max-w-full" data-project-filter>
             <FolderGit2 />
-            <span class="truncate">{taskFilters.project === ANY_PROJECT ? 'All projects' : projectName(taskFilters.project)}</span>
+            <span class="truncate">{taskFilters.project === ANY_PROJECT ? 'All projects' : taskFilters.project.startsWith(WORKSPACE_PREFIX) ? (chosenWorkspace.value?.name ?? 'Workspace') : projectName(taskFilters.project)}</span>
             <ChevronDown class="text-muted-foreground" />
           </Button>
         </DropdownMenuTrigger>
@@ -57,6 +72,13 @@ export const Tasks = defineComponent({
           <DropdownMenuSeparator />
           <DropdownMenuRadioGroup modelValue={taskFilters.project} onUpdate:modelValue={(value: string) => (taskFilters.project = value)}>
             <DropdownMenuRadioItem value={ANY_PROJECT}>All projects</DropdownMenuRadioItem>
+            {workspaces.value.length > 0 && <DropdownMenuLabel class="text-muted-foreground text-xs font-normal">Workspaces</DropdownMenuLabel>}
+            {workspaces.value.map((workspace) => (
+              <DropdownMenuRadioItem key={`workspace-${workspace.id}`} value={`${WORKSPACE_PREFIX}${workspace.id}`} data-workspace-filter={workspace.name}>
+                <span class="truncate">{workspace.name}</span>
+              </DropdownMenuRadioItem>
+            ))}
+            {workspaces.value.length > 0 && <DropdownMenuLabel class="text-muted-foreground text-xs font-normal">Projects</DropdownMenuLabel>}
             {roots.value.map((root) => (
               <DropdownMenuRadioItem key={root} value={root} title={root}>
                 <span class="truncate">{projectName(root)}</span>

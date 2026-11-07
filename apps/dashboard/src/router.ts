@@ -5,19 +5,20 @@ import { ref } from 'vue';
  * after `#` that survives a reload and works with the browser's back and forward buttons.
  */
 
-export type Section = 'overview' | 'tasks' | 'projects' | 'skills' | 'timeline' | 'data' | 'evals' | 'settings';
+export type Section = 'overview' | 'tasks' | 'projects' | 'workspaces' | 'skills' | 'timeline' | 'data' | 'evals' | 'settings';
 
 export type Route =
   | { section: 'overview' | 'timeline' | 'data' | 'settings' }
   | { section: 'tasks'; taskId?: string }
   | { section: 'projects'; repoRoot?: string }
+  | { section: 'workspaces'; id: number }
   | { section: 'skills'; name?: string }
   | { section: 'evals'; runId?: string };
 
 /** Eval run IDs as Core issues them. */
 const EVAL_RUN_ID = /^EVR-\d+$/;
 
-const SECTIONS: ReadonlySet<string> = new Set<Section>(['overview', 'tasks', 'projects', 'skills', 'timeline', 'data', 'evals', 'settings']);
+const SECTIONS: ReadonlySet<string> = new Set<Section>(['overview', 'tasks', 'projects', 'workspaces', 'skills', 'timeline', 'data', 'evals', 'settings']);
 
 /** Skill names: folder names, or JERRY's own ("jerry:plan"). */
 const SKILL_NAME = /^(jerry:)?[a-z0-9][a-z0-9-]{0,63}$/;
@@ -41,6 +42,8 @@ export function parseRoute(hash: string): Route | null {
   const head = slash === -1 ? path : path.slice(0, slash);
   const rest = slash === -1 ? '' : path.slice(slash + 1).replace(/\/+$/, '');
   if (!SECTIONS.has(head)) return null;
+  // A workspace is always one of them; the list lives on Projects.
+  if (head === 'workspaces') return /^[1-9]\d{0,8}$/.test(rest) ? { section: 'workspaces', id: Number(rest) } : rest === '' ? { section: 'projects' } : null;
   if (rest === '') return { section: head as Section } as Route;
   if (head === 'tasks') {
     const taskId = decode(rest);
@@ -67,6 +70,7 @@ export function hrefOf(route: Route): string {
   if (route.section === 'projects' && route.repoRoot !== undefined) return `#/projects/${encodeURIComponent(route.repoRoot)}`;
   if (route.section === 'skills' && route.name !== undefined) return `#/skills/${encodeURIComponent(route.name)}`;
   if (route.section === 'evals' && route.runId !== undefined) return `#/evals/${encodeURIComponent(route.runId)}`;
+  if (route.section === 'workspaces') return `#/workspaces/${route.id}`;
   return `#/${route.section}`;
 }
 
@@ -74,6 +78,7 @@ export const taskHref = (taskId: string): string => hrefOf({ section: 'tasks', t
 export const projectHref = (repoRoot: string): string => hrefOf({ section: 'projects', repoRoot });
 export const skillHref = (name: string): string => hrefOf({ section: 'skills', name });
 export const evalRunHref = (runId: string): string => hrefOf({ section: 'evals', runId });
+export const workspaceHref = (id: number): string => hrefOf({ section: 'workspaces', id });
 
 /** The current route; unknown addresses show the overview. */
 export const route = ref<Route>({ section: 'overview' });

@@ -157,6 +157,18 @@ export const TaskTile = defineComponent({
                   <span class="flex items-center" title={task.repoRoot}>
                     <Emoji symbol={EMOJI.repository} class="mr-1" />
                     {projectName(task.repoRoot)}
+                    {/* A task across several repositories of a workspace: the others, named for screen readers and on hover. */}
+                    {(task.plan.repositories ?? []).length > 0 && (
+                      <span
+                        class="task-tile__repos bg-muted ml-1 rounded px-1 font-medium"
+                        data-task-repos={(task.plan.repositories ?? []).length}
+                        role="img"
+                        aria-label={`also in ${(task.plan.repositories ?? []).map((repository) => projectName(repository.repoRoot)).join(', ')}`}
+                        title={(task.plan.repositories ?? []).map((repository) => repository.repoRoot).join('\n')}
+                      >
+                        +{(task.plan.repositories ?? []).length}
+                      </span>
+                    )}
                   </span>
                 )}
                 {!props.hideProject && <span aria-hidden="true">·</span>}

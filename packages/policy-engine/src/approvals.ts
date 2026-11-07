@@ -6,14 +6,54 @@ import { comparablePath } from './paths.js';
 export interface ApprovedPlan {
   taskId: string;
   planVersion: number;
+  /** The scope in the repository asked about (a multi-repository plan has one per repository). */
   scope: readonly string[];
+}
+
+/** One repository a task covers, with the scope its current plan gives it there. */
+export interface TaskRepository {
+  repoRoot: string;
+  scope: readonly string[];
+  exclude: readonly string[];
+  /** The task's own repository (the one it was created in). */
+  primary: boolean;
+}
+
+/**
+ * Every repository of a task: its own with the plan's scope, then the other repositories of its
+ * current plan with theirs. One entry for an ordinary task.
+ */
+export function taskRepositories(task: Pick<Task, 'repoRoot' | 'plan'>): TaskRepository[] {
+  return [
+    { repoRoot: task.repoRoot, scope: task.plan.scope, exclude: task.plan.document?.scope.exclude ?? [], primary: true },
+    ...(task.plan.repositories ?? []).map((repository) => ({ repoRoot: repository.repoRoot, scope: repository.scope, exclude: repository.exclude, primary: false })),
+  ];
+}
+
+/** The task's entry for a repository (compared as paths on this platform), or null when it does not cover it. */
+export function taskRepository(task: Pick<Task, 'repoRoot' | 'plan'>, repoRoot: string, platform: NodeJS.Platform): TaskRepository | null {
+  const key = comparablePath(repoRoot, repoRoot, platform);
+  return taskRepositories(task).find((repository) => comparablePath(repository.repoRoot, repository.repoRoot, platform) === key) ?? null;
+}
+
+/** True when the task covers the repository: its own, or one of its current plan's. */
+export function taskTouchesRepo(task: Pick<Task, 'repoRoot' | 'plan'>, repoRoot: string, platform: NodeJS.Platform): boolean {
+  return taskRepository(task, repoRoot, platform) !== null;
 }
 
 /**
  * Deterministic plan hash. An approval is bound to (version, hash); any change to the
  * plan produces a new version and hash, which invalidates earlier approvals.
  */
-export function computePlanHash(input: { taskId: string; title: string; repoRoot: string; version: number; scope: readonly string[]; document?: unknown }): string {
+export function computePlanHash(input: {
+  taskId: string;
+  title: string;
+  repoRoot: string;
+  version: number;
+  scope: readonly string[];
+  document?: unknown;
+  repositories?: ReadonlyArray<{ repoRoot: string; scope: readonly string[]; exclude: readonly string[] }> | undefined;
+}): string {
   const canonical = JSON.stringify({
     taskId: input.taskId,
     title: input.title,
@@ -23,6 +63,15 @@ export function computePlanHash(input: { taskId: string; title: string; repoRoot
     // The whole plan document is part of what the user approves. Plans without one keep the hash
     // they always had (an absent key does not change the JSON).
     ...(input.document === undefined ? {} : { document: canonicalize(input.document) }),
+    // The other repositories of a multi-repository plan with their scopes, in a fixed order. Absent
+    // (or none) leaves the hash of a single-repository plan as it was.
+    ...(input.repositories === undefined || input.repositories.length === 0
+      ? {}
+      : {
+          repositories: [...input.repositories]
+            .map((repository) => ({ repoRoot: repository.repoRoot, scope: [...repository.scope], exclude: [...repository.exclude] }))
+            .sort((a, b) => (a.repoRoot < b.repoRoot ? -1 : a.repoRoot > b.repoRoot ? 1 : 0)),
+        }),
   });
   return `sha256:${createHash('sha256').update(canonical, 'utf8').digest('hex')}`;
 }
@@ -66,13 +115,15 @@ export function isRepoExcluded(state: CoreState, repoRoot: string, platform: Nod
 
 /**
  * Plans that cover edits right now: the task is being implemented and the user approved
- * exactly its current plan. A paused task, or one waiting for acceptance, covers nothing.
+ * exactly its current plan. A paused task, or one waiting for acceptance, covers nothing. A
+ * multi-repository plan covers each of its repositories with that repository's own scope.
  */
 export function approvedPlansForRepo(state: CoreState, repoRoot: string, platform: NodeJS.Platform): ApprovedPlan[] {
-  const repoKey = comparablePath(repoRoot, repoRoot, platform);
   return state.tasks
-    .filter((task) => comparablePath(task.repoRoot, task.repoRoot, platform) === repoKey)
     .filter((task) => WORK_STATES.has(task.state))
     .filter((task) => currentPlanDecision(task, state.approvals)?.decision === 'APPROVED')
-    .map((task) => ({ taskId: task.taskId, planVersion: task.plan.version, scope: task.plan.scope }));
+    .flatMap((task) => {
+      const repository = taskRepository(task, repoRoot, platform);
+      return repository === null ? [] : [{ taskId: task.taskId, planVersion: task.plan.version, scope: repository.scope }];
+    });
 }

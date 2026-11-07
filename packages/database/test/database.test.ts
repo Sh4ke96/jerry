@@ -218,6 +218,49 @@ describe('openJerryDatabase', () => {
     await upgraded.close();
   });
 
+  it('adds workspaces (0024): unique names and a repository in at most one workspace; deleting one ungroups it', async () => {
+    const where = location();
+    const before = Object.fromEntries(Object.entries(MIGRATIONS).filter(([name]) => name < '0024'));
+    const old = await openJerryDatabase({ ...where, migrations: before });
+    await old.close();
+
+    const upgraded = await openJerryDatabase(where);
+    const at = '2026-01-01T00:00:00.000Z';
+    const { id } = await upgraded.db.insertInto('workspaces').values({ name: 'Shop', name_key: 'shop', created_at: at, created_by: 'cli' }).returning('id').executeTakeFirstOrThrow();
+    await expect(upgraded.db.insertInto('workspaces').values({ name: 'SHOP', name_key: 'shop', created_at: at, created_by: 'cli' }).execute()).rejects.toThrow(/UNIQUE/);
+    await upgraded.db.insertInto('workspace_repos').values({ workspace_id: id, repo_root: 'D:/Work/api', repo_key: 'd:/work/api', added_at: at }).execute();
+    const { id: other } = await upgraded.db.insertInto('workspaces').values({ name: 'Other', name_key: 'other', created_at: at, created_by: 'cli' }).returning('id').executeTakeFirstOrThrow();
+    await expect(upgraded.db.insertInto('workspace_repos').values({ workspace_id: other, repo_root: 'D:/Work/api', repo_key: 'd:/work/api', added_at: at }).execute()).rejects.toThrow(/UNIQUE/);
+    await upgraded.db.deleteFrom('workspaces').where('id', '=', id).execute();
+    expect(await upgraded.db.selectFrom('workspace_repos').selectAll().execute()).toEqual([]);
+    await upgraded.close();
+  });
+
+  it('adds plan repositories (0025): an older plan keeps no rows, one row per other repository of a version', async () => {
+    const where = location();
+    const before = Object.fromEntries(Object.entries(MIGRATIONS).filter(([name]) => name < '0025'));
+    const old = await openJerryDatabase({ ...where, migrations: before });
+    const at = '2026-01-01T00:00:00.000Z';
+    await old.db.insertInto('repositories').values({ repo_id: 'r-api', root_path: 'D:/Work/api', excluded_at: null, created_at: at, updated_at: at }).execute();
+    await old.db.insertInto('repositories').values({ repo_id: 'r-shop', root_path: 'D:/Work/shop', excluded_at: null, created_at: at, updated_at: at }).execute();
+    await old.db.insertInto('tasks').values({ task_id: 'JRY-0001', title: 't', repo_id: 'r-api', current_plan_version: 1, state: 'IMPLEMENTATION', goal: null, created_at: at, updated_at: at }).execute();
+    await old.db.insertInto('plans').values({ task_id: 'JRY-0001', version: 1, content_hash: 'h', scope_json: '["src/**"]', document_json: null, created_at: at }).execute();
+    await old.close();
+
+    const upgraded = await openJerryDatabase(where);
+    expect(upgraded.migration).toBe(LATEST);
+    expect(await upgraded.db.selectFrom('plan_repositories').selectAll().execute()).toEqual([]);
+    const row = { task_id: 'JRY-0001', version: 1, repo_id: 'r-shop', root_path: 'D:/Work/shop', scope_json: '["web/**"]', exclude_json: '[]', created_at: at };
+    await upgraded.db.insertInto('plan_repositories').values(row).execute();
+    await expect(upgraded.db.insertInto('plan_repositories').values(row).execute()).rejects.toThrow(/UNIQUE|PRIMARY/);
+    await upgraded.db.insertInto('plan_repositories').values({ ...row, version: 2 }).execute();
+    expect(await upgraded.db.selectFrom('plan_repositories').select(['version', 'root_path']).orderBy('version').execute()).toEqual([
+      { version: 1, root_path: 'D:/Work/shop' },
+      { version: 2, root_path: 'D:/Work/shop' },
+    ]);
+    await upgraded.close();
+  });
+
   it('gives skills installed before 0023 no states and leaves them unconverted', async () => {
     const where = location();
     const before = Object.fromEntries(Object.entries(MIGRATIONS).filter(([name]) => name < '0023'));

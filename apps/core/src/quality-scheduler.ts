@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Task } from '@jerry/contracts';
-import { comparablePath, matchesAnyGlob, relativeInside } from '@jerry/policy-engine';
+import { matchesAnyGlob, relativeInside, taskRepository } from '@jerry/policy-engine';
 import { BUILT_IN_RULES, changedLinesFromDiff, checkFile, type CheckedFile, type DetectedFinding, type Rule } from '@jerry/quality';
 import { WORK_STATES } from '@jerry/workflow';
 import type { GitReader } from './git-reader.js';
@@ -175,9 +175,12 @@ export class QualityScheduler {
 function coveringTask(store: StateStore, repoRoot: string, file: string): Task | null {
   const insensitive = process.platform === 'win32';
   for (const task of store.snapshot().tasks) {
-    if (!WORK_STATES.has(task.state) || comparablePath(task.repoRoot, task.repoRoot, process.platform) !== comparablePath(repoRoot, repoRoot, process.platform)) continue;
+    if (!WORK_STATES.has(task.state)) continue;
+    // Its own repository, or another one of its plan, with that repository's scope.
+    const repository = taskRepository(task, repoRoot, process.platform);
+    if (repository === null) continue;
     if (store.planDecision(task.taskId)?.decision !== 'APPROVED') continue;
-    if (matchesAnyGlob(file, task.plan.scope, insensitive)) return task;
+    if (matchesAnyGlob(file, repository.scope, insensitive)) return task;
   }
   return null;
 }

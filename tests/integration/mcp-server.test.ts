@@ -4,7 +4,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { api, createFixtureRepo, runBridge, preToolUse, startCore, tempDir, type RunningCore } from '../helpers/harness.js';
 import { McpClient } from '../helpers/mcp-client.js';
 import { samplePlan } from '../helpers/plan-fixture.js';
-import { DECISION_WAIT_CALLS, DECISION_WAIT_MS, decisionNextStep, decisionSummary, nextAction, skillsInstruction } from '../../apps/mcp-server/src/tools.js';
+import { DECISION_WAIT_CALLS, DECISION_WAIT_MS, decisionNextStep, decisionSummary, nextAction, skillsInstruction, workspaceInstruction } from '../../apps/mcp-server/src/tools.js';
 
 describe('JERRY MCP server (bundled)', () => {
   const base = tempDir('mcp');
@@ -220,5 +220,20 @@ describe('wait_for_decision answers', () => {
     const state = { repoRoot: 'D:/Work/Repo', excluded: false, monitored: true, sessionTasks: [], skills, tasks: [] };
     expect(nextAction(state).details).not.toContain('JERRY starts skills');
     expect(nextAction({ ...state, monitored: false, excluded: true, skills }).details).not.toContain('JERRY starts skills');
+  });
+
+  it('knows the workspace: other repositories with waiting decisions, and a session in their parent folder', () => {
+    const repo = (repoRoot: string, openTasks: number, waiting: number) => ({ repoRoot, project: true, present: true, openTasks, waiting, openTaskIds: [], waitingTaskIds: [] });
+    const workspace = { id: 1, name: 'Shop', repos: [repo('D:/Work/api', 1, 1), repo('D:/Work/shop', 2, 0), repo('D:/Work/admin', 0, 0)] };
+    const inShop = { repoRoot: 'D:/Work/shop', excluded: false, monitored: true, sessionTasks: [], tasks: [], workspace };
+    expect(workspaceInstruction(inShop)).toBe('⏳ In workspace "Shop" decisions also wait in: D:/Work/api (1).');
+    expect(nextAction(inShop).details).toContain('decisions also wait in: D:/Work/api (1)');
+    // In the repository with the waiting decision, it is not repeated as "also".
+    expect(workspaceInstruction({ ...inShop, repoRoot: 'D:/Work/api' })).toBe('');
+    const inParent = { repoRoot: null, excluded: true, monitored: false, sessionTasks: [], tasks: [], workspace };
+    expect(nextAction(inParent)).toMatchObject({ action: 'workspace', details: expect.stringContaining('This folder holds the repositories of workspace "Shop"') });
+    expect(nextAction(inParent).details).toContain('One task may span several of them: plan it once, with repoPath set to the repository that leads the change and plan.repositoryScopes');
+    expect(nextAction(inParent).details).toContain('not in this folder (JERRY records those as deviations)');
+    expect(nextAction({ ...inParent, workspace: null }).action).toBe('none');
   });
 });

@@ -297,6 +297,81 @@ describe('computePlanHash', () => {
     expect(computePlanHash({ ...base, document })).not.toBe(computePlanHash(base));
     expect(computePlanHash({ ...base, document })).not.toBe(computePlanHash({ ...base, document: { ...document, goal: 'other' } }));
   });
+
+  it('keeps the exact hash of a single-repository plan (stored approvals stay valid)', () => {
+    const fixed = 'sha256:657e69c1b0d8aea2370dc64c7d7cd8f26c7a6859a3943ca51c180715b562c38d';
+    expect(computePlanHash(base)).toBe(fixed);
+    expect(computePlanHash({ ...base, repositories: undefined })).toBe(fixed);
+    expect(computePlanHash({ ...base, repositories: [] })).toBe(fixed);
+  });
+
+  it('binds the other repositories and their scopes, in any order', () => {
+    const shop = { repoRoot: 'D:/Work/shop', scope: ['src/**'], exclude: [] };
+    const admin = { repoRoot: 'D:/Work/admin', scope: ['app/**'], exclude: ['app/legacy/**'] };
+    const both = computePlanHash({ ...base, repositories: [shop, admin] });
+    expect(both).toBe(computePlanHash({ ...base, repositories: [admin, shop] }));
+    expect(both).not.toBe(computePlanHash(base));
+    expect(both).not.toBe(computePlanHash({ ...base, repositories: [shop, { ...admin, scope: ['app/x/**'] }] }));
+    expect(both).not.toBe(computePlanHash({ ...base, repositories: [shop] }));
+  });
+});
+
+describe('a plan across several repositories', () => {
+  const SHOP = 'D:/Work/Shop';
+  const multi = (): Task => {
+    const base = task(['src/**']);
+    const repositories = [{ repoRoot: SHOP, scope: ['web/**'], exclude: [] }];
+    return { ...base, plan: { ...base.plan, repositories, contentHash: computePlanHash({ taskId: base.taskId, title: base.title, repoRoot: REPO, version: 1, scope: ['src/**'], repositories }) } };
+  };
+  const inEither = (target: string): string | null => {
+    const lower = target.toLowerCase();
+    for (const root of [REPO, SHOP]) if (lower === root.toLowerCase() || lower.startsWith(root.toLowerCase() + '/')) return root;
+    return null;
+  };
+  const both = (state: CoreState, overrides: Partial<GateContext> = {}): GateContext => context(state, { findRepoRoot: inEither, isMonitored: (root) => inEither(root) !== null, ...overrides });
+
+  it('covers each repository with its own scope, and nothing else', () => {
+    const state = approvedState(multi());
+    expect(approvedPlansForRepo(state, SHOP, 'win32')).toEqual([{ taskId: 'JRY-0001', planVersion: 1, scope: ['web/**'] }]);
+    expect(approvedPlansForRepo(state, REPO, 'win32')).toEqual([{ taskId: 'JRY-0001', planVersion: 1, scope: ['src/**'] }]);
+    expect(approvedPlansForRepo(state, 'D:/Work/Admin', 'win32')).toEqual([]);
+    expect(evaluateGate(write(`${SHOP}/web/a.ts`), both(state))).toMatchObject({ verdict: 'PASS', taskId: 'JRY-0001', repoRoot: SHOP });
+    // src/** is the scope of the task's own repository, not of the shop.
+    expect(evaluateGate(write(`${SHOP}/src/a.ts`), both(state))).toMatchObject({ verdict: 'WARN', ruleId: 'monitor.out-of-scope', repoRoot: SHOP });
+    expect(evaluateGate(write('src/a.ts'), both(state))).toMatchObject({ verdict: 'PASS', repoRoot: REPO });
+  });
+
+  it('asks about the user\'s uncommitted files per repository: the same path in two repositories is two files', () => {
+    const asked: Array<[string, string | undefined]> = [];
+    const state = approvedState(multi());
+    const ctx = both(state, {
+      isUserChangedFile: (_taskId, relative, repoRoot) => {
+        asked.push([relative, repoRoot]);
+        return repoRoot === SHOP && relative === 'web/a.ts';
+      },
+    });
+    expect(evaluateGate(write(`${SHOP}/web/a.ts`), ctx)).toMatchObject({ verdict: 'WARN', ruleId: 'monitor.user-uncommitted-file' });
+    const own = { ...state, tasks: [{ ...multi(), plan: { ...multi().plan, scope: ['src/**', 'web/**'] } }] };
+    const ownHash = computePlanHash({ taskId: 'JRY-0001', title: 'Add feature', repoRoot: REPO, version: 1, scope: ['src/**', 'web/**'], repositories: multi().plan.repositories });
+    own.tasks[0]!.plan.contentHash = ownHash;
+    own.approvals = [{ ...own.approvals[0]!, contentHash: ownHash }];
+    expect(evaluateGate(write('web/a.ts'), both(own, { isUserChangedFile: ctx.isUserChangedFile! })).verdict).toBe('PASS');
+    expect(asked).toEqual([
+      ['web/a.ts', SHOP],
+      ['web/a.ts', REPO],
+    ]);
+  });
+
+  it('records a modifying command in a workspace\'s parent folder as a deviation of its open tasks', () => {
+    const state = approvedState(multi());
+    const ctx = both(state, {
+      workspaceFolder: (folder) => (folder.toLowerCase() === 'd:/work' ? { name: 'Shop', repoRoots: [REPO, SHOP] } : null),
+      openTasks: (root) => (inEither(root) !== null ? [{ taskId: 'JRY-0001', state: 'IMPLEMENTATION' as const }] : []),
+    });
+    expect(evaluateGate(shell('npm install', 'Bash', 'D:/Work'), ctx)).toMatchObject({ verdict: 'WARN', ruleId: 'monitor.workspace-folder-command', taskId: 'JRY-0001' });
+    expect(evaluateGate(shell('ls', 'Bash', 'D:/Work'), ctx).verdict).toBe('PASS');
+    expect(evaluateGate(shell('npm install', 'Bash', 'D:/Other'), ctx)).toMatchObject({ verdict: 'PASS', ruleId: 'monitor.outside-repository' });
+  });
 });
 
 describe('computeReportHash', () => {
@@ -366,6 +441,13 @@ describe('subagents', () => {
 
   it('keeps assigning skills to task states a user-only command', () => {
     expect(evaluateGate(shell('jerry skill states release-notes CODE_REVIEW'), context())).toMatchObject({ verdict: 'DENY', ruleId: 'hard.user-only-command' });
+  });
+
+  it('keeps changing workspaces user-only, and reading them open', () => {
+    for (const command of ['jerry workspace create shop D:/Work/api', 'jerry workspace add shop D:/Work/admin', 'jerry workspace remove shop D:/Work/admin', 'jerry workspace rename shop sklep', 'jerry workspace delete shop', 'jerry.cmd workspaces create x D:/a']) {
+      expect(evaluateGate(shell(command), context()), command).toMatchObject({ verdict: 'DENY', ruleId: 'hard.user-only-command' });
+    }
+    for (const command of ['jerry workspace list', 'jerry workspace show shop']) expect(evaluateGate(shell(command), context()).verdict, command).not.toBe('DENY');
   });
 
   it('warns before a fourth concurrent subagent, and never blocks one', () => {

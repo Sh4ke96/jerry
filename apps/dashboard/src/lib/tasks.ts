@@ -48,8 +48,39 @@ export function projectOf(task: TaskSummary, projects: ProjectSummary[]): Projec
   return projects.filter((project) => insideRoot(task.repoRoot, project.repoRoot)).sort((a, b) => b.repoRoot.length - a.repoRoot.length)[0];
 }
 
+/**
+ * Every repository a task covers: its own first, then the other repositories of its current plan (a
+ * plan across several repositories of a workspace). Kept here, not imported from the contracts, so
+ * the dashboard bundle stays free of Zod.
+ */
+export function taskRoots(task: Pick<TaskSummary, 'repoRoot' | 'plan'>): string[] {
+  return [task.repoRoot, ...(task.plan.repositories ?? []).map((repository) => repository.repoRoot)];
+}
+
+/** True when the task covers a repository at or below the root. */
+export function taskTouches(task: Pick<TaskSummary, 'repoRoot' | 'plan'>, root: string): boolean {
+  return taskRoots(task).some((repoRoot) => insideRoot(repoRoot, root));
+}
+
+/**
+ * Names of repositories that tell them apart: the folder name, with its parent folder where two
+ * repositories share a name.
+ */
+export function repositoryNames(roots: readonly string[]): Map<string, string> {
+  const count = new Map<string, number>();
+  for (const root of roots) count.set(projectName(root), (count.get(projectName(root)) ?? 0) + 1);
+  return new Map(
+    roots.map((root) => {
+      const name = projectName(root);
+      if ((count.get(name) ?? 0) < 2) return [root, name];
+      const parts = root.split(/[\\/]+/).filter((part) => part !== '');
+      return [root, parts.slice(-2).join('/')];
+    }),
+  );
+}
+
 export function tasksOf(repoRoot: string, tasks: TaskSummary[]): TaskSummary[] {
-  return tasks.filter((task) => insideRoot(task.repoRoot, repoRoot));
+  return tasks.filter((task) => taskTouches(task, repoRoot));
 }
 
 export function repositoryOf(repoRoot: string, repositories: RepositorySummary[]): RepositorySummary | undefined {
