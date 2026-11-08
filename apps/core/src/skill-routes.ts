@@ -101,7 +101,7 @@ export function registerSkillRoutes(app: FastifyInstance, skills: SkillService, 
       const given = body.confirmation?.trim() ?? '';
       if ((decisionConfirmation() === 'typed' || given !== '') && !typed(given, name)) throw new SkillError(400, `Type the skill name (${name}) to change when JERRY starts it`);
     }
-    return skills.setStates(name, body.states, channelOf(request));
+    return skills.setStates(name, body.states, channelOf(request), new Date(), body.classifications);
   });
 
   app.post('/api/v1/skills/:name/remove', { config: TOKEN_OR_SESSION }, async (request): Promise<SkillChangeResult> => {

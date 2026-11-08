@@ -4,7 +4,9 @@ import path from 'node:path';
 import {
   SKILL_CHANGE_NOTE,
   SKILL_OVERRIDE_ON,
+  PLAN_CLASSIFICATIONS,
   WORKFLOW_STATES,
+  type PlanClassification,
   skillFileSchema,
   skillScanFindingSchema,
   type WorkflowState,
@@ -92,12 +94,19 @@ const statesOf = (row: Pick<SkillRow, 'states_json'>): WorkflowState[] => {
   const stored = new Set(z.array(z.string()).catch([]).parse(JSON.parse(row.states_json)));
   return WORKFLOW_STATES.filter((state) => stored.has(state));
 };
+/** The assigned kinds of change in the plan's order; unknown values are dropped; empty: every change. */
+const classificationsOf = (row: Pick<SkillRow, 'classifications_json'>): PlanClassification[] => {
+  const stored = new Set(z.array(z.string()).catch([]).parse(JSON.parse(row.classifications_json)));
+  return PLAN_CLASSIFICATIONS.filter((kind) => stored.has(kind));
+};
 /** What JERRY knows of an added skill for the gate and the next action. */
 export interface SkillTrigger {
   description: string;
   /** Switched on and converted: JERRY starts it. */
   active: boolean;
   states: WorkflowState[];
+  /** The kinds of change it is for; empty: every change. */
+  classifications: PlanClassification[];
 }
 const scanOf = (row: SkillRow): SkillScanFinding[] => z.array(skillScanFindingSchema).catch([]).parse(JSON.parse(row.scan_json));
 const clip = (text: string): string => (text.length > MAX_SKILL_MD_CHARS ? `${text.slice(0, MAX_SKILL_MD_CHARS)}\n\n… (shortened)` : text);
@@ -168,6 +177,7 @@ export class SkillService {
       totalBytes: files.reduce((sum, file) => sum + file.size, 0),
       enabled: skillOverride(this.options.claudeConfigDir, row.name) !== 'off',
       states: statesOf(row),
+      classifications: classificationsOf(row),
       jerryTriggered: row.jerry_triggered === 1,
       present,
       modified: present && folderContentHash(dir) !== row.content_hash,
@@ -450,15 +460,21 @@ export class SkillService {
    * skills is converted first: its folder is copied to JERRY's backups, SKILL.md gets
    * "user-invocable: false", and a switched-on skill moves to skillOverrides "name-only".
    */
-  async setStates(name: string, states: readonly WorkflowState[], channel: SkillChannel, now: Date = new Date()): Promise<SkillChangeResult> {
+  async setStates(name: string, states: readonly WorkflowState[], channel: SkillChannel, now: Date = new Date(), classifications?: readonly PlanClassification[]): Promise<SkillChangeResult> {
     return this.exclusive(async () => {
       const row = await this.row(name);
       if (row === undefined) throw new SkillError(404, `JERRY did not install a skill named ${name}; JERRY starts only the skills it installed.`);
       const ordered = WORKFLOW_STATES.filter((state) => states.includes(state));
-      if (row.jerry_triggered === 1 && statesOf(row).join() === ordered.join()) return this.result(name, 'unchanged', null, null);
+      // Omitted kinds keep the ones the skill has.
+      const kinds = classifications === undefined ? classificationsOf(row) : PLAN_CLASSIFICATIONS.filter((kind) => classifications.includes(kind));
+      if (row.jerry_triggered === 1 && statesOf(row).join() === ordered.join() && classificationsOf(row).join() === kinds.join()) return this.result(name, 'unchanged', null, null);
       let backupDir: string | null = null;
       let settingsBackup: string | null = null;
-      const set: { states_json: string; updated_at: string; jerry_triggered?: number; files_json?: string; content_hash?: string } = { states_json: JSON.stringify(ordered), updated_at: now.toISOString() };
+      const set: { states_json: string; classifications_json: string; updated_at: string; jerry_triggered?: number; files_json?: string; content_hash?: string } = {
+        states_json: JSON.stringify(ordered),
+        classifications_json: JSON.stringify(kinds),
+        updated_at: now.toISOString(),
+      };
       if (row.jerry_triggered !== 1) {
         const converted = this.convert(row);
         backupDir = converted.backupDir;
@@ -466,7 +482,7 @@ export class SkillService {
         if (skillOverride(this.options.claudeConfigDir, name) !== 'off') settingsBackup = setSkillEnabled(this.locations, name, true).settingsBackup;
       }
       await this.options.db.updateTable('skills').set(set).where('name', '=', name).execute();
-      await this.record(name, 'states-set', channel, { states: ordered, from: statesOf(row), converted: row.jerry_triggered !== 1, backupDir, settingsBackup }, now);
+      await this.record(name, 'states-set', channel, { states: ordered, from: statesOf(row), classifications: kinds, fromClassifications: classificationsOf(row), converted: row.jerry_triggered !== 1, backupDir, settingsBackup }, now);
       await this.refreshTriggers();
       return this.result(name, 'states-set', backupDir, settingsBackup);
     });
@@ -497,9 +513,12 @@ export class SkillService {
 
   /** Reloads what the gate and the next action read; called on start and after every change. */
   async refreshTriggers(): Promise<void> {
-    const rows = await this.options.db.selectFrom('skills').select(['name', 'description', 'enabled', 'states_json', 'jerry_triggered']).execute();
+    const rows = await this.options.db.selectFrom('skills').select(['name', 'description', 'enabled', 'states_json', 'classifications_json', 'jerry_triggered']).execute();
     this.triggerMap = new Map(
-      rows.map((row) => [row.name, { description: row.description, active: row.jerry_triggered === 1 && skillOverride(this.options.claudeConfigDir, row.name) !== 'off', states: statesOf(row) }]),
+      rows.map((row) => [
+        row.name,
+        { description: row.description, active: row.jerry_triggered === 1 && skillOverride(this.options.claudeConfigDir, row.name) !== 'off', states: statesOf(row), classifications: classificationsOf(row) },
+      ]),
     );
   }
 
@@ -509,11 +528,17 @@ export class SkillService {
     return trigger === undefined || !trigger.active ? null : trigger.states;
   }
 
-  /** The skills JERRY starts, with their states (only those assigned to at least one). */
-  triggers(): Array<{ name: string; description: string; states: WorkflowState[] }> {
+  /** The kinds of change a skill is for (empty: every change), or null when JERRY does not start it. */
+  triggerClassifications(name: string): readonly PlanClassification[] | null {
+    const trigger = this.triggerMap.get(name);
+    return trigger === undefined || !trigger.active ? null : trigger.classifications;
+  }
+
+  /** The skills JERRY starts, with their states and kinds (only those assigned to at least one state). */
+  triggers(): Array<{ name: string; description: string; states: WorkflowState[]; classifications: PlanClassification[] }> {
     return [...this.triggerMap]
       .filter(([, trigger]) => trigger.active && trigger.states.length > 0)
-      .map(([name, trigger]) => ({ name, description: trigger.description, states: trigger.states }))
+      .map(([name, trigger]) => ({ name, description: trigger.description, states: trigger.states, classifications: trigger.classifications }))
       .sort((a, b) => a.name.localeCompare(b.name));
   }
 

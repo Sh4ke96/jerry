@@ -488,6 +488,8 @@ export interface SkillsTable {
   enabled: number;
   /** The workflow states the user assigned the skill to, as a JSON array; JERRY starts it only there. */
   states_json: Generated<string>;
+  /** The kinds of change JERRY starts the skill for (JSON array); '[]': every change. */
+  classifications_json: Generated<string>;
   /** 1 when SKILL.md carries JERRY's "user-invocable: false" (Claude uses it only when JERRY says so). */
   jerry_triggered: Generated<number>;
   installed_at: string;

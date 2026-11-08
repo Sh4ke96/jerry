@@ -1,5 +1,5 @@
-import type { AddedSkill, SkillCandidate, SkillChangeResult, SkillPreview, SkillScanFinding, WorkflowState } from '@jerry/contracts';
-import { SKILL_TRIGGER_STATES } from '@jerry/contracts/constants';
+import type { AddedSkill, PlanClassification, SkillCandidate, SkillChangeResult, SkillPreview, SkillScanFinding, WorkflowState } from '@jerry/contracts';
+import { PLAN_CLASSIFICATIONS, SKILL_TRIGGER_STATES } from '@jerry/contracts/constants';
 import { EMOJI } from '@jerry/contracts/emoji';
 import { STATE_LABELS } from '@jerry/workflow';
 import { defineComponent, ref, watch, type PropType } from 'vue';
@@ -49,10 +49,11 @@ export const SkillScan = defineComponent({
 });
 
 /** When JERRY starts an added skill, in one line (tiles and the skill page). */
-export function triggerText(skill: Pick<AddedSkill, 'states' | 'jerryTriggered'>): string {
+export function triggerText(skill: Pick<AddedSkill, 'states' | 'jerryTriggered'> & { classifications?: readonly PlanClassification[] | undefined }): string {
   if (!skill.jerryTriggered) return 'Installed before JERRY started skills: Claude may still pick it on its own. Choose task states to hand it to JERRY.';
   if (skill.states.length === 0) return 'No task state yet: Claude does not use it.';
-  return `Started by JERRY in: ${skill.states.map((state) => STATE_LABELS[state]).join(', ')}.`;
+  const kinds = skill.classifications ?? [];
+  return `Started by JERRY in: ${skill.states.map((state) => STATE_LABELS[state]).join(', ')}${kinds.length === 0 ? '' : `, for ${kinds.join(', ')} changes`}.`;
 }
 
 /**
@@ -67,24 +68,36 @@ export const SkillStates = defineComponent({
   },
   setup(props) {
     const chosen = ref<WorkflowState[]>([...props.skill.states]);
+    /** The kinds of change (empty: every change); an older Core sends none. */
+    const kinds = ref<PlanClassification[]>([...(props.skill.classifications ?? [])]);
     const confirming = ref(false);
     const busy = ref(false);
     watch(
       () => props.skill.states,
       (states) => (chosen.value = [...states]),
     );
-    const changed = (): boolean => !props.skill.jerryTriggered || chosen.value.join() !== props.skill.states.join();
+    watch(
+      () => props.skill.classifications,
+      (classifications) => (kinds.value = [...(classifications ?? [])]),
+    );
+    const changed = (): boolean => !props.skill.jerryTriggered || chosen.value.join() !== props.skill.states.join() || kinds.value.join() !== (props.skill.classifications ?? []).join();
     const toggle = (state: WorkflowState, on: boolean): void => {
       const next = new Set(chosen.value);
       if (on) next.add(state);
       else next.delete(state);
       chosen.value = SKILL_TRIGGER_STATES.filter((candidate) => next.has(candidate));
     };
+    const toggleKind = (kind: PlanClassification, on: boolean): void => {
+      const next = new Set(kinds.value);
+      if (on) next.add(kind);
+      else next.delete(kind);
+      kinds.value = PLAN_CLASSIFICATIONS.filter((candidate) => next.has(candidate));
+    };
     const save = (typed: string): void => {
       busy.value = true;
       void (async () => {
         try {
-          const result = await api.setSkillStates(props.skill.name, chosen.value, typed);
+          const result = await api.setSkillStates(props.skill.name, chosen.value, typed, kinds.value);
           confirming.value = false;
           state.notice = `${result.name}: ${result.skill === null ? '' : triggerText(result.skill)} ${result.note}`.trim();
           await props.onSaved?.();
@@ -122,9 +135,34 @@ export const SkillStates = defineComponent({
             })}
           </div>
         </fieldset>
+        <fieldset class="grid gap-2" data-skill-kinds={props.skill.name}>
+          <legend class="text-sm font-medium">Kinds of change</legend>
+          <p class="text-muted-foreground text-xs">
+            Only for tasks whose plan is one of these kinds. None ticked: every change. A task without a classification yet (before its plan) gets the skill in any case.
+          </p>
+          <div class="flex flex-wrap gap-2">
+            {PLAN_CLASSIFICATIONS.map((kind) => {
+              const id = `skill-kind-${props.skill.name}-${kind}`;
+              return (
+                <label key={kind} for={id} class="hover:bg-muted/50 flex cursor-pointer items-center gap-2 rounded-md border px-2 py-1 text-sm">
+                  <input
+                    id={id}
+                    type="checkbox"
+                    class="size-4 accent-current"
+                    data-skill-kind={kind}
+                    checked={kinds.value.includes(kind)}
+                    disabled={busy.value}
+                    onChange={(event: Event) => toggleKind(kind, (event.target as HTMLInputElement).checked)}
+                  />
+                  <code class="text-xs">{kind}</code>
+                </label>
+              );
+            })}
+          </div>
+        </fieldset>
         <div class="flex flex-wrap items-center gap-2">
           <Button type="button" size="sm" data-skill-states-save disabled={busy.value || !changed()} onClick={() => (confirming.value = true)}>
-            Save states
+            Save
           </Button>
           <span class="text-muted-foreground text-xs">{SKILL_NOTE}</span>
         </div>
@@ -139,7 +177,11 @@ export const SkillStates = defineComponent({
             onConfirm={save}
             onCancel={() => (confirming.value = false)}
           >
-            <p>{chosen.value.length === 0 ? 'No state: Claude will not use this skill.' : `JERRY will tell Claude to use it while a task is in: ${chosen.value.map((candidate) => STATE_LABELS[candidate]).join(', ')}.`}</p>
+            <p>
+              {chosen.value.length === 0
+                ? 'No state: Claude will not use this skill.'
+                : `JERRY will tell Claude to use it while a task is in: ${chosen.value.map((candidate) => STATE_LABELS[candidate]).join(', ')}${kinds.value.length === 0 ? ', for every kind of change' : `, for ${kinds.value.join(', ')} changes`}.`}
+            </p>
             {!props.skill.jerryTriggered && <p class="text-xs">Its SKILL.md gets "user-invocable: false" so it leaves the / menu; JERRY copies the folder to its backups first.</p>}
           </ConfirmDialog>
         )}

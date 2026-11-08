@@ -1,4 +1,4 @@
-import type { AgentModelsResponse, AgentModelsUpdateRequest, ApprovalRecord, ArtifactDecision, ArtifactRequest, CoreStatus, FinalChecksRerun, FinalReport, EvalRunnerStatus, EvalRunDetail, EvalRunSummary, EvalStatus, Finding, Plan, PlanDrift, ReviewState, ProjectProfile, ProjectAddResult, ProjectRemoveResult, ProjectSummary, DataUsage, PruneOptions, PrunePreview, PruneResult, ForgetPreview, ForgetResult, RepositorySummary, SkillChangeResult, SkillDetail, SkillPreview, SkillsList, StoredEvent, Task, TaskSummary, WorkflowState, WorkflowTransition, Workspace, WorkspaceChangeResult, WorkspaceGraph, WorkspaceScan } from '@jerry/contracts';
+import type { AgentModelsResponse, AgentModelsUpdateRequest, ApprovalRecord, ArtifactDecision, ArtifactRequest, PlanClassification, CoreStatus, FinalChecksRerun, FinalReport, EvalRunnerStatus, EvalRunDetail, EvalRunSummary, EvalStatus, Finding, Plan, PlanDrift, ReviewState, ProjectProfile, ProjectAddResult, ProjectRemoveResult, ProjectSummary, DataUsage, PruneOptions, PrunePreview, PruneResult, ForgetPreview, ForgetResult, RepositorySummary, SkillChangeResult, SkillDetail, SkillPreview, SkillsList, StoredEvent, Task, TaskSummary, WorkflowState, WorkflowTransition, Workspace, WorkspaceChangeResult, WorkspaceGraph, WorkspaceScan } from '@jerry/contracts';
 
 import type { ProjectReviewMode, SettingsUpdate, WorkflowSettings } from './settings.js';
 
@@ -184,7 +184,9 @@ export const api = {
   /** Switches a skill on or off in Claude Code's settings (skillOverrides). */
   setSkillEnabled: (name: string, enabled: boolean) => request<SkillChangeResult>('POST', `/api/v1/skills/${encodeURIComponent(name)}/${enabled ? 'enable' : 'disable'}`, {}),
   /** The task states in which JERRY tells Claude to use the skill (empty: never). */
-  setSkillStates: (name: string, states: readonly WorkflowState[], confirmation: string) => request<SkillChangeResult>('POST', `/api/v1/skills/${encodeURIComponent(name)}/states`, { states, confirmation }),
+  /** The states JERRY starts the skill in and the kinds of change it is for (empty: every change). */
+  setSkillStates: (name: string, states: readonly WorkflowState[], confirmation: string, classifications?: readonly PlanClassification[]) =>
+    request<SkillChangeResult>('POST', `/api/v1/skills/${encodeURIComponent(name)}/states`, { states, ...(classifications === undefined ? {} : { classifications }), confirmation }),
   /** The new version of a skill, from its source or from an uploaded file. */
   previewSkillUpdate: (name: string, input: SkillPreviewInput = {}) => request<SkillPreview>('POST', `/api/v1/skills/${encodeURIComponent(name)}/update/preview`, input),
   applySkillUpdate: (name: string, previewId: string, confirmation: string) => request<SkillChangeResult>('POST', `/api/v1/skills/${encodeURIComponent(name)}/update/apply`, { previewId, confirmation }),

@@ -51,6 +51,26 @@ export const WORKFLOW_STATES = [
  */
 export const SKILL_TRIGGER_STATES: ReadonlyArray<(typeof WORKFLOW_STATES)[number]> = WORKFLOW_STATES.filter((state) => state !== 'DONE' && state !== 'CANCELLED' && state !== 'PAUSED' && state !== 'BLOCKED');
 
+/** The kinds of change a plan is classified as; added skills can be assigned to them too. */
+export const PLAN_CLASSIFICATIONS = ['ui-ux', 'frontend', 'api-backend', 'database', 'infrastructure', 'security', 'docs', 'tests', 'refactoring', 'tooling'] as const;
+
+/**
+ * Whether JERRY starts an added skill for a task: the task is in one of the skill's states, and the
+ * skill is for every change (no kinds), or the task has no classification yet (its plan is not
+ * written), or the plan shares one of the skill's kinds. One rule for the next action and the gate;
+ * kept here, free of dependencies, because the hook bridge bundles the gate.
+ */
+export function skillApplies(
+  skill: { states: readonly (typeof WORKFLOW_STATES)[number][]; classifications?: readonly (typeof PLAN_CLASSIFICATIONS)[number][] | undefined },
+  task: { state: (typeof WORKFLOW_STATES)[number]; classification?: readonly (typeof PLAN_CLASSIFICATIONS)[number][] | undefined },
+): boolean {
+  if (!skill.states.includes(task.state)) return false;
+  const kinds = skill.classifications ?? [];
+  if (kinds.length === 0) return true;
+  const own = task.classification ?? [];
+  return own.length === 0 || own.some((kind) => kinds.includes(kind));
+}
+
 /** What moves a task between states. */
 export const WORKFLOW_EVENTS = [
   'task.started',

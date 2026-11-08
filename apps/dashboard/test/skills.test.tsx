@@ -22,6 +22,7 @@ const pdf: AddedSkill = {
   totalBytes: 2048,
   enabled: true,
   states: [],
+  classifications: [],
   jerryTriggered: true,
   present: true,
   modified: false,
@@ -328,7 +329,7 @@ describe('Skills in the dashboard', () => {
     expect(dialog.attributes('data-confirm-mode')).toBe('click');
     await dialog.get('form').trigger('submit');
     await flushPromises();
-    expect(posts('/api/v1/skills/pdf/states').map((call) => [call.body, call.csrf])).toEqual([[{ states: ['CODE_REVIEW', 'REVERIFICATION'], confirmation: 'pdf' }, CSRF]]);
+    expect(posts('/api/v1/skills/pdf/states').map((call) => [call.body, call.csrf])).toEqual([[{ states: ['CODE_REVIEW', 'REVERIFICATION'], classifications: [], confirmation: 'pdf' }, CSRF]]);
     expect(state.notice).toContain('Started by JERRY in:');
     wrapper.unmount();
   });
@@ -383,6 +384,27 @@ describe('Skills in the dashboard', () => {
     route.value = { section: 'skills', name: 'pdf' };
     await flushPromises();
     expect(wrapper.get('[data-skill-page="pdf"]').find('.agent-models').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('saves the kinds of change a skill is for together with its states', async () => {
+    const wrapper = await mountApp();
+    await wrapper.get('.added-skills [data-skill="pdf"] a').trigger('click');
+    await flushPromises();
+    const kinds = wrapper.get('[data-skill-kinds="pdf"]');
+    expect(kinds.text()).toContain('None ticked: every change');
+    for (const box of kinds.findAll('input[type="checkbox"]')) expect(kinds.find(`label[for="${box.attributes('id')}"]`).exists()).toBe(true);
+    await wrapper.get('[data-skill-state="IMPLEMENTATION"]').setValue(true);
+    // Ticked out of order, saved in the plan's order.
+    await kinds.get('[data-skill-kind="ui-ux"]').setValue(true);
+    await kinds.get('[data-skill-kind="frontend"]').setValue(true);
+    await wrapper.get('[data-skill-states-save]').trigger('click');
+    await flushPromises();
+    const dialog = body().get('[role="alertdialog"]');
+    expect(dialog.text()).toContain('for ui-ux, frontend changes');
+    await dialog.get('form').trigger('submit');
+    await flushPromises();
+    expect(posts('/api/v1/skills/pdf/states').map((call) => call.body)).toEqual([{ states: ['IMPLEMENTATION'], classifications: ['ui-ux', 'frontend'], confirmation: 'pdf' }]);
     wrapper.unmount();
   });
 

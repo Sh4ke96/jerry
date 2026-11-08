@@ -4,6 +4,7 @@ import zlib from 'node:zlib';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import {
   type EvalRunnerStatus,
+  type PlanClassification,
   type WorkflowState,
   evalRunnerStartRequestSchema,
   workspaceCreateRequestSchema,
@@ -184,14 +185,19 @@ export function gateEvaluator(
   protectedRoots: readonly string[],
   skillStates?: (name: string) => readonly WorkflowState[] | null,
   workspaceFolder?: (absolutePath: string) => { name: string; repoRoots: readonly string[] } | null,
+  skillClassifications?: (name: string) => readonly PlanClassification[] | null,
 ): (request: GateCheckRequest) => GateDecision {
   return (request) => {
     const snapshot: CoreState = store.snapshot();
     return evaluateGate(request, {
       ...(skillStates === undefined ? {} : { skillStates }),
+      ...(skillClassifications === undefined ? {} : { skillClassifications }),
       ...(workspaceFolder === undefined ? {} : { workspaceFolder }),
       // Open tasks that cover the repository: their own, or one of their plan's other repositories.
-      openTasks: (repoRoot) => snapshot.tasks.filter((task) => !isTerminal(task.state) && taskTouchesRepo(task, repoRoot, process.platform)).map((task) => ({ taskId: task.taskId, state: task.state })),
+      openTasks: (repoRoot) =>
+        snapshot.tasks
+          .filter((task) => !isTerminal(task.state) && taskTouchesRepo(task, repoRoot, process.platform))
+          .map((task) => ({ taskId: task.taskId, state: task.state, classification: task.plan.document?.classification })),
       platform: process.platform,
       protectedRoots,
       realPath: realPathOfNearestExisting,
@@ -271,6 +277,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     options.protectedRoots,
     (name) => skillService?.triggerStates(name) ?? null,
     (folder) => workspaces.parentFolderOf(folder),
+    (name) => skillService?.triggerClassifications(name) ?? null,
   );
   const profiles = options.profiles ?? new ProfileService(store);
   // Read once: a running Core serves the dashboard of its own version, even after a new build or install.

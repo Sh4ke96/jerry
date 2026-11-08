@@ -7,3 +7,4 @@ export * from './gate.js';
 export * from './plan-grade.js';
 export * from './analysts.js';
 export * from './reviewers.js';
+export * from './skill-match.js';

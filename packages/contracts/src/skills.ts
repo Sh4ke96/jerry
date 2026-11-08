@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { SKILL_TRIGGER_STATES, WORKFLOW_STATES } from './constants.js';
+import { PLAN_CLASSIFICATIONS, SKILL_TRIGGER_STATES, WORKFLOW_STATES } from './constants.js';
 
 /**
  * Claude Code skills the user adds through JERRY: previewed (validated and scanned, never run),
@@ -140,9 +140,16 @@ export const skillTriggerStateSchema = z.enum(WORKFLOW_STATES).refine((state) =>
   message: 'a skill can be assigned only to an open state in which Claude works (not DONE, CANCELLED, PAUSED or BLOCKED)',
 });
 
-/** POST …/skills/:name/states: the states JERRY starts the skill in (empty: never). */
+/** A kind of change (the plan classification). */
+export const skillClassificationSchema = z.enum(PLAN_CLASSIFICATIONS);
+
+/**
+ * POST …/skills/:name/states: the states JERRY starts the skill in (empty: never), and the kinds of
+ * change it is for (empty: every change; omitted: unchanged).
+ */
 export const skillStatesRequestSchema = z.object({
   states: z.array(skillTriggerStateSchema).max(WORKFLOW_STATES.length),
+  classifications: z.array(skillClassificationSchema).max(PLAN_CLASSIFICATIONS.length).optional(),
   confirmation: z.string().max(200).optional(),
 });
 export type SkillStatesRequest = z.infer<typeof skillStatesRequestSchema>;
@@ -166,6 +173,8 @@ export const addedSkillSchema = z.object({
   enabled: z.boolean(),
   /** The workflow states JERRY starts the skill in, in workflow order; empty: Claude never uses it. */
   states: z.array(z.enum(WORKFLOW_STATES)),
+  /** The kinds of change JERRY starts it for; empty: every change. */
+  classifications: z.array(skillClassificationSchema).default([]),
   /** SKILL.md carries JERRY's "user-invocable: false"; false for a skill installed before that and not converted yet. */
   jerryTriggered: z.boolean(),
   /** The folder is still there. */

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { CORE_TOKEN_PATTERN, EVENT_SCHEMA_VERSION, GATE_VERDICTS, HOOK_EVENT_TYPES, TASK_ID_PATTERN, WORKFLOW_ACTORS, WORKFLOW_EVENTS, WORKFLOW_STATES } from './constants.js';
+import { CORE_TOKEN_PATTERN, EVENT_SCHEMA_VERSION, GATE_VERDICTS, HOOK_EVENT_TYPES, PLAN_CLASSIFICATIONS, TASK_ID_PATTERN, WORKFLOW_ACTORS, WORKFLOW_EVENTS, WORKFLOW_STATES } from './constants.js';
 import { AGENT_EFFORTS, AGENT_MODELS, ANALYST_ROLES, MODEL_CHOICE_ROLES, SKILL_MODEL_ROLES } from './agents.js';
 import { repositoryWorkspaceSchema } from './workspaces.js';
 
@@ -174,7 +174,7 @@ export const repositoryScopeSchema = z.object({
 export type RepositoryScope = z.infer<typeof repositoryScopeSchema>;
 
 /** The kinds of change a plan (and a task intake) is classified as. */
-export const planClassificationSchema = z.enum(['ui-ux', 'frontend', 'api-backend', 'database', 'infrastructure', 'security', 'docs', 'tests', 'refactoring', 'tooling']);
+export const planClassificationSchema = z.enum(PLAN_CLASSIFICATIONS);
 export type PlanClassification = z.infer<typeof planClassificationSchema>;
 
 /**
@@ -1589,7 +1589,7 @@ export const repositoryStateSchema = z.object({
    * Added skills that are on and assigned to at least one state: JERRY tells Claude to use them while
    * an open task is in one of their states. Missing only from an older Core.
    */
-  skills: z.array(z.object({ name: z.string(), description: z.string(), states: z.array(workflowStateSchema) })).optional(),
+  skills: z.array(z.object({ name: z.string(), description: z.string(), states: z.array(workflowStateSchema), classifications: z.array(planClassificationSchema).optional() })).optional(),
   /**
    * The workspace the repository (or, for a session in their common parent folder, its repositories)
    * belongs to, with every repository of it; null when none. Missing only from an older Core.

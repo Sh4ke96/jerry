@@ -759,4 +759,12 @@ export const MIGRATIONS: Readonly<Record<string, Migration>> = {
       await db.schema.alterTable('tasks').addColumn('artifact_request_json', 'text').execute();
     },
   },
+
+  '0029_skill_classifications': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // The kinds of change JERRY starts an added skill for (JSON array of plan classifications);
+      // empty: every change, as before.
+      await db.schema.alterTable('skills').addColumn('classifications_json', 'text', (column) => column.notNull().defaultTo('[]')).execute();
+    },
+  },
 };

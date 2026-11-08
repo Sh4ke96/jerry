@@ -252,6 +252,12 @@ describe('skills manager (Core API)', () => {
     expect(set.statusCode, set.body).toBe(200);
     expect(set.json()).toMatchObject({ action: 'states-set', backupDir: null, skill: { states: ['CODE_REVIEW', 'REVERIFICATION'], jerryTriggered: true } });
     expect((await asCli('POST', '/api/v1/skills/notes/states', { states: ['CODE_REVIEW', 'REVERIFICATION'] })).json()).toMatchObject({ action: 'unchanged' });
+    // Kinds of change: stored in the plan's order; omitted keeps them; unknown kinds are refused.
+    expect((await asCli('POST', '/api/v1/skills/notes/states', { states: ['CODE_REVIEW'], classifications: ['everything'] })).statusCode).toBe(400);
+    const kinds = await asCli('POST', '/api/v1/skills/notes/states', { states: ['CODE_REVIEW', 'REVERIFICATION'], classifications: ['ui-ux', 'frontend'] });
+    expect(kinds.json()).toMatchObject({ action: 'states-set', skill: { classifications: ['ui-ux', 'frontend'] } });
+    expect((await asCli('POST', '/api/v1/skills/notes/states', { states: ['CODE_REVIEW'] })).json()).toMatchObject({ skill: { states: ['CODE_REVIEW'], classifications: ['ui-ux', 'frontend'] } });
+    expect((await asCli('POST', '/api/v1/skills/notes/states', { states: ['CODE_REVIEW', 'REVERIFICATION'], classifications: [] })).json()).toMatchObject({ skill: { classifications: [] } });
 
     // A skill installed before JERRY started skills: verbatim SKILL.md.
     const dir = path.join(claudeConfigDir, 'skills', 'report-writer');
@@ -292,7 +298,12 @@ describe('skills manager (Core API)', () => {
     const detail = (await asBrowser('GET', '/api/v1/skills/notes')).json() as SkillDetail;
     expect(detail.skillMd).toContain('Keeps better notes.');
     expect(detail.files.map((file) => file.path)).toEqual(['SKILL.md', 'extra.md']);
-    expect(detail.history.map((event) => `${event.action}:${event.channel}`)).toEqual(['states-set:dashboard', 'updated:dashboard', 'enabled:cli', 'disabled:dashboard', 'installed:cli']);
+    // Newest first: the states and kinds set from the CLI and the dashboard, then the earlier changes.
+    const history = detail.history.map((event) => `${event.action}:${event.channel}`);
+    expect(history[0]).toBe('states-set:cli');
+    expect(history).toContain('states-set:dashboard');
+    expect(history.slice(-4)).toEqual(['updated:dashboard', 'enabled:cli', 'disabled:dashboard', 'installed:cli']);
+    expect(detail.history[0]!.details).toMatchObject({ classifications: [], fromClassifications: ['ui-ux', 'frontend'] });
     const own = (await asBrowser('GET', '/api/v1/skills/jerry:plan')).json() as SkillDetail;
     expect(own.skill.kind).toBe('jerry');
     expect((await asBrowser('GET', '/api/v1/skills/nothing-here')).statusCode).toBe(404);

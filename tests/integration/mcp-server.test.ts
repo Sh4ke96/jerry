@@ -221,6 +221,12 @@ describe('wait_for_decision answers', () => {
     const state = { repoRoot: 'D:/Work/Repo', excluded: false, monitored: true, sessionTasks: [], skills, tasks: [] };
     expect(nextAction(state).details).not.toContain('JERRY starts skills');
     expect(nextAction({ ...state, monitored: false, excluded: true, skills }).details).not.toContain('JERRY starts skills');
+
+    // A skill for some kinds of change: named for a task of that kind (or one not classified yet) only.
+    const ui = [{ name: 'react-rules', description: 'React rules.', states: ['IMPLEMENTATION' as const], classifications: ['frontend' as const] }];
+    expect(skillsInstruction(ui, [{ taskId: 'JRY-0002', state: 'IMPLEMENTATION', classification: ['frontend', 'tests'] }])).toContain('"react-rules"');
+    expect(skillsInstruction(ui, [{ taskId: 'JRY-0002', state: 'IMPLEMENTATION', classification: ['api-backend'] }])).toBe('');
+    expect(skillsInstruction(ui, [{ taskId: 'JRY-0002', state: 'IMPLEMENTATION' }])).toContain('"react-rules"');
   });
 
   it('knows the workspace: other repositories with waiting decisions, and a session in their parent folder', () => {

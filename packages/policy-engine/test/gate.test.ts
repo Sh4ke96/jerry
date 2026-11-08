@@ -448,6 +448,17 @@ describe('subagents', () => {
     expect(evaluateGate(skill('release-notes', 'C:/Temp'), implementing)).toMatchObject({ verdict: 'PASS', ruleId: 'monitor.outside-repository' });
   });
 
+  it('passes a skill only for the kinds of change it is for; an unclassified task gets it anyway', () => {
+    const skill = (name: string): GateCheckRequest => ({ sessionId: 's1', cwd: REPO, toolName: 'Skill', toolInput: { skill: name }, toolUseId: null, agentId: null });
+    const states = (name: string) => (name === 'react-rules' ? (['IMPLEMENTATION'] as const) : null);
+    const kinds = (name: string) => (name === 'react-rules' ? (['frontend', 'ui-ux'] as const) : null);
+    const task = (classification?: Array<'api-backend' | 'frontend' | 'tests'>) => context(emptyState(), { skillStates: states, skillClassifications: kinds, openTasks: () => [{ taskId: 'JRY-0001', state: 'IMPLEMENTATION', classification }] });
+    expect(evaluateGate(skill('react-rules'), task(['frontend', 'tests']))).toMatchObject({ verdict: 'PASS', ruleId: 'monitor.skill-in-state', reason: expect.stringContaining('for frontend, ui-ux changes') });
+    expect(evaluateGate(skill('react-rules'), task(['api-backend']))).toMatchObject({ verdict: 'WARN', ruleId: 'monitor.skill-out-of-state', reason: expect.stringContaining('the tasks here in those states are api-backend changes') });
+    expect(evaluateGate(skill('react-rules'), task(undefined))).toMatchObject({ verdict: 'PASS', ruleId: 'monitor.skill-in-state' });
+    expect(evaluateGate(skill('react-rules'), task([]))).toMatchObject({ verdict: 'PASS' });
+  });
+
   it('keeps assigning skills to task states a user-only command', () => {
     expect(evaluateGate(shell('jerry skill states release-notes CODE_REVIEW'), context())).toMatchObject({ verdict: 'DENY', ruleId: 'hard.user-only-command' });
   });

@@ -118,6 +118,10 @@ Skills you add are started only by JERRY, by task state, and used by Claude:
 
 - 🎯 On the skill's page you tick the task states it belongs to (for example **Code review** and **Re-verification**).
   While a task is in one of them, JERRY's next action tells Claude to use the skill, and Claude runs it.
+- 🏷️ You can also tick the **kinds of change** it is for (the plan's classification: `frontend`, `ui-ux`,
+  `api-backend`, `database`, `security`, …). JERRY then starts it only for tasks whose plan is one of those kinds, so
+  a React skill stays out of a Laravel API task. None ticked: every change. A task without a classification yet
+  (before its plan) gets every skill of its state.
 - 🧾 The skill list shows one full-width row per skill; a click opens its page with the scan, the task states and
   **Recent uses**: when Claude ran it, in which task, and whether that was in its states or a recorded deviation.
 - 🙈 JERRY adds `user-invocable: false` to the skill's `SKILL.md`, so it is not in the `/` menu, and sets

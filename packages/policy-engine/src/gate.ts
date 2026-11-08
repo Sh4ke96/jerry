@@ -1,4 +1,5 @@
-import type { GateCheckRequest, GateDecision, WorkflowState } from '@jerry/contracts';
+import type { GateCheckRequest, GateDecision, PlanClassification, WorkflowState } from '@jerry/contracts';
+import { skillApplies } from '@jerry/contracts/constants';
 import type { ApprovedPlan } from './approvals.js';
 import { absolutePath, comparablePath, isComparableInside, matchesAnyGlob, relativeInside } from './paths.js';
 import { assessMcpGitUsage } from './mcp.js';
@@ -52,8 +53,10 @@ export interface GateContext {
    * not start that skill (not added through JERRY, switched off or not converted). Absent where unknown.
    */
   skillStates?(name: string): readonly WorkflowState[] | null;
-  /** The repository's open tasks and their states. Absent where unknown. */
-  openTasks?(repoRoot: string): ReadonlyArray<{ taskId: string; state: WorkflowState }>;
+  /** The kinds of change JERRY starts an added skill for (empty: every change). Absent where unknown. */
+  skillClassifications?(name: string): readonly PlanClassification[] | null;
+  /** The repository's open tasks, their states and their plans' classification. Absent where unknown. */
+  openTasks?(repoRoot: string): ReadonlyArray<{ taskId: string; state: WorkflowState; classification?: readonly PlanClassification[] | undefined }>;
   /**
    * The workspace whose parent folder this is (a folder holding its repositories, not one of
    * them), or null. Absent where unknown.
@@ -205,11 +208,19 @@ function monitorSkill(name: string | null, cwd: string, context: GateContext): G
   if (repoRoot === null) return decision('PASS', 'monitor.outside-repository', `Working directory is not inside a Git repository (skill ${name})`);
   if (!context.isMonitored(repoRoot)) return decision('PASS', 'monitor.not-a-project', `${repoRoot} is not added to JERRY; only hard rules apply there`, null, repoRoot);
   const open = context.openTasks?.(repoRoot) ?? [];
-  const match = open.find((task) => states.includes(task.state));
-  if (match !== undefined) return decision('PASS', 'monitor.skill-in-state', `JERRY starts ${name} in ${states.join(', ')}; ${match.taskId} is in ${match.state}`, match.taskId, repoRoot);
+  const kinds = context.skillClassifications?.(name) ?? [];
+  const forKinds = kinds.length === 0 ? '' : ` for ${kinds.join(', ')} changes`;
+  const match = open.find((task) => skillApplies({ states, classifications: kinds }, task));
+  if (match !== undefined) return decision('PASS', 'monitor.skill-in-state', `JERRY starts ${name} in ${states.join(', ')}${forKinds}; ${match.taskId} is in ${match.state}`, match.taskId, repoRoot);
   const assigned = states.length === 0 ? 'no task state yet (the user assigns them on its page in the JERRY dashboard)' : states.join(', ');
-  const now = open.length === 0 ? 'there is no open task here' : `the open tasks here are in ${[...new Set(open.map((task) => task.state))].join(', ')}`;
-  return decision('WARN', 'monitor.skill-out-of-state', `${name} is a skill JERRY starts only while a task is in ${assigned}, and ${now}. It proceeds and is recorded as a deviation; use it only when JERRY's next action names it.`, open[0]?.taskId ?? null, repoRoot);
+  const inState = open.filter((task) => states.includes(task.state));
+  const now =
+    open.length === 0
+      ? 'there is no open task here'
+      : inState.length > 0
+        ? `the tasks here in those states are ${[...new Set(inState.flatMap((task) => task.classification ?? []))].join(', ') || 'other'} changes`
+        : `the open tasks here are in ${[...new Set(open.map((task) => task.state))].join(', ')}`;
+  return decision('WARN', 'monitor.skill-out-of-state', `${name} is a skill JERRY starts only while a task is in ${assigned}${forKinds}, and ${now}. It proceeds and is recorded as a deviation; use it only when JERRY's next action names it.`, open[0]?.taskId ?? null, repoRoot);
 }
 
 function monitorWrite(target: string, cwd: string, context: GateContext, agentId: string | null = null): GateDecision {

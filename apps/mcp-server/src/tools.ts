@@ -48,6 +48,8 @@ import {
   type TaskSummary,
   type TaskWithDecision,
   type WorkflowState,
+  type PlanClassification,
+  skillApplies,
 } from '@jerry/contracts';
 import { EMOJI, SEVERITY_EMOJI, STATE_EMOJI, decorate } from '@jerry/contracts/emoji';
 import { autostartCore, CoreUnavailableError, readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
@@ -988,7 +990,9 @@ export const TOOLS: readonly ToolDefinition[] = [
         let skills = '';
         if (result.status !== 'pending' && !isTerminal(result.state)) {
           try {
-            skills = skillsInstruction((await repositoryState(undefined)).skills, [{ taskId: result.taskId, state: result.state }]);
+            const here = await repositoryState(undefined);
+            const classification = here.tasks.find((task) => task.taskId === result.taskId)?.plan.document?.classification;
+            skills = skillsInstruction(here.skills, [{ taskId: result.taskId, state: result.state, classification }]);
           } catch {
             // Only a hint: the next get_state carries it too.
           }
@@ -1216,9 +1220,10 @@ export function analysisDigest(task: TaskSummary): Record<string, unknown> {
  * The added skills JERRY starts for these tasks' states, as an instruction for Claude; '' when none.
  * Only JERRY starts these skills: Claude sees their names alone and uses them when this says so.
  */
-export function skillsInstruction(skills: RepositoryState['skills'], tasks: ReadonlyArray<{ taskId: string; state: WorkflowState }>): string {
+export function skillsInstruction(skills: RepositoryState['skills'], tasks: ReadonlyArray<{ taskId: string; state: WorkflowState; classification?: readonly PlanClassification[] | undefined }>): string {
   const lines = tasks.flatMap((task) => {
-    const assigned = (skills ?? []).filter((skill) => skill.states.includes(task.state));
+    // In one of the skill's states, and a kind of change it is for (a task not classified yet gets every one).
+    const assigned = (skills ?? []).filter((skill) => skillApplies(skill, task));
     if (assigned.length === 0) return [];
     const list = assigned.map((skill) => `"${skill.name}" (${skill.description.length > 160 ? `${skill.description.slice(0, 157)}...` : skill.description})`).join(', ');
     return [`${task.taskId} is in ${task.state}, where the user assigned the skill(s) ${list}: use them now with the Skill tool, within the task's scope.`];
@@ -1267,7 +1272,7 @@ export function nextAction(state: RepositoryState): { action: string; details: s
   const base = stateAction(state);
   if (state.repoRoot === null || notAdded(state)) return base;
   const open = state.tasks.filter((task) => !isTerminal(task.state));
-  const extra = [skillsInstruction(state.skills, open), workspaceInstruction(state), artifactInstruction(state.tasks)].filter((line) => line !== '');
+  const extra = [skillsInstruction(state.skills, open.map((task) => ({ taskId: task.taskId, state: task.state, classification: task.plan.document?.classification }))), workspaceInstruction(state), artifactInstruction(state.tasks)].filter((line) => line !== '');
   return extra.length === 0 ? base : { action: base.action, details: [base.details, ...extra].join('\n') };
 }
 
