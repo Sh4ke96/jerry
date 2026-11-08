@@ -12,6 +12,9 @@ export const MAX_INPUT_BYTES = 1024 * 1024;
 
 type Fields = Record<string, unknown>;
 
+/** effort.level values Claude Code documents for the status line. */
+const EFFORT_LEVELS: ReadonlySet<string> = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+
 function record(value: unknown): Fields | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Fields) : null;
 }
@@ -65,6 +68,9 @@ export function parseStatusInput(raw: string, entrypoint: string | null, now: Da
     entrypoint,
     at: now.toISOString(),
   };
+  // The session's level; absent when the model does not support effort. Known values only.
+  const effort = text(record(input['effort'])?.['level']);
+  if (effort !== null && EFFORT_LEVELS.has(effort)) snapshot.effort = effort;
   const fiveHour = usageWindow(limits?.['five_hour']);
   const sevenDay = usageWindow(limits?.['seven_day']);
   if (fiveHour !== undefined) snapshot.fiveHour = fiveHour;
@@ -85,9 +91,15 @@ export function hasRateLimits(snapshot: UsageSnapshot | null): boolean {
   return snapshot?.fiveHour !== undefined || snapshot?.sevenDay !== undefined;
 }
 
-/** JERRY's segment of the status line: "🛡️ JERRY · 5h 23% · week 41% · $1.20", absent parts left out. */
+/**
+ * JERRY's segment of the status line: "🛡️ JERRY · Opus · high · 5h 23% · week 41% · $1.20": the
+ * session's model and effort, the account's plan limits, and this session's estimated cost at list
+ * price. Absent parts are left out.
+ */
 export function formatSegment(snapshot: UsageSnapshot | null, emoji: boolean): string {
   const parts = [decorate(EMOJI.jerry, 'JERRY', emoji)];
+  if (snapshot?.model != null) parts.push(snapshot.model.replace(/^Claude\s+/i, ''));
+  if (snapshot?.effort !== undefined) parts.push(snapshot.effort);
   if (snapshot?.fiveHour !== undefined) parts.push(`5h ${Math.round(snapshot.fiveHour.pct)}%`);
   if (snapshot?.sevenDay !== undefined) parts.push(`week ${Math.round(snapshot.sevenDay.pct)}%`);
   if (snapshot?.costUsd !== undefined) parts.push(`$${snapshot.costUsd.toFixed(2)}`);

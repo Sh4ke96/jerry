@@ -28,6 +28,8 @@ export interface UsageSnapshot {
   model: string | null;
   /** Claude Code version. */
   version: string | null;
+  /** The session's reasoning effort (effort.level); shown in the status line, not stored by Core. */
+  effort?: string;
   fiveHour?: UsageWindow;
   sevenDay?: UsageWindow;
   costUsd?: number;

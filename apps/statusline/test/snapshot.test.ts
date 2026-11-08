@@ -13,6 +13,7 @@ function payload(overrides: Record<string, unknown> = {}): string {
     cwd: 'D:/Work/Repo',
     version: '2.1.90',
     model: { id: 'claude-opus-5-5', display_name: 'Opus' },
+    effort: { level: 'high' },
     workspace: { current_dir: 'D:/Work/Repo/src', project_dir: 'D:/Work/Repo' },
     cost: { total_cost_usd: 1.2, total_duration_ms: 1000, total_api_duration_ms: 500, total_lines_added: 3, total_lines_removed: 1 },
     context_window: { total_input_tokens: 15_234, total_output_tokens: 4_521, context_window_size: 200_000, used_percentage: 12.5, remaining_percentage: 87.5 },
@@ -28,6 +29,7 @@ describe('status-line snapshot', () => {
       cwd: 'D:/Work/Repo',
       model: 'Opus',
       version: '2.1.90',
+      effort: 'high',
       fiveHour: { pct: 23.4, resetsAt: '2026-11-07T00:00:00.000Z' },
       sevenDay: { pct: 41.2, resetsAt: '2026-11-12T00:00:00.000Z' },
       costUsd: 1.2,
@@ -70,13 +72,18 @@ describe('status-line snapshot', () => {
 });
 
 describe("JERRY's status-line segment", () => {
-  it('shows the windows and the cost', () => {
-    expect(formatSegment(parseStatusInput(payload(), null, NOW), true)).toBe('🛡️ JERRY · 5h 23% · week 41% · $1.20');
+  it("shows the session's model and effort, the windows and the cost", () => {
+    expect(formatSegment(parseStatusInput(payload(), null, NOW), true)).toBe('🛡️ JERRY · Opus · high · 5h 23% · week 41% · $1.20');
+    expect(formatSegment(parseStatusInput(payload({ model: { id: 'claude-sonnet-5-5', display_name: 'Claude Sonnet 5.5' }, effort: { level: 'xhigh' } }), null, NOW), false)).toBe('JERRY · Sonnet 5.5 · xhigh · 5h 23% · week 41% · $1.20');
   });
 
-  it('leaves out what is absent, and the emoji when they are off', () => {
-    expect(formatSegment(parseStatusInput(payload({ rate_limits: undefined }), null, NOW), false)).toBe('JERRY · $1.20');
-    expect(formatSegment(parseStatusInput(payload({ rate_limits: { five_hour: { used_percentage: 99.6 } }, cost: undefined }), null, NOW), true)).toBe('🛡️ JERRY · 5h 100%');
+  it('leaves out what is absent or unknown, and the emoji when they are off', () => {
+    const plain = { model: undefined, effort: undefined };
+    expect(formatSegment(parseStatusInput(payload({ ...plain, rate_limits: undefined }), null, NOW), false)).toBe('JERRY · $1.20');
+    expect(formatSegment(parseStatusInput(payload({ ...plain, rate_limits: { five_hour: { used_percentage: 99.6 } }, cost: undefined }), null, NOW), true)).toBe('🛡️ JERRY · 5h 100%');
+    // A model without effort support: no effort; an unknown value is not shown.
+    expect(formatSegment(parseStatusInput(payload({ effort: undefined, rate_limits: undefined, cost: undefined }), null, NOW), true)).toBe('🛡️ JERRY · Opus');
+    expect(parseStatusInput(payload({ effort: { level: 'ludicrous' } }), null, NOW)).not.toHaveProperty('effort');
     expect(formatSegment(null, true)).toBe('🛡️ JERRY');
   });
 });

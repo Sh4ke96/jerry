@@ -111,7 +111,7 @@ describe('status-line script (built bundle)', () => {
 
     const result = runScript(home, payload(elsewhere));
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toBe('🛡️ JERRY · 5h 23% · week 41% · $1.20\n');
+    expect(result.stdout).toBe('🛡️ JERRY · Opus · 5h 23% · week 41% · $1.20\n');
     expect(readLast(home)).toMatchObject({ entrypoint: 'cli', sessionId: 'session-1', version: '2.1.90', hasRateLimits: true, byEntrypoint: { cli: { hasRateLimits: true } } });
     expect(JSON.stringify(readLast(home))).not.toMatch(/pct|cost|fiveHour|sevenDay/i);
     expect(spooled(home)).toEqual([]);
@@ -193,7 +193,7 @@ describe('status-line script (built bundle)', () => {
     const home = freshDir('home');
     writeProjectsFile(home, []);
     const result = runScript(home, payload(freshDir('repo'), { rate_limits: undefined, cost: { total_cost_usd: 0 } }), { CLAUDE_CODE_ENTRYPOINT: 'claude-vscode' });
-    expect(result.stdout).toBe('🛡️ JERRY · $0.00\n');
+    expect(result.stdout).toBe('🛡️ JERRY · Opus · $0.00\n');
     expect(readLast(home)).toMatchObject({ entrypoint: 'claude-vscode', hasRateLimits: false });
   });
 
@@ -217,14 +217,14 @@ describe('status-line script (built bundle)', () => {
       previous("let raw = ''; process.stdin.on('data', (c) => (raw += c)); process.stdin.on('end', () => console.log('previous for ' + JSON.parse(raw).session_id));");
       const result = runScript(home, payload(freshDir('repo')));
       expect(result.exitCode).toBe(0);
-      expect(result.stdout).toBe('previous for session-1\n🛡️ JERRY · 5h 23% · week 41% · $1.20\n');
+      expect(result.stdout).toBe('previous for session-1\n🛡️ JERRY · Opus · 5h 23% · week 41% · $1.20\n');
     });
 
     it('cuts off a previous status line that hangs, and still prints JERRY\'s', () => {
       previous("console.log('too late'); setTimeout(() => {}, 4000);");
       const result = runScript(home, payload(freshDir('repo')));
       expect(result.exitCode).toBe(0);
-      expect(result.stdout).toBe('🛡️ JERRY · 5h 23% · week 41% · $1.20\n');
+      expect(result.stdout).toBe('🛡️ JERRY · Opus · 5h 23% · week 41% · $1.20\n');
       expect(result.ms).toBeLessThan(3500);
     });
 
@@ -232,7 +232,7 @@ describe('status-line script (built bundle)', () => {
       writeStatuslineConfig(home, { previous: { type: 'command', command: 'no-such-command-for-jerry-tests' }, enabledAt: new Date().toISOString() });
       const result = runScript(home, payload(freshDir('repo')), { JERRY_NO_EMOJI: '1' });
       expect(result.exitCode).toBe(0);
-      expect(result.stdout).toBe('JERRY · 5h 23% · week 41% · $1.20\n');
+      expect(result.stdout).toBe('JERRY · Opus · 5h 23% · week 41% · $1.20\n');
     });
   });
 });

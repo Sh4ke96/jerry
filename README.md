@@ -284,6 +284,12 @@ Claude login):
 - **Tokens and cost**: Claude Code's **OpenTelemetry** metrics, sent every minute to the local JERRY Core on
   `127.0.0.1` with a per-install key. Cost is an estimate at list price, not your bill.
 
+In a terminal session, JERRY's part of the status line reads `🛡️ JERRY · Opus · high · 5h 23% · week 41% · $1.20`:
+the session's model and reasoning effort (the session's own, not a subagent's; no effort for a model without
+it), your plan's 5-hour and weekly limits (account-wide), and this session's estimated cost at list price as Claude
+Code computes it (not your bill on a Pro/Max plan; back to $0 after `/clear`). Parts Claude Code does not pass are
+left out.
+
 `jerry install` turns both on, after backing up `~/.claude/settings.json`. It writes only `statusLine` and a few
 `env` keys (`CLAUDE_CODE_ENABLE_TELEMETRY`, `OTEL_*`). If you already have your own status line, it keeps running
 next to JERRY's. If you have your own OpenTelemetry setup, JERRY leaves it alone and does not collect tokens.
