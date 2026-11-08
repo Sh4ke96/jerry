@@ -35,7 +35,7 @@ describe('JERRY MCP server (bundled)', () => {
     const mcp = await connect();
     const listed = (await mcp.request('tools/list'))['result'] as { tools: Array<{ name: string; annotations: { readOnlyHint: boolean } }> };
     const names = listed.tools.map((tool) => tool.name).sort();
-    expect(names).toEqual(['assign_work', 'check_paths', 'finish_review', 'get_analysis', 'get_final_report', 'get_history', 'get_project_profile', 'get_review', 'get_state', 'list_deviations', 'list_findings', 'record_artifact', 'report_fixes', 'save_checkpoint', 'start_task', 'submit_analysis_report', 'submit_fix_plan', 'submit_plan', 'submit_report', 'submit_review', 'wait_for_decision']);
+    expect(names).toEqual(['assign_work', 'check_paths', 'draft_report', 'finish_review', 'get_analysis', 'get_final_report', 'get_history', 'get_project_profile', 'get_review', 'get_state', 'list_deviations', 'list_findings', 'record_artifact', 'report_fixes', 'save_checkpoint', 'start_task', 'submit_analysis_report', 'submit_fix_plan', 'submit_plan', 'submit_report', 'submit_review', 'wait_for_decision']);
     expect(listed.tools.filter((tool) => !tool.annotations.readOnlyHint).map((tool) => tool.name)).toEqual(['submit_plan', 'start_task', 'record_artifact', 'submit_review', 'finish_review', 'submit_fix_plan', 'report_fixes', 'assign_work', 'submit_analysis_report', 'submit_report', 'save_checkpoint']);
     expect(names.some((name) => /approve|accept|reject|exclude|pause|resume|cancel|done|complete/.test(name))).toBe(false);
   });

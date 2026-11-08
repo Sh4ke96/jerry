@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { AgentModelsResponse } from '@jerry/contracts';
-import { readAgentModel } from '@jerry/platform';
+import { modelFileOf, readAgentModel, withoutAgentModel } from '@jerry/platform';
 import type { FastifyInstance, InjectOptions, LightMyRequestResponse } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildCoreApp } from '../../apps/core/src/app.js';
@@ -39,13 +39,16 @@ describe('models of the read-only subagents (Core API)', () => {
     await app.close();
     await store.close();
   };
-  /** A fresh copy of the plugin's agents, as "jerry install" leaves them. */
+  const installedPlugin = path.dirname(installedAgents);
+  /** A fresh copy of the plugin's agents and skills, as "jerry install" leaves them. */
   const install = (): void => {
     fs.rmSync(installedAgents, { recursive: true, force: true });
     fs.mkdirSync(installedAgents, { recursive: true });
     for (const name of fs.readdirSync(REPO_AGENTS)) fs.copyFileSync(path.join(REPO_AGENTS, name), path.join(installedAgents, name));
+    fs.rmSync(path.join(installedPlugin, 'skills'), { recursive: true, force: true });
+    fs.cpSync(path.join(REPO_AGENTS, '..', 'skills'), path.join(installedPlugin, 'skills'), { recursive: true });
   };
-  const installed = (role: string) => readAgentModel(fs.readFileSync(path.join(installedAgents, `${role}.md`), 'utf8'));
+  const installed = (role: string) => readAgentModel(fs.readFileSync(modelFileOf(installedPlugin, role), 'utf8'));
 
   beforeAll(async () => {
     install();
@@ -70,7 +73,7 @@ describe('models of the read-only subagents (Core API)', () => {
   const asBrowser = (auth: { cookie: string; csrf?: string }, method: 'GET' | 'POST', url: string, payload?: Payload): Promise<LightMyRequestResponse> =>
     app.inject({ method, url, headers: { host: HOST, cookie: auth.cookie, origin: ORIGIN, ...(auth.csrf === undefined ? {} : { 'x-jerry-csrf': auth.csrf }) }, ...(payload === undefined ? {} : { payload }) });
 
-  it('lists the six read-only subagents with the plugin defaults, which the shipped agent files carry', async () => {
+  it('lists the six read-only subagents and three routine skills with the plugin defaults, which the shipped files carry', async () => {
     const response = (await asCli('GET', '/api/v1/agents/models')).json() as AgentModelsResponse;
     expect(response.problems).toEqual([]);
     expect(response.agents.map((agent) => agent.role)).toEqual([
@@ -80,7 +83,13 @@ describe('models of the read-only subagents (Core API)', () => {
       'jerry-correctness-reviewer',
       'jerry-security-reviewer',
       'jerry-design-reviewer',
+      'jerry:report',
+      'jerry:commit-message',
+      'jerry:artifact',
     ]);
+    expect(response.agents.find((agent) => agent.role === 'jerry:commit-message')).toEqual({ role: 'jerry:commit-message', phase: 'skill', model: 'claude-sonnet-5-5', effort: 'low', defaults: { model: 'claude-sonnet-5-5', effort: 'low' } });
+    // The report stays on the session's model: a skill's model lasts for the rest of its turn.
+    expect(response.agents.find((agent) => agent.role === 'jerry:report')).toMatchObject({ model: 'inherit', effort: 'default' });
     expect(response.agents.find((agent) => agent.role === 'jerry-quality-analyst')).toEqual({ role: 'jerry-quality-analyst', phase: 'analysis', model: 'claude-sonnet-5-5', effort: 'medium', defaults: { model: 'claude-sonnet-5-5', effort: 'medium' } });
     for (const agent of response.agents) expect(installed(agent.role)).toEqual(agent.defaults);
     // The implementer is not a model choice: it keeps the session's model.
@@ -99,6 +108,16 @@ describe('models of the read-only subagents (Core API)', () => {
     const audit = await store.kysely.selectFrom('audit_log').select(['action', 'details_json']).where('action', '=', 'agents.models').execute();
     expect(audit).toHaveLength(1);
     expect(JSON.parse(audit[0]!.details_json)).toMatchObject({ channel: 'cli', update: [{ role: 'jerry-quality-analyst', model: 'claude-haiku-5-5', effort: 'low' }] });
+  });
+
+  it("writes a routine skill's choice into its SKILL.md and keeps the rest of the skill", async () => {
+    const file = modelFileOf(installedPlugin, 'jerry:report');
+    const before = fs.readFileSync(file, 'utf8');
+    expect((await asCli('POST', '/api/v1/agents/models', { agents: [{ role: 'jerry:report', model: 'claude-sonnet-5-5', effort: 'medium' }] })).statusCode).toBe(200);
+    expect(installed('jerry:report')).toEqual({ model: 'claude-sonnet-5-5', effort: 'medium' });
+    expect(withoutAgentModel(fs.readFileSync(file, 'utf8'))).toBe(withoutAgentModel(before));
+    expect((await asCli('POST', '/api/v1/agents/models', { agents: [{ role: 'jerry:report', model: 'inherit', effort: 'default' }] })).statusCode).toBe(200);
+    expect(fs.readFileSync(file, 'utf8')).toBe(before);
   });
 
   it('inherit and default remove the lines, so the subagent follows the session', async () => {

@@ -743,4 +743,12 @@ export const MIGRATIONS: Readonly<Record<string, Migration>> = {
       await db.schema.alterTable('tasks').addColumn('analysts_json', 'text').execute();
     },
   },
+
+  '0027_review_reviewers': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // The reviewers a round expects, sized to the change (JSON array of roles); null for rounds
+      // started before sizing: they expect all three.
+      await db.schema.alterTable('review_rounds').addColumn('reviewers_json', 'text').execute();
+    },
+  },
 };

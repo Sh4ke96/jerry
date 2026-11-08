@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { CORE_TOKEN_PATTERN, EVENT_SCHEMA_VERSION, GATE_VERDICTS, HOOK_EVENT_TYPES, TASK_ID_PATTERN, WORKFLOW_ACTORS, WORKFLOW_EVENTS, WORKFLOW_STATES } from './constants.js';
-import { AGENT_EFFORTS, AGENT_MODELS, ANALYST_ROLES, MODEL_CHOICE_ROLES } from './agents.js';
+import { AGENT_EFFORTS, AGENT_MODELS, ANALYST_ROLES, MODEL_CHOICE_ROLES, SKILL_MODEL_ROLES } from './agents.js';
 import { repositoryWorkspaceSchema } from './workspaces.js';
 
 /**
@@ -309,13 +309,13 @@ export type SettingsUpdateRequest = z.infer<typeof settingsUpdateRequestSchema>;
 export const agentModelSchema = z.enum(AGENT_MODELS);
 export const agentEffortSchema = z.enum(AGENT_EFFORTS);
 export const agentModelChoiceSchema = z.strictObject({ model: agentModelSchema, effort: agentEffortSchema });
-/** The read-only roles whose model and effort the user picks. */
-export const modelChoiceRoleSchema = z.enum(MODEL_CHOICE_ROLES.map((role) => role.id) as [string, ...string[]]);
+/** The read-only subagents and the routine skills whose model and effort the user picks. */
+export const modelChoiceRoleSchema = z.enum([...MODEL_CHOICE_ROLES.map((role) => role.id), ...SKILL_MODEL_ROLES.map((role) => role.id)] as [string, ...string[]]);
 
-/** One read-only subagent: its role, phase, the user's choice in effect and the plugin's default. */
+/** One read-only subagent (phase analysis/review) or routine skill (phase skill): the user's choice in effect and the plugin's default. */
 export const agentModelEntrySchema = z.object({
   role: z.string(),
-  phase: z.enum(['analysis', 'review']),
+  phase: z.enum(['analysis', 'review', 'skill']),
   model: agentModelSchema,
   effort: agentEffortSchema,
   defaults: agentModelChoiceSchema,
@@ -331,7 +331,7 @@ export type AgentModelsResponse = z.infer<typeof agentModelsResponseSchema>;
 
 /** POST /api/v1/agents/models: the subagents to change; a role left out keeps its choice. */
 export const agentModelsUpdateRequestSchema = z.strictObject({
-  agents: z.array(z.strictObject({ role: modelChoiceRoleSchema, model: agentModelSchema, effort: agentEffortSchema })).min(1).max(MODEL_CHOICE_ROLES.length),
+  agents: z.array(z.strictObject({ role: modelChoiceRoleSchema, model: agentModelSchema, effort: agentEffortSchema })).min(1).max(MODEL_CHOICE_ROLES.length + SKILL_MODEL_ROLES.length),
 });
 export type AgentModelsUpdateRequest = z.infer<typeof agentModelsUpdateRequestSchema>;
 
@@ -1039,6 +1039,34 @@ export const testRunSchema = z.object({
 });
 export type TestRun = z.infer<typeof testRunSchema>;
 
+/**
+ * GET /api/v1/tasks/:taskId/report-draft: an implementation report prefilled from what JERRY
+ * recorded (changed files, plan descriptions, recorded test runs, plan commit subjects), with what
+ * Claude still has to write. Read-only; submitting stays Claude's step.
+ */
+export const reportDraftSchema = z.object({
+  taskId: taskIdSchema,
+  planVersion: z.number().int().positive(),
+  draft: z.object({
+    summary: z.string(),
+    changes: z.array(z.object({ repository: z.string(), path: z.string(), kind: z.enum(['added', 'modified', 'deleted', 'renamed']), description: z.string() })),
+    checks: z.array(z.object({ kind: z.enum(['test', 'build', 'lint', 'typecheck', 'other']), command: z.string(), result: z.enum(['PASS', 'FAIL', 'NOT_RUN']), details: z.string() })),
+    planDeviations: z.array(z.object({ description: z.string(), reason: z.string() })),
+    risks: z.array(z.object({ risk: z.string(), severity: z.string(), mitigation: z.string() })),
+    commitSubjects: z.array(z.string()),
+    qaLanguage: qaLanguageSchema,
+  }),
+  /** Where each prefilled item came from, and the deviations JERRY recorded for the task. */
+  sources: z.object({
+    changes: z.array(z.object({ path: z.string(), source: z.string() })),
+    deviations: z.array(z.object({ at: z.string(), tool: z.string().nullable(), rule: z.string().nullable(), reason: z.string() })),
+    truncated: z.boolean(),
+  }),
+  /** What Claude still writes. */
+  fill: z.array(z.string()),
+});
+export type ReportDraft = z.infer<typeof reportDraftSchema>;
+
 /** Which tests to run for the changes so far, and the command limited to them. */
 export const targetedTestsSchema = z.object({
   changed: z.array(z.string()),
@@ -1139,6 +1167,8 @@ export const reviewRoundSchema = z.object({
   completedAt: z.iso.datetime().nullable(),
   /** Files this round had to cover. */
   changedFiles: z.array(z.string()),
+  /** The reviewers this round expects, sized to the change (all three for rounds before sizing). */
+  reviewers: z.array(reviewerRoleSchema).default([...REVIEWER_ROLES]),
   submissions: z.array(
     z.object({
       role: reviewerRoleSchema,

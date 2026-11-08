@@ -342,7 +342,8 @@ function printReview(review: ReviewState): void {
     for (const submission of round.submissions) {
       console.log(`  ${mark('agent', `${submission.role.padEnd(28)} ${submission.findings} finding(s), ${submission.filesReviewed.length} file(s) read`)}${submission.independent ? '' : `  ${flag(`not independent: ${submission.independenceNote}`)}`}`);
     }
-    const missing = REVIEWER_ROLES.filter((role) => !round.submissions.some((submission) => submission.role === role));
+    // The reviewers this round expects (sized to the change).
+    const missing = (round.reviewers ?? REVIEWER_ROLES).filter((role) => !round.submissions.some((submission) => submission.role === role));
     if (round.completedAt !== null && missing.length > 0) console.log(`  ${flag(`no report from ${missing.join(', ')}`)}`);
     if (round.uncovered.length > 0) console.log(`  ${flag(`changed files no reviewer covered: ${round.uncovered.join(', ')}`)}`);
     if (round.fixPlan !== null) {

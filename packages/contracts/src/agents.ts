@@ -54,6 +54,25 @@ export const MODEL_CHOICE_ROLES: readonly (AgentRole & { defaults: AgentModelCho
   (role): role is AgentRole & { defaults: AgentModelChoice } => role.readOnly && role.defaults !== undefined,
 );
 
+/**
+ * JERRY's routine skills whose model and effort the user picks (their SKILL.md frontmatter). A
+ * skill's model applies for the rest of the turn it runs in, so /jerry:report, after which review or
+ * fixes may follow in the same turn, stays on the session's model by default.
+ */
+export interface SkillModelRole {
+  /** The skill as Claude Code names it ("jerry:report"). */
+  id: string;
+  /** Its folder in the plugin (skills/<skill>/SKILL.md). */
+  skill: string;
+  defaults: AgentModelChoice;
+}
+
+export const SKILL_MODEL_ROLES: readonly SkillModelRole[] = [
+  { id: 'jerry:report', skill: 'report', defaults: { model: 'inherit', effort: 'default' } },
+  { id: 'jerry:commit-message', skill: 'commit-message', defaults: { model: 'claude-sonnet-5-5', effort: 'low' } },
+  { id: 'jerry:artifact', skill: 'artifact', defaults: { model: 'claude-sonnet-5-5', effort: 'medium' } },
+];
+
 /** Analyst roles, in the order the analysis lists them. */
 export const ANALYST_ROLES = ['jerry-architecture-analyst', 'jerry-risk-analyst', 'jerry-quality-analyst'] as const;
 export type AnalystRole = (typeof ANALYST_ROLES)[number];

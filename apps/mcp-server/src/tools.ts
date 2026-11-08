@@ -32,6 +32,7 @@ import {
   storedEventSchema,
   taskSchema,
   HISTORY_MAX_TASKS,
+  reportDraftSchema,
   historyResponseSchema,
   type HistoryResponse,
   ANALYST_ROLES,
@@ -572,6 +573,25 @@ export const TOOLS: readonly ToolDefinition[] = [
       }),
   },
   {
+    name: 'draft_report',
+    title: 'Draft of the implementation report',
+    description:
+      "The implementation report of a task prefilled from what JERRY recorded: the files changed since the plan was approved (kind from Git, description from the plan where it names the file), the latest recorded run of each test command, the plan's commit subjects and the QA language, plus the deviations JERRY recorded and the list of what you still write. Start /jerry:report from it, complete it, run the checks again, then submit_report. Read-only.",
+    inputSchema: { type: 'object', properties: { taskId: { type: 'string', description: 'The task (JRY-…).' } }, required: ['taskId'], additionalProperties: false },
+    readOnly: true,
+    handler: (args) =>
+      withCore(async () => {
+        const taskId = typeof args['taskId'] === 'string' ? args['taskId'].trim().toUpperCase() : '';
+        if (taskId === '') return failure('Which task? Pass its taskId (JRY-…).');
+        const draft = reportDraftSchema.parse(await core('GET', `/api/v1/tasks/${encodeURIComponent(taskId)}/report-draft`, undefined, 10_000));
+        const described = draft.draft.changes.filter((change) => change.description !== '').length;
+        return ok(
+          { ...draft, nextStep: `Complete the draft (${draft.fill.join('; ')}), keep what JERRY recorded unless the repository shows otherwise, then submit_report with taskId ${draft.taskId}.` },
+          `${EMOJI.report} ${draft.taskId} report draft · ${draft.draft.changes.length} file(s), ${described} described from the plan · ${draft.draft.checks.length} recorded check(s) · ${draft.sources.deviations.length} deviation(s)`,
+        );
+      }),
+  },
+  {
     name: 'record_artifact',
     title: 'Record the Artifact decision',
     description:
@@ -1072,20 +1092,23 @@ function reviewSummary(review: ReviewState): string {
   const round = review.rounds.at(-1);
   const head = `${EMOJI.review} ${review.taskId} review${round === undefined ? '' : ` round ${round.round}`}`;
   if (review.outcome !== null) return `${head} · ${review.outcome === 'passed' ? EMOJI.pass : EMOJI.skipped} ${review.outcome}`;
-  const reported = round?.submissions.length ?? 0;
-  return `${head} · ${reported}/${REVIEWER_ROLES.length} reviewers · ${findingsSummary(review.openFindings.map((finding) => finding.severity))}`;
+  const expected = round?.reviewers ?? REVIEWER_ROLES;
+  const reported = round?.submissions.filter((submission) => (expected as readonly string[]).includes(submission.role)).length ?? 0;
+  return `${head} · ${reported}/${expected.length} reviewers · ${findingsSummary(review.openFindings.map((finding) => finding.severity))}`;
 }
 
 /** The review state for Claude's context: compact, with the next step. */
 export function reviewDigest(review: ReviewState): Record<string, unknown> {
   const round = review.rounds.at(-1);
   const reported = new Set(round?.submissions.map((submission) => submission.role) ?? []);
-  const missing = REVIEWER_ROLES.filter((role) => !reported.has(role));
+  // The reviewers this change needs (all three for a sensitive or large change).
+  const expected = round?.reviewers ?? [...REVIEWER_ROLES];
+  const missing = expected.filter((role) => !reported.has(role));
   let nextStep: string;
   switch (review.state) {
     case 'CODE_REVIEW':
     case 'REVERIFICATION':
-      nextStep = `Start the reviewers that have not reported (${missing.join(', ') || 'none'}), at most three at a time, on the changed files with this taskId; each submits with submit_review. The round ends when all three reported.`;
+      nextStep = `Start the reviewers this change needs that have not reported (${missing.join(', ') || 'none'}), at most three at a time, on the changed files with this taskId; each submits with submit_review. The round ends when they reported${expected.length < REVIEWER_ROLES.length ? `; run the others only if the user asks for a full review` : ''}.`;
       break;
     case 'REVIEW_REPORT':
       nextStep =

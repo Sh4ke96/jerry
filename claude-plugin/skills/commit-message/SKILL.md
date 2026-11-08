@@ -1,6 +1,8 @@
 ---
 name: commit-message
 description: Propose Git commit messages for the current changes, in the repository's own convention, for the user to commit manually. Use when the user asks for a commit message or how to split the changes into commits. It never stages, commits or pushes.
+model: claude-sonnet-5-5
+effort: low
 ---
 
 # Propose commit messages

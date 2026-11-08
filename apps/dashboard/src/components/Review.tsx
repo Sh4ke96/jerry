@@ -83,8 +83,14 @@ export const ReviewPanel = defineComponent({
               round {round.round} of at most {state.maxRounds}
             </span>
           </h3>
+          {(round.reviewers ?? REVIEWER_ROLES).length < REVIEWER_ROLES.length && (
+            <p class="text-muted-foreground text-xs" data-review-sized>
+              Reviewers sized to the change: {(round.reviewers ?? REVIEWER_ROLES).length} of {REVIEWER_ROLES.length}.
+            </p>
+          )}
           <ul class={LIST}>
-            {REVIEWER_ROLES.map((role) => {
+            {/* The reviewers this round expects, and any other one that reported anyway. */}
+            {REVIEWER_ROLES.filter((role) => (round.reviewers ?? REVIEWER_ROLES).includes(role) || round.submissions.some((entry) => entry.role === role)).map((role) => {
               const submission = round.submissions.find((entry) => entry.role === role);
               return (
                 <li key={role}>

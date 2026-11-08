@@ -45,16 +45,21 @@ export function withoutAgentModel(text: string): string {
   return `---${match[1]!}${lines.join(match[1]!)}${match[1]!}---${match[3]!}${text.slice(match[0].length)}`;
 }
 
+/** The plugin file that carries a role's model: agents/<role>.md, or skills/<skill>/SKILL.md for a routine skill ("jerry:<skill>"). */
+export function modelFileOf(pluginDir: string, role: string): string {
+  return role.startsWith('jerry:') ? path.join(pluginDir, 'skills', role.slice('jerry:'.length), 'SKILL.md') : path.join(pluginDir, 'agents', `${role}.md`);
+}
+
 /**
- * Writes each role's choice into <pluginDir>/agents/<role>.md. Files already right are left alone.
- * Returns the problems (missing plugin, unreadable or unwritable files) instead of throwing.
+ * Writes each role's choice into its file in the installed plugin (modelFileOf). Files already right
+ * are left alone. Returns the problems (missing plugin, unreadable or unwritable files) instead of
+ * throwing.
  */
 export function applyAgentModels(pluginDir: string, choices: ReadonlyMap<string, AgentModelChoice>): string[] {
   const problems: string[] = [];
-  const agentsDir = path.join(pluginDir, 'agents');
-  if (!fs.existsSync(agentsDir)) return [`JERRY's plugin is not installed at ${pluginDir}; run "jerry install".`];
+  if (!fs.existsSync(path.join(pluginDir, 'agents'))) return [`JERRY's plugin is not installed at ${pluginDir}; run "jerry install".`];
   for (const [role, choice] of choices) {
-    const file = path.join(agentsDir, `${role}.md`);
+    const file = modelFileOf(pluginDir, role);
     try {
       const text = fs.readFileSync(file, 'utf8');
       const updated = withAgentModel(text, choice);

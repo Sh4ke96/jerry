@@ -330,6 +330,21 @@ percentages.
   change, the completeness check says which analysts did not run.
 - 🔕 **Warnings once.** "No approved plan" reaches Claude once per session, subagent and repository (again after
   it worked under a plan). Every occurrence is still recorded as a deviation, and you still see the line each time.
+- 📝 **Report drafts.** `/jerry:report` starts from `draft_report`: the files changed since the plan was
+  approved (kind from Git, description from the plan where it names the file, out-of-scope files flagged), the
+  latest recorded run of each test command, the plan's commit subjects and the QA language, plus the deviations
+  JERRY recorded. Claude writes only the summary, missing descriptions, risks and QA scenarios, and runs the
+  checks again. Output tokens are the expensive ones.
+- 🧾 **Models for routine skills.** `/jerry:commit-message` (Sonnet 5.5, low) and `/jerry:artifact` (Sonnet 5.5,
+  medium) run on a smaller model by default; `/jerry:report` keeps the session's. Change them on each skill's page
+  (a **Model** card). A skill's model lasts from the moment it starts to the end of that turn, so whatever Claude
+  does after it in the same turn runs on it too.
+- 🔍 **Review sized to the change.** The correctness reviewer always reviews; the security reviewer joins for
+  security, database, infrastructure or API work; the design reviewer for UI or refactoring; all three for more than
+  10 changed files, several repositories, or a plan without a classification. A round completes when its reviewers
+  reported; a reviewer you ask for in addition is welcome.
+- 🧪 **The right test command.** Targeted tests use the test command of the package that holds all changed files
+  (else the repository root's), not the first one the scan found.
 - 🧠 **Project history for Claude.** JERRY gives Claude what it recorded about earlier work through the
   `get_history` tool: for the files, folders or words Claude names, the earlier tasks with what they changed in
   each file and why, the approach of their plans, deviations, your comments on plans and reports, findings you

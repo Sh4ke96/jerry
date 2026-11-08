@@ -27,6 +27,9 @@ const ROLE_LABEL: Record<string, string> = {
   'jerry-correctness-reviewer': 'Correctness reviewer',
   'jerry-security-reviewer': 'Security reviewer',
   'jerry-design-reviewer': 'Design reviewer',
+  'jerry:report': 'This skill',
+  'jerry:commit-message': 'This skill',
+  'jerry:artifact': 'This skill',
 };
 
 const SELECT = 'border-input bg-background hover:bg-accent/40 h-9 rounded-md border px-3 text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50';
@@ -38,7 +41,12 @@ const SELECT = 'border-input bg-background hover:bg-accent/40 h-9 rounded-md bor
  */
 export const AgentModels = defineComponent({
   name: 'AgentModels',
-  props: { phase: { type: String as PropType<'analysis' | 'review'>, required: true } },
+  props: {
+    /** The subagents of this phase (on /jerry:analyze or /jerry:review). */
+    phase: { type: String as PropType<'analysis' | 'review'>, default: undefined },
+    /** One routine skill itself ("jerry:report"): its own model and effort. */
+    role: { type: String, default: undefined },
+  },
   setup(props) {
     const agents = ref<AgentModelEntry[] | null>(null);
     const unavailable = ref(false);
@@ -59,7 +67,7 @@ export const AgentModels = defineComponent({
       }
     });
 
-    const shown = computed(() => (agents.value ?? []).filter((agent) => agent.phase === props.phase));
+    const shown = computed(() => (agents.value ?? []).filter((agent) => (props.role === undefined ? agent.phase === props.phase : agent.role === props.role)));
 
     const save = async (agent: AgentModelEntry, change: Partial<Pick<AgentModelEntry, 'model' | 'effort'>>): Promise<void> => {
       if (saving.value !== null) return;
@@ -86,7 +94,7 @@ export const AgentModels = defineComponent({
               {isDefault ? <StatusBadge>default</StatusBadge> : <StatusBadge tone="pass">your choice</StatusBadge>}
             </span>
             <span class="text-muted-foreground font-mono text-xs">
-              jerry:{agent.role} · default {MODEL_LABEL[agent.defaults.model]}, {EFFORT_LABEL[agent.defaults.effort].toLowerCase()}
+              {agent.phase === 'skill' ? `/${agent.role}` : `jerry:${agent.role}`} · default {MODEL_LABEL[agent.defaults.model]}, {EFFORT_LABEL[agent.defaults.effort].toLowerCase()}
             </span>
           </div>
           <div class="flex flex-wrap items-center gap-2">
@@ -116,15 +124,16 @@ export const AgentModels = defineComponent({
     };
 
     return () => (
-      <Card class="agent-models">
+      <Card class="agent-models" data-model-card={props.role ?? props.phase}>
         <CardHeader>
           <CardTitle class="flex items-center">
             <Emoji symbol={EMOJI.jerry} />
-            Subagents
+            {props.role === undefined ? 'Subagents' : 'Model'}
           </CardTitle>
           <CardDescription>
-            The model and reasoning effort of each read-only {props.phase === 'analysis' ? 'analyst' : 'reviewer'} this skill starts. A smaller model or a lower effort uses fewer tokens; the session's settings apply to everything else. Saved as
-            soon as you change it.
+            {props.role === undefined
+              ? `The model and reasoning effort of each read-only ${props.phase === 'analysis' ? 'analyst' : 'reviewer'} this skill starts. A smaller model or a lower effort uses fewer tokens; the session's settings apply to everything else. Saved as soon as you change it.`
+              : "The model and reasoning effort this skill runs on. Claude Code applies them from the moment the skill starts until the end of that turn, so whatever Claude does after it in the same turn runs on them too. A smaller model or a lower effort uses fewer tokens. Saved as soon as you change it."}
           </CardDescription>
         </CardHeader>
         <CardContent class="grid gap-4">

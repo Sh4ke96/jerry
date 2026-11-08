@@ -63,11 +63,32 @@ async function workingTask(store: StateStore, sessionId: string | null, repoRoot
   return working.length === 1 ? working[0]! : null;
 }
 
+/** The folder of the manifest a profile command comes from ("" for the repository root). */
+function manifestDir(source: string): string {
+  const manifest = source.trim().split(/\s+/)[0] ?? '';
+  const dir = path.posix.dirname(manifest.replaceAll('\\', '/'));
+  return dir === '.' ? '' : dir;
+}
+
+/**
+ * The test command for these changed files: the one of the deepest package that holds all of them
+ * (a change inside apps/web runs apps/web's tests), else the repository root's, else the first
+ * found. Profile commands come in manifest order, so the first one is not necessarily the root's.
+ */
+export function testCommandFor(commands: ReadonlyArray<{ kind: string; run: string; source: string }>, changedFiles: readonly string[]): string | null {
+  const tests = commands.filter((command) => command.kind === 'test').map((command) => ({ run: command.run, dir: manifestDir(command.source) }));
+  if (tests.length === 0) return null;
+  const inside = (file: string, dir: string): boolean => dir === '' || file.replaceAll('\\', '/').startsWith(`${dir}/`);
+  const holding = changedFiles.length === 0 ? [] : tests.filter((command) => command.dir !== '' && changedFiles.every((file) => inside(file, command.dir)));
+  const deepest = holding.sort((a, b) => b.dir.split('/').length - a.dir.split('/').length)[0];
+  return (deepest ?? tests.find((command) => command.dir === '') ?? tests[0]!).run;
+}
+
 /** Targeted tests for a task's changes since its plan was approved. */
 export async function targetedTestsFor(store: StateStore, task: Task): Promise<TargetedTestsAnswer> {
   const changes = await store.changesSincePlanApproval(task);
   const stored = await store.storedProfile(task.repoRoot);
-  const command = stored?.profile.commands.find((candidate) => candidate.kind === 'test')?.run ?? null;
+  const command = testCommandFor(stored?.profile.commands ?? [], changes);
   const exists = (file: string): boolean => {
     try {
       return fs.statSync(path.join(task.repoRoot, file)).isFile();

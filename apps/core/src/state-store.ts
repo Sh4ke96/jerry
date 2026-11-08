@@ -5,6 +5,7 @@ import {
   type AgentModelChoice,
   type AgentModelsUpdateRequest,
   MODEL_CHOICE_ROLES,
+  SKILL_MODEL_ROLES,
   coreStateSchema,
   storedEventSchema,
   type ApprovalRecord,
@@ -48,6 +49,8 @@ import {
   type FixPlan,
   MAX_REVIEW_ROUNDS,
   REVIEWER_ROLES,
+  reviewerRoleSchema,
+  taskRepositoryRoots,
   type ReviewerRole,
   type ReviewState,
   type ReviewSubmission,
@@ -79,7 +82,7 @@ import {
   type SettingsUpdateRequest,
 } from '@jerry/contracts';
 import { backupDatabase, openJerryDatabase, type JerryDatabase, type JerrySchema } from '@jerry/database';
-import { absolutePath, comparablePath, computePlanHash, computeReportHash, currentPlanDecision, decisionFor, isComparableInside, matchesAnyGlob, relativeInside, taskRepositories, type TaskRepository } from '@jerry/policy-engine';
+import { absolutePath, comparablePath, computePlanHash, computeReportHash, currentPlanDecision, decisionFor, isComparableInside, matchesAnyGlob, relativeInside, reviewersFor, taskRepositories, type TaskRepository } from '@jerry/policy-engine';
 import { writeFileAtomic } from '@jerry/platform';
 import { applyEvent, effectiveReviewMode, evaluateCompletion, globsOverlap, isTerminal, planLayers, resolveReviewChoice, WORK_STATES, type TransitionContext } from '@jerry/workflow';
 import { MAX_SUBAGENTS } from '@jerry/contracts/agents';
@@ -443,7 +446,9 @@ export class StateStore {
       // final checks; without review the final checks run now.
       if (event === 'implementation.accepted' && review === true) {
         const previous = await trx.selectFrom('review_rounds').select((eb) => eb.fn.max('round').as('round')).where('task_id', '=', taskId).executeTakeFirst();
-        await trx.insertInto('review_rounds').values({ task_id: taskId, round: Number(previous?.round ?? 0) + 1, started_at: at, changed_files_json: JSON.stringify(toReview) }).execute();
+        // The reviewers this change needs, from the plan's classification and the files to review.
+        const reviewers = reviewersFor({ classification: task.plan.document?.classification, changedFiles: toReview.length, repositories: taskRepositoryRoots(task).length });
+        await trx.insertInto('review_rounds').values({ task_id: taskId, round: Number(previous?.round ?? 0) + 1, started_at: at, changed_files_json: JSON.stringify(toReview), reviewers_json: JSON.stringify(reviewers) }).execute();
       }
       if (event === 'implementation.accepted' && review === false) await this.runFinalChecks(trx, task, at, gitNow);
       if (event === 'fixes.approved') await trx.updateTable('review_rounds').set({ fixes_approved_at: at }).where('task_id', '=', taskId).where('round', '=', record.version).execute();
@@ -539,7 +544,7 @@ export class StateStore {
    * In-scope files changed since the plan was approved, from read-only Git; the user's
    * files that were already changed then and have not changed since are left out.
    */
-  async changesSincePlanApproval(task: Task): Promise<string[]> {
+  async changesSincePlanApproval(task: Task, options: { withinScope?: boolean } = {}): Promise<string[]> {
     const changed: string[] = [];
     // Every repository of the task, each against its own scope; another repository's files are shown absolute.
     for (const { view, prepared: now } of await this.prepareSnapshots(task, 'report')) {
@@ -548,7 +553,8 @@ export class StateStore {
       changed.push(
         ...now.changed
           .filter((file) => !(file in userAtBaseline) || userAtBaseline[file] !== now.fingerprints[file])
-          .filter((file) => matchesAnyGlob(file, view.plan.scope, process.platform === 'win32'))
+          // The report draft wants every change, out-of-scope ones too: the report has to name them.
+          .filter((file) => options.withinScope === false || matchesAnyGlob(file, view.plan.scope, process.platform === 'win32'))
           .sort()
           .map((file) => shownPath(view, file)),
       );
@@ -1258,7 +1264,13 @@ export class StateStore {
 
   // --- Independent review -----------------------------------------------------------------------
 
-  /** A reviewer's submission for the current round; the round completes when all three reported. */
+  /** The reviewers a round expects: sized at its start, all three for rounds started before sizing. */
+  private async roundReviewers(taskId: string, round: number): Promise<ReviewerRole[]> {
+    const row = await this.database.db.selectFrom('review_rounds').select('reviewers_json').where('task_id', '=', taskId).where('round', '=', round).executeTakeFirst();
+    return reviewersOf(row?.reviewers_json ?? null);
+  }
+
+  /** A reviewer's submission for the current round; the round completes when the reviewers it expects reported. */
   async submitReview(taskId: string, review: ReviewSubmission, sessionId: string | null, agentId: string | null, now: Date): Promise<ReviewState> {
     const task = this.requireTask(taskId);
     if (task.state !== 'CODE_REVIEW' && task.state !== 'REVERIFICATION') throw new StateError(409, `${taskId} is ${task.state}; reviews are submitted while it is in code review or re-verification`);
@@ -1267,7 +1279,9 @@ export class StateStore {
     const at = now.toISOString();
     const submitted = new Set((await this.database.db.selectFrom('review_submissions').select('role').where('task_id', '=', taskId).where('round', '=', round.round).execute()).map((row) => row.role));
     submitted.add(review.role);
-    const completes = REVIEWER_ROLES.every((role) => submitted.has(role));
+    // Another reviewer the user asked for is welcome; the round needs the ones it expects.
+    const expected = await this.roundReviewers(taskId, round.round);
+    const completes = expected.every((role) => submitted.has(role));
     const gitNow = completes ? await this.prepareSnapshots(task, 'report') : null;
     const independence = this.independenceOf(task, agentId);
     await this.database.db.transaction().execute(async (trx) => {
@@ -1346,7 +1360,7 @@ export class StateStore {
         })
         .execute();
       if (sessionId !== null) await linkSession(trx, sessionId, taskId, 'analysis', at);
-      if (completes) await this.completeRound(trx, task, round.round, 'core', 'all three reviewers reported', at, gitNow);
+      if (completes) await this.completeRound(trx, task, round.round, 'core', expected.length === REVIEWER_ROLES.length ? 'all three reviewers reported' : `the reviewers this change needs reported (${expected.join(', ')})`, at, gitNow);
     });
     await this.reload();
     return this.reviewState(taskId);
@@ -1359,7 +1373,7 @@ export class StateStore {
     if (round === null || (task.state !== 'CODE_REVIEW' && task.state !== 'REVERIFICATION')) throw new StateError(409, `${taskId} has no open review round`);
     const roles = (await this.database.db.selectFrom('review_submissions').select('role').where('task_id', '=', taskId).where('round', '=', round.round).execute()).map((row) => row.role);
     if (roles.length === 0) throw new StateError(409, `No reviewer reported in round ${round.round} yet; start the reviewers first`);
-    const missing = REVIEWER_ROLES.filter((role) => !roles.includes(role));
+    const missing = (await this.roundReviewers(taskId, round.round)).filter((role) => !roles.includes(role));
     const gitNow = await this.prepareSnapshots(task, 'report');
     const at = now.toISOString();
     await this.database.db.transaction().execute(async (trx) => {
@@ -1435,12 +1449,15 @@ export class StateStore {
     if (round === null) throw new StateError(409, `${taskId} has no review round`);
     const at = now.toISOString();
     const roundRow = await this.database.db.selectFrom('review_rounds').select(['fixes_approved_at']).where('task_id', '=', taskId).where('round', '=', round.round).executeTakeFirstOrThrow();
+    // Read before the transaction: the database has one connection.
+    const reviewers = await this.roundReviewers(taskId, round.round);
     await this.database.db.transaction().execute(async (trx) => {
       const edited = await editsInScopeBetween(trx, task, roundRow.fixes_approved_at ?? round.startedAt, at);
       const findingFiles = (await trx.selectFrom('findings').select('file').where('task_id', '=', taskId).where('source', '=', 'review').where('status', 'in', ['OPEN', 'ACCEPTED']).execute()).map((row) => row.file);
       await trx.updateTable('review_rounds').set({ fixes_reported_at: at, fixes_summary: summary }).where('task_id', '=', taskId).where('round', '=', round.round).execute();
       await this.transition(trx, taskId, 'fixes.reported', 'claude', `fixes for review round ${round.round}`, at);
-      await trx.insertInto('review_rounds').values({ task_id: taskId, round: round.round + 1, started_at: at, changed_files_json: JSON.stringify([...new Set([...edited, ...findingFiles])].sort()) }).execute();
+      // Re-verification by the same reviewers as the round before.
+      await trx.insertInto('review_rounds').values({ task_id: taskId, round: round.round + 1, started_at: at, changed_files_json: JSON.stringify([...new Set([...edited, ...findingFiles])].sort()), reviewers_json: JSON.stringify(reviewers) }).execute();
       if (sessionId !== null) await linkSession(trx, sessionId, taskId, 'report', at);
     });
     await this.reload();
@@ -1487,6 +1504,7 @@ export class StateStore {
           startedAt: row.started_at,
           completedAt: row.completed_at,
           changedFiles: changed,
+          reviewers: reviewersOf(row.reviewers_json),
           submissions: own.map((submission) => ({
             role: submission.role,
             agentId: submission.agent_id,
@@ -1839,7 +1857,7 @@ export class StateStore {
         // An unreadable row falls back to the defaults.
       }
     }
-    return new Map(MODEL_CHOICE_ROLES.map((role) => [role.id, stored[role.id] ?? role.defaults]));
+    return new Map([...MODEL_CHOICE_ROLES, ...SKILL_MODEL_ROLES].map((role) => [role.id, stored[role.id] ?? role.defaults]));
   }
 
   /** Changes the model and effort of read-only subagents; only the user does this (dashboard or CLI with the Core token). */
@@ -2403,6 +2421,17 @@ function approvalFromRow(row: Selectable<JerrySchema['approvals']>): ApprovalRec
 }
 
 /** A stored setting, or the default when it is missing or not a valid value. */
+/** A round's expected reviewers; null or unreadable (rounds before sizing): all three. */
+function reviewersOf(json: string | null): ReviewerRole[] {
+  if (json === null) return [...REVIEWER_ROLES];
+  try {
+    const parsed = z.array(reviewerRoleSchema).min(1).safeParse(JSON.parse(json));
+    return parsed.success ? parsed.data : [...REVIEWER_ROLES];
+  } catch {
+    return [...REVIEWER_ROLES];
+  }
+}
+
 function storedSetting<T>(rows: readonly { key: string; value_json: string }[], key: string, schema: z.ZodType<T>, fallback: T): T {
   const row = rows.find((candidate) => candidate.key === key);
   if (row === undefined) return fallback;

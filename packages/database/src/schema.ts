@@ -333,6 +333,8 @@ export interface ReviewRoundsTable {
   fixes_approved_at: string | null;
   fixes_reported_at: string | null;
   fixes_summary: string | null;
+  /** The reviewers this round expects (JSON array); null for older rounds (all three). */
+  reviewers_json: ColumnType<string | null, string | null | undefined, string | null>;
 }
 
 /** A reviewer's submission for a round; one per role and round (a resubmission replaces it). */

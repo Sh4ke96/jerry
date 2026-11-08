@@ -29,6 +29,7 @@ import {
   type AgentModelChoice,
   type AgentModelsResponse,
   MODEL_CHOICE_ROLES,
+  SKILL_MODEL_ROLES,
   jerryShareRequestSchema,
   usageCollectionRequestSchema,
   usageSnapshotsRequestSchema,
@@ -44,6 +45,7 @@ import {
   taskIntakeRequestSchema,
   historyQuerySchema,
   type HistoryResponse,
+  type ReportDraft,
   findingIdSchema,
   findingStatusRequestSchema,
   findingStatusSchema,
@@ -93,6 +95,7 @@ import { evaluatePending, isMonitoredEvent, withRepoRoot } from './events.js';
 import { dataUsage, forget, previewForget, previewPrune, prune, type DataContext } from './data-maintenance.js';
 import { checkCitations } from './citations.js';
 import { buildHistory } from './history.js';
+import { buildReportDraft } from './report-draft.js';
 import { DecisionWaits } from './decision-wait.js';
 import { ProfileService } from './profiles.js';
 import { QualityScheduler } from './quality-scheduler.js';
@@ -753,7 +756,10 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   // folder, so Core writes the choice again at every start.
   const installedPluginDir = path.join(jerryPaths(options.jerryHome).marketplaceDir, 'plugins', 'jerry');
   const agentModelsResponse = (choices: ReadonlyMap<string, AgentModelChoice>, problems: string[]): AgentModelsResponse => ({
-    agents: MODEL_CHOICE_ROLES.map((role) => ({ role: role.id, phase: role.phase as 'analysis' | 'review', ...(choices.get(role.id) ?? role.defaults), defaults: role.defaults })),
+    agents: [
+      ...MODEL_CHOICE_ROLES.map((role) => ({ role: role.id, phase: role.phase as 'analysis' | 'review', ...(choices.get(role.id) ?? role.defaults), defaults: role.defaults })),
+      ...SKILL_MODEL_ROLES.map((role) => ({ role: role.id, phase: 'skill' as const, ...(choices.get(role.id) ?? role.defaults), defaults: role.defaults })),
+    ],
     problems,
   });
   app.addHook('onReady', async () => {
@@ -1225,6 +1231,15 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     const task = store.snapshot().tasks.find((candidate) => candidate.taskId === taskId);
     if (task === undefined) throw new HttpError(404, `Unknown task ${taskId}`);
     return targetedTestsFor(store, task);
+  });
+
+  /** The implementation report prefilled from what JERRY recorded; Claude completes and submits it. */
+  app.get('/api/v1/tasks/:taskId/report-draft', { config: TOKEN_ONLY }, async (request): Promise<ReportDraft> => {
+    const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId.toUpperCase());
+    const task = store.snapshot().tasks.find((candidate) => candidate.taskId === taskId);
+    if (task === undefined) throw new HttpError(404, `Unknown task ${taskId}`);
+    if (!WORK_STATES.has(task.state)) throw new HttpError(409, `${taskId} is ${task.state}; a report draft is for a task in implementation or fixes`);
+    return buildReportDraft(store, task);
   });
 
   /** Every plan version, oldest first; the dashboard and CLI diff them. */

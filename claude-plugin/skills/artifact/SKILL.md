@@ -1,6 +1,8 @@
 ---
 name: artifact
 description: Offer the user an optional Artifact for a finished JERRY task (a stakeholder presentation, the architecture before and after, UI flows, or an endpoint and contract map), create it with Claude only if they want one, and record their choice in JERRY. Use when a JERRY task is DONE, when its plan asked for an Artifact, or when the user asks for one.
+model: claude-sonnet-5-5
+effort: medium
 ---
 
 # An optional Artifact for a JERRY task

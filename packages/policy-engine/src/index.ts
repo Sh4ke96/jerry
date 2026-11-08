@@ -6,3 +6,4 @@ export * from './approvals.js';
 export * from './gate.js';
 export * from './plan-grade.js';
 export * from './analysts.js';
+export * from './reviewers.js';

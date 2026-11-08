@@ -1,6 +1,6 @@
 ---
 name: review
-description: Run JERRY's independent code review of an accepted implementation with the three read-only reviewers, write the fix plan for their findings, make the fixes the user approves, and have the same reviewers re-check. Use when a JERRY task is in code review, review report, fix implementation or re-verification, or when the user asks for the review.
+description: Run JERRY's independent code review of an accepted implementation with the read-only reviewers the change needs (up to three), write the fix plan for their findings, make the fixes the user approves, and have the same reviewers re-check. Use when a JERRY task is in code review, review report, fix implementation or re-verification, or when the user asks for the review.
 ---
 
 # Independent code review with JERRY
@@ -10,7 +10,9 @@ set by the user globally or per project). The user asks for it when accepting an
 dashboard, or `jerry approve … --review`), or runs `/jerry:review`; in `required` mode every acceptance goes to
 review. An accepted implementation without review goes straight to JERRY's final checks.
 
-A task in code review is checked by three read-only reviewers, on every changed file. You orchestrate: you do
+A task in code review is checked by the read-only reviewers the change needs (up to three: correctness
+always; security for security, database, infrastructure, API or large changes; design for UI, refactoring or
+large changes), on every changed file. You orchestrate: you do
 not review your own work, and you do not decide what is good enough. Only the user approves fixes or waives the
 review.
 
@@ -32,14 +34,15 @@ review.
   and open findings from earlier rounds. In a task across several repositories, files of the task's own
   repository are relative and files of its other repositories are absolute; reviewers report them the same
   way.
-- Start the missing reviewers in parallel, in one message, at most three:
+- Start the reviewers `get_review` names as missing, in parallel, in one message, at most three, from:
   - `jerry:jerry-correctness-reviewer`;
   - `jerry:jerry-security-reviewer`;
   - `jerry:jerry-design-reviewer`.
+  Run a reviewer JERRY did not ask for only when the user asks for a full review.
 - Give each the task ID and tell it to submit with `submit_review`. Do not tell them what to find, and
   do not review the code yourself in their place.
-- When all three have reported, JERRY closes the round. If one failed, run it once more. If it fails again,
-  `finish_review` closes the round, and the missing reviewer stays visible as a gap.
+- When the reviewers the round expects have reported, JERRY closes the round. If one failed, run it once more.
+  If it fails again, `finish_review` closes the round, and the missing reviewer stays visible as a gap.
 
 ## 2. Read the result
 
@@ -70,7 +73,7 @@ review.
 
 - After the approval, make exactly the planned fixes. Run the project's checks and the targeted tests
   (`list_findings` → `tests.run`).
-- Report them with `report_fixes`. JERRY starts the next round for the same three reviewers. Go back
+- Report them with `report_fixes`. JERRY starts the next round for the same reviewers. Go back
   to step 1.
 - After three rounds JERRY stops the automatic loop: tell the user. They waive the review, dismiss findings,
   or send the work back.

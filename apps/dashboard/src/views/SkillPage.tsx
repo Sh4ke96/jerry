@@ -1,4 +1,5 @@
 import type { SkillDetail } from '@jerry/contracts';
+import { SKILL_MODEL_ROLES } from '@jerry/contracts/agents';
 import { EMOJI } from '@jerry/contracts/emoji';
 import { defineComponent, onMounted, ref } from 'vue';
 import { api, HttpError } from '../api';
@@ -63,6 +64,7 @@ export const SkillPage = defineComponent({
             </Card>
           )}
           {skill.kind === 'jerry' && SKILL_AGENT_PHASE[skill.name] !== undefined && <AgentModels phase={SKILL_AGENT_PHASE[skill.name]!} />}
+          {skill.kind === 'jerry' && SKILL_MODEL_ROLES.some((role) => role.id === skill.name) && <AgentModels role={skill.name} />}
           {skill.kind === 'added' && (
             <Card>
               <CardHeader>

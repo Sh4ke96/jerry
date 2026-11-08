@@ -66,6 +66,7 @@ describe('Skills in the dashboard', () => {
       { role: 'jerry-risk-analyst', phase: 'analysis', model: 'claude-opus-5-5', effort: 'high', defaults: { model: 'claude-opus-5-5', effort: 'high' } },
       { role: 'jerry-quality-analyst', phase: 'analysis', model: 'claude-sonnet-5-5', effort: 'medium', defaults: { model: 'claude-sonnet-5-5', effort: 'medium' } },
       { role: 'jerry-correctness-reviewer', phase: 'review', model: 'claude-opus-5-5', effort: 'high', defaults: { model: 'claude-opus-5-5', effort: 'high' } },
+      { role: 'jerry:commit-message', phase: 'skill', model: 'claude-sonnet-5-5', effort: 'low', defaults: { model: 'claude-sonnet-5-5', effort: 'low' } },
     ];
     list = {
       skillsDir: SKILLS_DIR,
@@ -130,7 +131,7 @@ describe('Skills in the dashboard', () => {
         list = { ...list, added: [updated] };
         return change('pdf', 'states-set', updated);
       }
-      if (url === '/api/v1/skills/jerry%3Aanalyze' || url === '/api/v1/skills/jerry%3Aplan') {
+      if (url === '/api/v1/skills/jerry%3Aanalyze' || url === '/api/v1/skills/jerry%3Aplan' || url === '/api/v1/skills/jerry%3Acommit-message') {
         const name = decodeURIComponent(url.slice('/api/v1/skills/'.length));
         return json({ skill: { kind: 'jerry', name, description: 'A JERRY skill.', dir: 'C:\\J\\plugin\\skills\\x' }, skillMd: '# x', files: [], scan: [], history: [], uses: [] } satisfies SkillDetail);
       }
@@ -357,6 +358,20 @@ describe('Skills in the dashboard', () => {
     await wrapper.get('[data-agent-model="jerry-risk-analyst"] [data-agent-field="effort"]').setValue('low');
     await flushPromises();
     expect(wrapper.get('[data-agent-models-message]').text()).toContain('jerry install');
+    wrapper.unmount();
+  });
+
+  it("picks the model of a routine skill on its own page, and says it lasts for the rest of the turn", async () => {
+    const wrapper = await mountApp();
+    route.value = { section: 'skills', name: 'jerry:commit-message' };
+    await flushPromises();
+    const card = wrapper.get('[data-skill-page="jerry:commit-message"] [data-model-card="jerry:commit-message"]');
+    expect(card.text()).toContain('Model');
+    expect(card.text()).toContain('until the end of that turn');
+    expect(card.findAll('[data-agent-model]').map((row) => row.attributes('data-agent-model'))).toEqual(['jerry:commit-message']);
+    await card.get('[data-agent-field="model"]').setValue('claude-haiku-5-5');
+    await flushPromises();
+    expect(posts('/api/v1/agents/models').map((call) => call.body)).toEqual([{ agents: [{ role: 'jerry:commit-message', model: 'claude-haiku-5-5', effort: 'low' }] }]);
     wrapper.unmount();
   });
 

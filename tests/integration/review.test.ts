@@ -77,7 +77,8 @@ describe('independent code review (bundled bridge + MCP + Core)', () => {
 
   /** After three rounds JERRY stops the automatic loop; the user waives the rest. */
   const checkMaxRounds = async (): Promise<void> => {
-    const plan = samplePlan(repo, ['src/**']);
+    // An API and UI change: all three reviewers.
+    const plan = { ...samplePlan(repo, ['src/**']), classification: ['api-backend' as const, 'frontend' as const] };
     const id = ((await api(core, 'POST', '/api/v1/tasks', { repoPath: repo, title: 'Stubborn finding', scope: plan.scope.include, document: plan })).body as { taskId: string }).taskId;
     await api(core, 'POST', `/api/v1/tasks/${id}/approvals`, { stage: 'PLAN', version: 1, decision: 'APPROVED' });
     await api(core, 'POST', `/api/v1/tasks/${id}/reports`, { report: sampleReport(['src/greeting/greet.ts']), submittedBy: 'user' });
@@ -109,7 +110,8 @@ describe('independent code review (bundled bridge + MCP + Core)', () => {
   };
 
   it('starts the review when the user accepts the implementation with review, with every changed file to cover', async () => {
-    const plan = samplePlan(repo, ['src/**']);
+    // An API and UI change: all three reviewers.
+    const plan = { ...samplePlan(repo, ['src/**']), classification: ['api-backend' as const, 'frontend' as const] };
     taskId = ((await api(core, 'POST', '/api/v1/tasks', { repoPath: repo, title: 'Greeting', scope: plan.scope.include, document: plan })).body as { taskId: string }).taskId;
     await api(core, 'POST', `/api/v1/tasks/${taskId}/approvals`, { stage: 'PLAN', version: 1, decision: 'APPROVED' });
     fs.mkdirSync(path.dirname(greet), { recursive: true });
@@ -123,6 +125,7 @@ describe('independent code review (bundled bridge + MCP + Core)', () => {
     const state = await review();
     expect(state.rounds).toHaveLength(1);
     expect(state.rounds[0]!.changedFiles).toContain('src/greeting/greet.ts');
+    expect(state.rounds[0]!.reviewers).toEqual(['jerry-correctness-reviewer', 'jerry-security-reviewer', 'jerry-design-reviewer']);
     expect((await mcp.call('get_state', {})).structured['next']).toMatchObject({ action: 'review' });
   });
 
@@ -214,5 +217,24 @@ describe('independent code review (bundled bridge + MCP + Core)', () => {
       'review.passed:core',
       'task.completed:core',
     ]);
+  });
+
+  it('sizes the review to the change: a tests-only change needs only the correctness reviewer', async () => {
+    const plan = { ...samplePlan(repo, ['tests/**']), classification: ['tests' as const], changes: [{ kind: 'add' as const, target: 'tests/greeting/greet.test.ts', description: 'unit tests' }], steps: [{ step: 'tests', files: ['tests/greeting/greet.test.ts'], dependsOn: [] }] };
+    const id = ((await api(core, 'POST', '/api/v1/tasks', { repoPath: repo, title: 'More tests', scope: plan.scope.include, document: plan })).body as { taskId: string }).taskId;
+    await api(core, 'POST', `/api/v1/tasks/${id}/approvals`, { stage: 'PLAN', version: 1, decision: 'APPROVED' });
+    await api(core, 'POST', `/api/v1/tasks/${id}/reports`, { report: sampleReport(['tests/greeting/greet.test.ts']), submittedBy: 'user' });
+    await api(core, 'POST', `/api/v1/tasks/${id}/approvals`, { stage: 'IMPLEMENTATION', version: 1, decision: 'APPROVED', review: true });
+    const before = (await api(core, 'GET', `/api/v1/tasks/${id}/review`)).body as ReviewState;
+    expect(before.rounds[0]!.reviewers).toEqual(['jerry-correctness-reviewer']);
+    const asked = await mcp.call('get_review', { taskId: id });
+    expect(asked.summary).toContain('0/1 reviewers');
+    expect(String(asked.structured['nextStep'])).toContain('jerry-correctness-reviewer');
+    expect(String(asked.structured['nextStep'])).not.toContain('jerry-design-reviewer');
+    // One report completes the round: no findings, so the review passes and the task is done.
+    expect((await api(core, 'POST', `/api/v1/tasks/${id}/reviews`, { review: submission('jerry-correctness-reviewer', [], ['tests/greeting/greet.test.ts']) })).status).toBe(201);
+    const after = (await api(core, 'GET', `/api/v1/tasks/${id}/review`)).body as ReviewState;
+    expect(after.outcome).toBe('passed');
+    expect(((await api(core, 'GET', `/api/v1/tasks/${id}`)).body as TaskDetail).state).toBe('DONE');
   });
 });
