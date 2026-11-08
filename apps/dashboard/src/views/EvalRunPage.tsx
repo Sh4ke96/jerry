@@ -1,4 +1,4 @@
-import type { EvalRunDetail, EvalRunSummary } from '@jerry/contracts';
+import type { EvalRunDetail, EvalRunSummary, EvalVariantMetrics } from '@jerry/contracts';
 import { EMOJI } from '@jerry/contracts/emoji';
 import { ArrowLeft } from '@lucide/vue';
 import { defineComponent, onMounted, ref } from 'vue';
@@ -114,6 +114,71 @@ function casesTable(detail: EvalRunDetail) {
   );
 }
 
+type Spread = EvalVariantMetrics['costUsd'];
+const money = (value: number): string => `$${value.toFixed(3)}`;
+const whole = (value: number): string => Math.round(value).toLocaleString('en-US');
+const oneDecimal = (value: number): string => (Math.round(value * 10) / 10).toLocaleString('en-US');
+
+/** "mean (min–max)", or the mean alone when the attempts agree. */
+function spreadText(value: Spread, format: (n: number) => string): string {
+  if (value === null) return '-';
+  return value.n > 1 && value.min !== value.max ? `${format(value.mean)} (${format(value.min)}–${format(value.max)})` : format(value.mean);
+}
+
+/** Cost and work per case and variant, and the change in mean cost against the baseline. */
+function metricsTable(detail: EvalRunDetail) {
+  const rows = (detail.metrics ?? []).flatMap((entry) => entry.variants.map((metrics) => ({ caseId: entry.caseId, metrics })));
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead scope="col">Case</TableHead>
+          <TableHead scope="col">Variant</TableHead>
+          <TableHead scope="col">Passed</TableHead>
+          <TableHead scope="col">Cost</TableHead>
+          <TableHead scope="col">Tokens</TableHead>
+          <TableHead scope="col">Read/Grep/Glob</TableHead>
+          <TableHead scope="col">JERRY calls</TableHead>
+          <TableHead scope="col">Turns</TableHead>
+          <TableHead scope="col">Against baseline</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {rows.map(({ caseId, metrics }) => {
+          const delta = (detail.comparison.deltas ?? []).find((entry) => entry.caseId === caseId && entry.variant === metrics.variant);
+          return (
+            <TableRow key={`${caseId}:${metrics.variant}`} data-eval-metrics={`${caseId}:${metrics.variant}`}>
+              <TableCell>
+                <code class="font-mono text-xs">{caseId}</code>
+              </TableCell>
+              <TableCell class="font-mono text-xs">{metrics.variant}</TableCell>
+              <TableCell class="tabular-nums">
+                {metrics.passRate === null ? '-' : `${Math.round(metrics.passRate * 100)}%`} <span class="text-muted-foreground text-xs">of {metrics.attempts}</span>
+              </TableCell>
+              <TableCell class="tabular-nums">{spreadText(metrics.costUsd, money)}</TableCell>
+              <TableCell class="tabular-nums">{spreadText(metrics.tokens, whole)}</TableCell>
+              <TableCell class="tabular-nums">{spreadText(metrics.searchCalls, oneDecimal)}</TableCell>
+              <TableCell class="tabular-nums">{spreadText(metrics.jerryCalls, oneDecimal)}</TableCell>
+              <TableCell class="tabular-nums">{spreadText(metrics.turns, oneDecimal)}</TableCell>
+              <TableCell class="tabular-nums text-xs">
+                {delta?.costRatio == null ? (
+                  <span class="text-muted-foreground">-</span>
+                ) : (
+                  <span class={delta.costRatio > 0.1 ? 'text-destructive' : delta.costRatio < -0.1 ? 'text-foreground font-medium' : 'text-muted-foreground'}>
+                    {delta.costRatio >= 0 ? '+' : ''}
+                    {Math.round(delta.costRatio * 100)}% cost
+                    {delta.tokens === null ? '' : `, ${delta.tokens >= 0 ? '+' : ''}${whole(delta.tokens)} tokens`}
+                  </span>
+                )}
+              </TableCell>
+            </TableRow>
+          );
+        })}
+      </TableBody>
+    </Table>
+  );
+}
+
 /** One eval run on its own page: what ran, its results against the baseline, and the baseline decision. */
 export const EvalRunPage = defineComponent({
   name: 'EvalRunPage',
@@ -216,6 +281,20 @@ export const EvalRunPage = defineComponent({
             </CardHeader>
             <CardContent>{run.comparison.cases.length === 0 ? <p class="text-muted-foreground text-sm">This run has no cases.</p> : casesTable(run)}</CardContent>
           </Card>
+          {(run.metrics ?? []).some((entry) => entry.variants.some((metrics) => metrics.costUsd !== null || metrics.tokens !== null)) && (
+            <Card class="eval-metrics">
+              <CardHeader>
+                <CardTitle class="flex items-center">
+                  <Emoji symbol={EMOJI.evals} />
+                  Cost and work
+                </CardTitle>
+                <CardDescription>
+                  Per case and variant over its attempts: mean (min–max). Tokens include cache reads and subagents; Read/Grep/Glob is how much the session searched the code. The change against the baseline is information, not a regression.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>{metricsTable(run)}</CardContent>
+            </Card>
+          )}
           {choosing.value && (
             <ConfirmDialog title={`Make ${run.runId} the baseline`} expected={run.runId} confirmLabel="Make baseline" busy={busy.value} commentLabel="Why (required)" commentRequired onConfirm={setBaseline} onCancel={() => (choosing.value = false)}>
               <p>Later runs are compared with this one; a case that passes here and fails later is a regression.</p>

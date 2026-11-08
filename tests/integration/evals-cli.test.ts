@@ -53,7 +53,10 @@ describe('jerry eval (CLI + Core, fake claude)', () => {
   it('records a run, takes it as the baseline, and blocks the release on a critical regression', async () => {
     const first = jerry(['eval', 'run', '--dir', cases, '--label', 'first']);
     expect(first.status, first.stderr + first.stdout).toBe(0);
-    expect(first.stdout).toContain('PASS  no-plan-warns #1');
+    expect(first.stdout).toContain('PASS  no-plan-warns [jerry] #1');
+    // What the session cost and used, from its transcript.
+    expect(first.stdout).toMatch(/no-plan-warns \[jerry\] #1 \([\d.]+ s, \$0\.001, 1,\d{3} tokens\)/);
+    expect(first.stdout).toContain('Cost and work per variant');
     expect(first.stdout).toMatch(/NEW\s+no-plan-warns/);
 
     // The baseline is the user's decision: not from a non-interactive shell…

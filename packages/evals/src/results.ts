@@ -65,6 +65,112 @@ export function compareRuns(
   return { cases, regressions, releaseBlocked: cases.some((entry) => entry.comparison === 'REGRESSION' && entry.critical) };
 }
 
+// ---------------------------------------------------------------------------
+// Cost and work per variant: what the comparison is about
+// ---------------------------------------------------------------------------
+
+/** What an attempt cost and did; older recorded attempts may lack any of it. */
+export interface AttemptMetricsInput {
+  variant?: string | undefined;
+  outcome: AttemptOutcome;
+  costUsd: number | null;
+  tokens?: { input: number; output: number; cacheRead: number; cacheCreation: number } | null | undefined;
+  turns?: number | null | undefined;
+  toolCalls?: Readonly<Record<string, number>> | undefined;
+  sessionMs?: number | null | undefined;
+}
+
+export interface Spread {
+  mean: number;
+  min: number;
+  max: number;
+  /** Attempts that reported the value. */
+  n: number;
+}
+
+export interface VariantMetrics {
+  variant: string;
+  attempts: number;
+  /** Passed attempts / attempts with an outcome other than ERROR. */
+  passRate: number | null;
+  costUsd: Spread | null;
+  /** Input + output + cache tokens. */
+  tokens: Spread | null;
+  outputTokens: Spread | null;
+  turns: Spread | null;
+  toolCalls: Spread | null;
+  /** Read, Grep and Glob: what earlier knowledge should save. */
+  searchCalls: Spread | null;
+  /** Calls of JERRY's own tools. */
+  jerryCalls: Spread | null;
+  sessionMs: Spread | null;
+}
+
+function spread(values: ReadonlyArray<number | null | undefined>): Spread | null {
+  const known = values.filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+  if (known.length === 0) return null;
+  return { mean: known.reduce((sum, value) => sum + value, 0) / known.length, min: Math.min(...known), max: Math.max(...known), n: known.length };
+}
+
+const sumOf = (calls: Readonly<Record<string, number>> | undefined, pick: (tool: string) => boolean): number | null =>
+  calls === undefined ? null : Object.entries(calls).filter(([tool]) => pick(tool)).reduce((sum, [, count]) => sum + count, 0);
+
+/** Per variant, in the order the variants first appear. */
+export function variantMetrics(attempts: readonly AttemptMetricsInput[]): VariantMetrics[] {
+  const groups = new Map<string, AttemptMetricsInput[]>();
+  for (const attempt of attempts) {
+    const key = attempt.variant ?? 'jerry';
+    groups.set(key, [...(groups.get(key) ?? []), attempt]);
+  }
+  return [...groups.entries()].map(([variant, entries]) => {
+    const graded = entries.filter((entry) => entry.outcome !== 'ERROR');
+    const withCalls = entries.filter((entry) => entry.toolCalls !== undefined && entry.outcome !== 'ERROR');
+    return {
+      variant,
+      attempts: entries.length,
+      passRate: graded.length === 0 ? null : graded.filter((entry) => entry.outcome === 'PASS').length / graded.length,
+      costUsd: spread(entries.map((entry) => entry.costUsd)),
+      tokens: spread(entries.map((entry) => (entry.tokens == null ? null : entry.tokens.input + entry.tokens.output + entry.tokens.cacheRead + entry.tokens.cacheCreation))),
+      outputTokens: spread(entries.map((entry) => entry.tokens?.output)),
+      turns: spread(entries.map((entry) => entry.turns)),
+      toolCalls: spread(withCalls.map((entry) => sumOf(entry.toolCalls, () => true))),
+      searchCalls: spread(withCalls.map((entry) => sumOf(entry.toolCalls, (tool) => tool === 'Read' || tool === 'Grep' || tool === 'Glob'))),
+      jerryCalls: spread(withCalls.map((entry) => sumOf(entry.toolCalls, (tool) => tool.startsWith('mcp__plugin_jerry_guardian__')))),
+      sessionMs: spread(entries.map((entry) => entry.sessionMs)),
+    };
+  });
+}
+
+export interface MetricDelta {
+  caseId: string;
+  variant: string;
+  /** Current mean minus baseline mean; null when either lacks it. */
+  costUsd: number | null;
+  tokens: number | null;
+  /** Relative change of the mean cost (0.2 = 20% more). */
+  costRatio: number | null;
+}
+
+/** Mean cost and tokens per case and variant against the baseline: information, never a regression. */
+export function metricDeltas(baseline: ReadonlyMap<string, VariantMetrics[]>, current: ReadonlyMap<string, VariantMetrics[]>): MetricDelta[] {
+  const deltas: MetricDelta[] = [];
+  for (const [caseId, variants] of current) {
+    for (const metrics of variants) {
+      const before = baseline.get(caseId)?.find((entry) => entry.variant === metrics.variant);
+      if (before === undefined) continue;
+      const cost = metrics.costUsd !== null && before.costUsd !== null ? metrics.costUsd.mean - before.costUsd.mean : null;
+      deltas.push({
+        caseId,
+        variant: metrics.variant,
+        costUsd: cost,
+        tokens: metrics.tokens !== null && before.tokens !== null ? metrics.tokens.mean - before.tokens.mean : null,
+        costRatio: cost !== null && before.costUsd !== null && before.costUsd.mean > 0 ? cost / before.costUsd.mean : null,
+      });
+    }
+  }
+  return deltas;
+}
+
 /** A human label against a rubric verdict, for calibration. */
 export interface CalibrationLabel {
   rubricId: string;

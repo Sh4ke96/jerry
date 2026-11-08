@@ -1,7 +1,7 @@
 import type { EvalCaseResult, EvalRunDetail, EvalRunSummary, EvalStatus } from '@jerry/contracts';
 import { evalCaseResultSchema, jerryFingerprintSchema } from '@jerry/contracts';
 import type { JerrySchema } from '@jerry/database';
-import { calibration, changedComponents, compareRuns, type CaseOutcome, type JerryFingerprint } from '@jerry/evals';
+import { calibration, changedComponents, compareRuns, metricDeltas, variantMetrics, type CaseOutcome, type JerryFingerprint, type VariantMetrics } from '@jerry/evals';
 import type { Kysely, Selectable } from 'kysely';
 import { z } from 'zod';
 import { StateError } from './state-store.js';
@@ -38,13 +38,22 @@ export class EvalStore {
     const results = parseResults(row.results_json);
     const outcomes = new Map(results.map((result) => [result.caseId, result.outcome as CaseOutcome]));
     let before = new Map<string, CaseOutcome>();
+    let beforeMetrics = new Map<string, VariantMetrics[]>();
     if (reference !== null) {
       const baseRow = await this.db.selectFrom('eval_runs').select('results_json').where('id', '=', reference).executeTakeFirstOrThrow();
-      before = new Map(parseResults(baseRow.results_json).map((result) => [result.caseId, result.outcome as CaseOutcome]));
+      const baseResults = parseResults(baseRow.results_json);
+      before = new Map(baseResults.map((result) => [result.caseId, result.outcome as CaseOutcome]));
+      beforeMetrics = metricsOf(baseResults);
     }
     const critical = new Set(results.filter((result) => result.critical).map((result) => result.caseId));
     const comparison = compareRuns(before, outcomes, critical);
-    return { ...summaryOf(row, baselineId), results, comparison: { baselineRunId: reference === null ? null : `EVR-${reference}`, ...comparison } };
+    const metrics = metricsOf(results);
+    return {
+      ...summaryOf(row, baselineId),
+      results,
+      comparison: { baselineRunId: reference === null ? null : `EVR-${reference}`, ...comparison, deltas: metricDeltas(beforeMetrics, metrics) },
+      metrics: [...metrics.entries()].map(([caseId, variants]) => ({ caseId, variants })),
+    };
   }
 
   /** The user's choice of baseline, with a reason; a run with errors or flaky cases cannot be one. */
@@ -118,9 +127,15 @@ function parseResults(json: string): EvalCaseResult[] {
   return z.array(evalCaseResultSchema).parse(JSON.parse(json));
 }
 
+/** Cost and work per case and variant (older runs without metrics give counts and nulls). */
+function metricsOf(results: readonly EvalCaseResult[]): Map<string, VariantMetrics[]> {
+  return new Map(results.map((result) => [result.caseId, variantMetrics(result.attempts)]));
+}
+
 function summaryOf(row: Selectable<JerrySchema['eval_runs']>, baselineId: number | null): EvalRunSummary {
   const results = parseResults(row.results_json);
   const count = (outcome: string): number => results.filter((result) => result.outcome === outcome).length;
+  const costs = results.flatMap((result) => result.attempts.map((attempt) => attempt.costUsd)).filter((cost): cost is number => cost !== null);
   return {
     runId: `EVR-${row.id}`,
     startedAt: row.started_at,
@@ -130,5 +145,6 @@ function summaryOf(row: Selectable<JerrySchema['eval_runs']>, baselineId: number
     label: row.label,
     counts: { PASS: count('PASS'), FAIL: count('FAIL'), FLAKY: count('FLAKY'), ERROR: count('ERROR') },
     isBaseline: baselineId === row.id,
+    costUsd: costs.length === 0 ? null : Math.round(costs.reduce((sum, cost) => sum + cost, 0) * 1e4) / 1e4,
   };
 }

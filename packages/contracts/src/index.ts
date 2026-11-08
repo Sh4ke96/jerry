@@ -1242,7 +1242,9 @@ export type FinalReport = z.infer<typeof finalReportSchema>;
 // --- Evals -------------------------------------------------------------------------------------
 
 export const evalOutcomeSchema = z.enum(['PASS', 'FAIL', 'FLAKY', 'ERROR']);
+export const evalTokensSchema = z.object({ input: z.number().nonnegative(), output: z.number().nonnegative(), cacheRead: z.number().nonnegative(), cacheCreation: z.number().nonnegative() });
 export const evalAttemptSchema = z.object({
+  /** Unique within its case, across variants (labels refer to it). */
   attempt: z.number().int().positive(),
   outcome: z.enum(['PASS', 'FAIL', 'ERROR']),
   harnessError: z.string().nullable(),
@@ -1251,7 +1253,35 @@ export const evalAttemptSchema = z.object({
   sessionId: z.string().nullable(),
   output: z.string(),
   graders: z.array(z.object({ grader: z.string(), kind: z.enum(['deterministic', 'execution', 'rubric']), passed: z.boolean().nullable(), detail: z.string(), score: z.number().optional() })),
+  /** The variant the attempt ran as; absent on runs recorded before variants ("jerry"). */
+  variant: z.string().optional(),
+  /** The session's tokens (all models, subagents included); null when not reported. Absent on older runs. */
+  tokens: evalTokensSchema.nullable().optional(),
+  turns: z.number().int().nonnegative().nullable().optional(),
+  /** Tool calls by tool name. */
+  toolCalls: z.record(z.string(), z.number().int().nonnegative()).optional(),
+  /** The session's own duration as Claude Code reported it. */
+  sessionMs: z.number().nonnegative().nullable().optional(),
+  /** What the eval session loaded that it should not have (e.g. another plugin). */
+  environment: z.array(z.string()).optional(),
 });
+
+const spreadSchema = z.object({ mean: z.number(), min: z.number(), max: z.number(), n: z.number().int() }).nullable();
+/** Cost and work of one variant of a case over its attempts. */
+export const evalVariantMetricsSchema = z.object({
+  variant: z.string(),
+  attempts: z.number().int(),
+  passRate: z.number().nullable(),
+  costUsd: spreadSchema,
+  tokens: spreadSchema,
+  outputTokens: spreadSchema,
+  turns: spreadSchema,
+  toolCalls: spreadSchema,
+  searchCalls: spreadSchema,
+  jerryCalls: spreadSchema,
+  sessionMs: spreadSchema,
+});
+export type EvalVariantMetrics = z.infer<typeof evalVariantMetricsSchema>;
 export const evalCaseResultSchema = z.object({
   caseId: z.string(),
   suite: z.enum(['regression', 'capability']),
@@ -1283,6 +1313,8 @@ export const evalRunSummarySchema = z.object({
   label: z.string(),
   counts: z.object({ PASS: z.number().int(), FAIL: z.number().int(), FLAKY: z.number().int(), ERROR: z.number().int() }),
   isBaseline: z.boolean(),
+  /** What the run's sessions cost together; null when none reported a cost. */
+  costUsd: z.number().nullable().default(null),
 });
 export type EvalRunSummary = z.infer<typeof evalRunSummarySchema>;
 export const evalComparisonSchema = z.object({
@@ -1299,8 +1331,15 @@ export const evalComparisonSchema = z.object({
   regressions: z.array(z.string()),
   /** A regression in a critical safety case blocks a JERRY release. */
   releaseBlocked: z.boolean(),
+  /** Mean cost and tokens per case and variant against the baseline: information, never a regression. */
+  deltas: z.array(z.object({ caseId: z.string(), variant: z.string(), costUsd: z.number().nullable(), tokens: z.number().nullable(), costRatio: z.number().nullable() })).default([]),
 });
-export const evalRunDetailSchema = evalRunSummarySchema.extend({ results: z.array(evalCaseResultSchema), comparison: evalComparisonSchema });
+export const evalRunDetailSchema = evalRunSummarySchema.extend({
+  results: z.array(evalCaseResultSchema),
+  comparison: evalComparisonSchema,
+  /** Per case: cost and work of each variant over its attempts. */
+  metrics: z.array(z.object({ caseId: z.string(), variants: z.array(evalVariantMetricsSchema) })).default([]),
+});
 export type EvalRunDetail = z.infer<typeof evalRunDetailSchema>;
 export const evalBaselineRequestSchema = z.object({ runId: z.string().regex(/^EVR-\d+$/), note: z.string().trim().min(1).max(500), confirm: z.string().optional() });
 export const evalLabelRequestSchema = z.object({
@@ -1354,6 +1393,8 @@ export const evalRunnerStartRequestSchema = z.object({
     .max(80)
     .regex(/^[^\u0000-\u001f]*$/)
     .default(''),
+  /** Run every variant of each case (eval run --variants): a comparison, more sessions. */
+  variants: z.boolean().default(false),
 });
 export type EvalRunnerStartRequest = z.infer<typeof evalRunnerStartRequestSchema>;
 

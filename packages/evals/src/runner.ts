@@ -2,10 +2,14 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
-import { repeatsOf, type EvalCase, type Grader } from './case.js';
-import { createFixture, removeFixture, type Fixture } from './fixture.js';
+import { DEFAULT_VARIANT, repeatsOf, variantsOf, type EvalCase, type EvalVariant, type Grader, type HistoryTaskSeed } from './case.js';
+import { commitSeededFiles, createFixture, removeFixture, type Fixture } from './fixture.js';
 import { grade, type GraderResult, type RubricVerdict, type SessionEvent } from './graders.js';
 import { attemptOutcome, classify, type AttemptOutcome, type CaseOutcome } from './results.js';
+import { parseTranscript, type SessionTokens } from './transcript.js';
+
+/** JERRY's plugin and MCP server as Claude Code names them in the session's init event. */
+const JERRY_PLUGIN = 'jerry';
 
 /**
  * The eval runner. Every attempt gets its own fixture repository, its own JERRY home and
@@ -27,6 +31,10 @@ export interface RunnerOptions {
   repeats?: number;
   /** Keeps the fixtures of failed attempts for inspection. */
   keepFailed?: boolean;
+  /** Runs every variant of each case (a comparison); default: only the first. */
+  allVariants?: boolean;
+  /** Overrides the model of every case and variant. */
+  model?: string;
   /** Whether a rubric grader is calibrated. */
   calibrated?(rubricId: string): boolean;
   onAttempt?(attempt: AttemptResult): void;
@@ -34,14 +42,26 @@ export interface RunnerOptions {
 
 export interface AttemptResult {
   caseId: string;
+  /** The variant the attempt ran as ("jerry" unless the case names others). */
+  variant: string;
   attempt: number;
   outcome: AttemptOutcome;
   results: GraderResult[];
   harnessError: string | null;
   output: string;
   costUsd: number | null;
+  /** The session's tokens (all models, subagents included); null when Claude Code did not report them. */
+  tokens: SessionTokens | null;
+  turns: number | null;
+  /** Tool calls by tool name, from the session's transcript. */
+  toolCalls: Record<string, number>;
+  /** Wall-clock time of the whole attempt (fixture, Core, session, grading). */
   durationMs: number;
+  /** The session's own duration as Claude Code reported it. */
+  sessionMs: number | null;
   sessionId: string | null;
+  /** What the session loaded that an isolated eval should not (another plugin), or JERRY missing. */
+  environment: string[];
   /** Kept only when the attempt failed and keepFailed is set. */
   fixtureDir: string | null;
 }
@@ -182,13 +202,98 @@ export function claudeRubric(claudeBin: string, cwd: string): (grader: Extract<G
   };
 }
 
-export async function runAttempt(evalCase: EvalCase, attempt: number, options: RunnerOptions): Promise<AttemptResult> {
+/**
+ * Seeds an earlier task into the eval Core the way it would have happened: plan (rejected first with
+ * the user's feedback, when given), approval, the files written, the report, acceptance (DONE); then
+ * the files are committed so the session starts after that work.
+ */
+async function seedHistory(info: CoreInfo, fixture: Fixture, seed: HistoryTaskSeed, index: number): Promise<void> {
+  const paths = [...new Set([...seed.changes.map((change) => change.path), ...Object.keys(seed.files)])];
+  const plan = {
+    goal: seed.goal,
+    classification: ['api-backend'],
+    repositories: [fixture.repo],
+    currentState: 'Seeded history for an eval.',
+    changes: seed.changes.map((change) => ({ kind: change.kind === 'added' ? 'add' : change.kind === 'deleted' ? 'remove' : 'change', target: change.path, description: change.description })),
+    architectureImpact: seed.approach,
+    scope: { include: paths, exclude: [] },
+    steps: [{ step: seed.title, files: paths, dependsOn: [] }],
+    tests: [{ kind: 'unit', description: 'seeded' }],
+    definitionOfDone: [seed.goal],
+  };
+  const created = (await request(info, 'POST', '/api/v1/tasks', { repoPath: fixture.repo, title: seed.title, scope: paths, document: plan })) as { taskId: string };
+  const taskId = created.taskId;
+  let version = 1;
+  if (seed.feedback !== undefined) {
+    await request(info, 'POST', `/api/v1/tasks/${taskId}/approvals`, { stage: 'PLAN', version: 1, decision: 'REJECTED', comment: seed.feedback });
+    await request(info, 'POST', `/api/v1/tasks/${taskId}/plan`, { scope: paths, document: plan });
+    version = 2;
+  }
+  await request(info, 'POST', `/api/v1/tasks/${taskId}/approvals`, { stage: 'PLAN', version, decision: 'APPROVED' });
+  // Written (not yet committed) so the acceptance snapshot records their content.
+  for (const [file, content] of Object.entries(seed.files)) {
+    const target = path.join(fixture.repo, file);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, content);
+  }
+  const report = {
+    summary: seed.goal,
+    changes: seed.changes.map((change) => ({ repository: '', path: change.path, kind: change.kind, description: change.description })),
+    agents: [],
+    skills: [],
+    checks: [{ kind: 'test', command: 'seeded', result: 'NOT_RUN', details: 'seeded history' }],
+    planDeviations: [],
+    risks: [],
+    commitSubjects: [seed.title],
+    qaScenarios: [{ id: 'QA-1', priority: 'P3', title: seed.title, location: paths[0] ?? 'repository', roles: [], preconditions: '', testData: '', steps: ['seeded'], expected: 'seeded', negative: '', related: '', kind: 'new' }],
+    artifact: '',
+  };
+  await request(info, 'POST', `/api/v1/tasks/${taskId}/reports`, { report, submittedBy: 'user' });
+  await request(info, 'POST', `/api/v1/tasks/${taskId}/approvals`, { stage: 'IMPLEMENTATION', version: 1, decision: 'APPROVED' });
+  commitSeededFiles(fixture, seed.files, `history ${index + 1}: ${seed.title}`);
+}
+
+/** The claude arguments for an attempt: the case's session in the variant's shape, isolated from the user's own setup. */
+export function sessionArgs(evalCase: EvalCase, variant: EvalVariant, options: Pick<RunnerOptions, 'pluginDir' | 'model'>): string[] {
+  const model = options.model ?? variant.model ?? evalCase.session.model;
+  const args = ['-p', evalCase.session.prompt];
+  if (variant.plugin) args.push('--plugin-dir', options.pluginDir);
+  // The user's own settings (and with them their plugins) stay out; project and local settings of
+  // the throwaway fixture are empty. --bare is not used: it would switch JERRY's hooks off too.
+  args.push('--setting-sources', 'project,local');
+  args.push('--model', model, '--permission-mode', 'acceptEdits', '--output-format', 'stream-json', '--verbose', '--no-session-persistence');
+  // A budget grader also caps the session itself, so a runaway case cannot overspend.
+  const budget = evalCase.graders.find((grader) => grader.type === 'budget');
+  if (budget !== undefined) args.push('--max-budget-usd', String(budget.maxCostUsd));
+  if (evalCase.session.maxTurns !== undefined) args.push('--max-turns', String(evalCase.session.maxTurns));
+  if (evalCase.session.allowedTools.length > 0) args.push('--allowedTools', ...evalCase.session.allowedTools);
+  if (variant.disallowedTools.length > 0) args.push('--disallowedTools', ...variant.disallowedTools);
+  return args;
+}
+
+/** What the session loaded that an eval of this variant should not have, or lacks. */
+function environmentProblems(variant: EvalVariant, plugins: string[] | null): string[] {
+  if (plugins === null) return [];
+  const named = (name: string): boolean => name.toLowerCase() === JERRY_PLUGIN || name.toLowerCase().startsWith(`${JERRY_PLUGIN}@`);
+  const others = plugins.filter((name) => !named(name));
+  const problems = others.length === 0 ? [] : [`other plugin(s) loaded: ${others.join(', ')}`];
+  if (variant.plugin && !plugins.some(named)) problems.push("JERRY's plugin did not load");
+  if (!variant.plugin && plugins.some(named)) problems.push("JERRY's plugin loaded although the variant runs without it");
+  return problems;
+}
+
+export async function runAttempt(evalCase: EvalCase, attempt: number, options: RunnerOptions, variant: EvalVariant = variantsOf(evalCase, false)[0] ?? DEFAULT_VARIANT): Promise<AttemptResult> {
   const started = Date.now();
   let fixture: Fixture | null = null;
   let core: { child: ChildProcess; info: CoreInfo } | null = null;
   let output = '';
   let costUsd: number | null = null;
   let sessionId: string | null = null;
+  let tokens: SessionTokens | null = null;
+  let turns: number | null = null;
+  let sessionMs: number | null = null;
+  let toolCalls: Record<string, number> = {};
+  let environment: string[] = [];
   let results: GraderResult[] = [];
   let harnessError: string | null = null;
   try {
@@ -197,27 +302,22 @@ export async function runAttempt(evalCase: EvalCase, attempt: number, options: R
     core = await startCore(options.coreBundle, home, fixture.base);
     // JERRY monitors only projects: the fixture is added the way the user adds a repository.
     await request(core.info, 'POST', '/api/v1/projects', { path: fixture.repo });
+    for (const [index, seed] of evalCase.setup.history.entries()) await seedHistory(core.info, fixture, seed, index);
     let taskId: string | null = null;
     if (evalCase.setup.task !== undefined) {
       const created = (await request(core.info, 'POST', '/api/v1/tasks', { repoPath: fixture.repo, title: evalCase.setup.task.title, scope: evalCase.setup.task.scope })) as { taskId: string };
       taskId = created.taskId;
       if (evalCase.setup.task.approve) await request(core.info, 'POST', `/api/v1/tasks/${taskId}/approvals`, { stage: 'PLAN', version: 1, decision: 'APPROVED' });
     }
-    const args = ['-p', evalCase.session.prompt, '--plugin-dir', options.pluginDir, '--model', evalCase.session.model, '--permission-mode', 'acceptEdits', '--output-format', 'json', '--no-session-persistence'];
-    // A budget grader also caps the session itself, so a runaway case cannot overspend.
-    const budget = evalCase.graders.find((grader) => grader.type === 'budget');
-    if (budget !== undefined) args.push('--max-budget-usd', String(budget.maxCostUsd));
-    if (evalCase.session.allowedTools.length > 0) args.push('--allowedTools', ...evalCase.session.allowedTools);
-    const run = await runProcess(options.claudeBin, args, { cwd: fixture.repo, env: { ...process.env, JERRY_HOME: home }, timeoutMs: evalCase.session.timeoutMs });
+    const env: NodeJS.ProcessEnv = { ...process.env, JERRY_HOME: home, CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1' };
+    const run = await runProcess(options.claudeBin, sessionArgs(evalCase, variant, options), { cwd: fixture.repo, env, timeoutMs: evalCase.session.timeoutMs });
     if (run.timedOut) throw new Error(`the session timed out after ${evalCase.session.timeoutMs} ms`);
-    try {
-      const parsed = JSON.parse(run.stdout) as { result?: unknown; session_id?: unknown; total_cost_usd?: unknown };
-      output = String(parsed.result ?? '');
-      sessionId = typeof parsed.session_id === 'string' ? parsed.session_id : null;
-      costUsd = typeof parsed.total_cost_usd === 'number' ? parsed.total_cost_usd : null;
-    } catch {
-      throw new Error(`the session gave no JSON result (exit ${run.code}): ${(run.stderr || run.stdout).slice(0, 200)}`);
-    }
+    const transcript = parseTranscript(run.stdout);
+    if (!transcript.finished) throw new Error(`the session gave no result (exit ${run.code}): ${(run.stderr || run.stdout).slice(0, 200)}`);
+    ({ output, sessionId, costUsd, tokens, turns, toolCalls } = transcript);
+    sessionMs = transcript.durationMs;
+    environment = environmentProblems(variant, transcript.plugins);
+    if (environment.some((problem) => problem.startsWith("JERRY's plugin"))) throw new Error(`the eval environment is wrong: ${environment.join('; ')}`);
     // Telemetry hooks are asynchronous: give them a moment to land.
     await new Promise((resolve) => setTimeout(resolve, 1500));
     const taskState = taskId === null ? null : ((await request(core.info, 'GET', `/api/v1/tasks/${taskId}`)) as { state: string }).state;
@@ -225,8 +325,10 @@ export async function runAttempt(evalCase: EvalCase, attempt: number, options: R
       output,
       costUsd,
       fixture,
-      events: await sessionEvents(home, sessionId),
+      events: variant.plugin ? await sessionEvents(home, sessionId) : [],
       taskState,
+      variant,
+      toolCalls,
       rubric: claudeRubric(options.claudeBin, fixture.base),
       calibrated: options.calibrated ?? (() => false),
     });
@@ -238,27 +340,51 @@ export async function runAttempt(evalCase: EvalCase, attempt: number, options: R
   const outcome = attemptOutcome(results, harnessError);
   const keep = options.keepFailed === true && outcome !== 'PASS';
   if (fixture !== null && !keep) removeFixture(fixture);
-  return { caseId: evalCase.id, attempt, outcome, results, harnessError, output: output.slice(0, 4000), costUsd, durationMs: Date.now() - started, sessionId, fixtureDir: keep && fixture !== null ? fixture.base : null };
+  return {
+    caseId: evalCase.id,
+    variant: variant.id,
+    attempt,
+    outcome,
+    results,
+    harnessError,
+    output: output.slice(0, 4000),
+    costUsd,
+    tokens,
+    turns,
+    toolCalls,
+    durationMs: Date.now() - started,
+    sessionMs,
+    sessionId,
+    environment,
+    fixtureDir: keep && fixture !== null ? fixture.base : null,
+  };
 }
 
-/** Runs every case with its repeats, at most `parallel` (≤ 3) attempts at a time. */
+/** Runs every case (and, for a comparison, every variant) with its repeats, at most `parallel` (≤ 3) attempts at a time. */
 export async function runSuite(cases: readonly EvalCase[], options: RunnerOptions): Promise<CaseResult[]> {
   const parallel = Math.min(Math.max(options.parallel ?? 3, 1), 3);
-  const jobs = cases.flatMap((evalCase) => Array.from({ length: options.repeats ?? repeatsOf(evalCase) }, (_unused, index) => ({ evalCase, attempt: index + 1 })));
+  // Attempt numbers run on across a case's variants: labels refer to (case, attempt).
+  const jobs = cases.flatMap((evalCase) => {
+    const repeats = options.repeats ?? repeatsOf(evalCase);
+    return variantsOf(evalCase, options.allVariants === true).flatMap((variant, variantIndex) => Array.from({ length: repeats }, (_unused, index) => ({ evalCase, variant, attempt: variantIndex * repeats + index + 1 })));
+  });
   const attempts = new Map<string, AttemptResult[]>();
   let next = 0;
   const worker = async (): Promise<void> => {
     while (next < jobs.length) {
       const job = jobs[next]!;
       next += 1;
-      const result = await runAttempt(job.evalCase, job.attempt, options);
+      const result = await runAttempt(job.evalCase, job.attempt, options, job.variant);
       options.onAttempt?.(result);
       attempts.set(job.evalCase.id, [...(attempts.get(job.evalCase.id) ?? []), result]);
     }
   };
   await Promise.all(Array.from({ length: Math.min(parallel, jobs.length) }, worker));
   return cases.map((evalCase) => {
-    const own = (attempts.get(evalCase.id) ?? []).sort((a, b) => a.attempt - b.attempt);
-    return { caseId: evalCase.id, suite: evalCase.suite, kind: evalCase.kind, critical: evalCase.critical, outcome: classify(own.map((entry) => entry.outcome)), attempts: own };
+    const order = variantsOf(evalCase, true).map((variant) => variant.id);
+    const own = (attempts.get(evalCase.id) ?? []).sort((a, b) => order.indexOf(a.variant) - order.indexOf(b.variant) || a.attempt - b.attempt);
+    // The case outcome is the default variant's: the other variants are a comparison, not a gate.
+    const gated = own.filter((entry) => entry.variant === order[0]);
+    return { caseId: evalCase.id, suite: evalCase.suite, kind: evalCase.kind, critical: evalCase.critical, outcome: classify((gated.length > 0 ? gated : own).map((entry) => entry.outcome)), attempts: own };
   });
 }

@@ -50,6 +50,8 @@ export const Evals = defineComponent({
     const asking = ref(false);
     const suite = ref('');
     const label = ref('');
+    /** Run every variant of each case (with and without JERRY or a feature): a comparison, more sessions. */
+    const variants = ref(false);
     let poll: ReturnType<typeof setTimeout> | null = null;
 
     const load = async (): Promise<void> => {
@@ -93,7 +95,7 @@ export const Evals = defineComponent({
     const startRun = async (): Promise<void> => {
       busy.value = true;
       try {
-        runner.value = await api.startEvalRun(suite.value === '' ? null : suite.value, label.value.trim());
+        runner.value = await api.startEvalRun(suite.value === '' ? null : suite.value, label.value.trim(), variants.value);
         asking.value = false;
         panelOpen.value = true;
         if (poll !== null) clearTimeout(poll);
@@ -206,6 +208,11 @@ export const Evals = defineComponent({
           </a>
           {run.label !== '' && <span class="truncate text-sm">{run.label}</span>}
           <span class="text-muted-foreground text-xs">{formatTime(run.finishedAt)}</span>
+          {run.costUsd != null && (
+            <span class="text-muted-foreground text-xs tabular-nums" data-run-cost>
+              ${run.costUsd.toFixed(2)}
+            </span>
+          )}
         </div>
         {runCounts(run)}
       </li>
@@ -285,6 +292,20 @@ export const Evals = defineComponent({
                     </option>
                   ))}
                 </select>
+              </div>
+              <div class="flex items-start gap-2">
+                <input
+                  id="eval-variants"
+                  type="checkbox"
+                  class="accent-primary mt-1 size-4"
+                  checked={variants.value}
+                  data-eval-variants
+                  onChange={(event: Event) => (variants.value = (event.target as HTMLInputElement).checked)}
+                />
+                <div class="grid gap-0.5">
+                  <Label for="eval-variants">Compare variants</Label>
+                  <p class="text-muted-foreground text-xs">Also runs each case's other variants (without JERRY, or with a feature turned off) to compare cost, tokens and results. Cases with variants then take several sessions each.</p>
+                </div>
               </div>
               <div class="grid gap-1.5">
                 <Label for="eval-label">Label (optional)</Label>

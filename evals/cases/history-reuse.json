@@ -1,0 +1,55 @@
+{
+  "id": "history-reuse",
+  "title": "Claude follows the pattern an earlier JERRY task set, using JERRY's history",
+  "description": "An earlier task (seeded into JERRY's history) added the first formatter and the user's rule for formatters. The session adds a second one. Compare the variants: with get_history, with JERRY but without get_history, and without JERRY, by result, cost, tokens and how much the session searched.",
+  "suite": "capability",
+  "kind": "repo-discovery",
+  "critical": false,
+  "fixture": {
+    "files": {
+      "package.json": "{\n  \"name\": \"formatters\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"scripts\": { \"test\": \"node --test\" }\n}\n",
+      "README.md": "# Formatters\n\nSmall text formatters for the shop.\n"
+    }
+  },
+  "setup": {
+    "history": [
+      {
+        "title": "Add the date formatter",
+        "goal": "Format order dates as DD.MM.YYYY",
+        "approach": "Each formatter lives in its own file src/format/<name>.js and exports one function named after the file; src/format/index.js re-exports every formatter; each formatter has a node:test file test/<name>.test.js.",
+        "files": {
+          "src/format/date.js": "/** Formats a Date as DD.MM.YYYY. */\nexport function date(value) {\n  const pad = (n) => String(n).padStart(2, '0');\n  return `${pad(value.getDate())}.${pad(value.getMonth() + 1)}.${value.getFullYear()}`;\n}\n",
+          "src/format/index.js": "export { date } from './date.js';\n",
+          "test/date.test.js": "import assert from 'node:assert/strict';\nimport { test } from 'node:test';\nimport { date } from '../src/format/index.js';\n\ntest('date formats DD.MM.YYYY', () => {\n  assert.equal(date(new Date(2026, 0, 5)), '05.01.2026');\n});\n"
+        },
+        "changes": [
+          { "path": "src/format/date.js", "kind": "added", "description": "date(value) formats a Date as DD.MM.YYYY; one exported function per formatter file" },
+          { "path": "src/format/index.js", "kind": "added", "description": "re-exports every formatter; new formatters are added here" },
+          { "path": "test/date.test.js", "kind": "added", "description": "node:test for date, importing from src/format/index.js" }
+        ],
+        "feedback": "Every formatter gets its own file in src/format, an export in src/format/index.js and a node:test file in test/ that imports from the index."
+      }
+    ],
+    "task": { "title": "Price formatter", "scope": ["src/**", "test/**"] }
+  },
+  "session": {
+    "prompt": "Add a price formatter: price(cents) returns the amount with two decimals and ' PLN', e.g. price(1234) is '12.34 PLN'. Follow how this project adds formatters. The plan is approved in JERRY; just implement it and run the tests with `npm test`. Do not commit.",
+    "model": "sonnet",
+    "timeoutMs": 600000,
+    "maxTurns": 30
+  },
+  "variants": [
+    { "id": "jerry", "description": "JERRY as installed, with get_history" },
+    { "id": "jerry-no-history", "description": "JERRY without get_history", "disallowedTools": ["mcp__plugin_jerry_guardian__get_history"] },
+    { "id": "no-plugin", "description": "Claude Code without JERRY", "plugin": false }
+  ],
+  "graders": [
+    { "type": "file", "path": "src/format/price.js", "contains": "export function price" },
+    { "type": "file", "path": "src/format/index.js", "contains": "price" },
+    { "type": "command", "run": "node --test", "expectExit": 0 },
+    { "type": "tool-used", "tool": "get_history", "variants": ["jerry"] },
+    { "type": "git-unchanged" },
+    { "type": "budget", "maxCostUsd": 1 }
+  ],
+  "repeats": 3
+}

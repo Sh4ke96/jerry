@@ -206,6 +206,23 @@ need an interactive terminal, and Claude is not allowed to run them.
 | `jerry eval label …` | Your verdict on a rubric result, for calibration. 🔐 |
 | `jerry eval plugin` | Claude Code's plugin evals for the JERRY plugin, never published. |
 
+📏 **What a run measures.** Every attempt records, from the session's own transcript, its tokens (input, output,
+cache reads and writes, subagents included), turns, tool calls by tool (Read/Grep/Glob separately from JERRY's own
+tools) and cost. A run shows per case and variant the pass rate and mean (min–max) of each, and the change in mean
+cost and tokens against the baseline; that change is information, only PASS → FAIL is a regression. Use
+`--repeats 3` (or more) before reading anything into a difference: models vary.
+
+⚖️ **Comparing variants.** A case can name variants: without JERRY's plugin (`"plugin": false`), with a JERRY tool
+turned off (`"disallowedTools": ["mcp__plugin_jerry_guardian__get_history"]`), or on another model. `jerry eval run
+--variants` (or **Compare variants** in the dashboard) runs them all; without it only the first runs. Graders can
+apply to some variants only (`"variants": ["jerry"]`). The `history-reuse` case seeds an earlier JERRY task
+(`setup.history`) and compares JERRY with and without `get_history` and Claude Code without JERRY. A comparison
+runs variants × repeats real sessions (`history-reuse`: 3 × 3 on Sonnet, each capped at $1).
+
+🧪 **Isolation.** Eval sessions run with `--setting-sources project,local` and `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`,
+so your own settings, plugins and CLAUDE.md stay out while your Claude login still works. The session's init event
+is checked: another plugin is reported with the attempt, and an attempt whose JERRY plugin did not load is an error.
+
 ### 💾 Your data
 
 | Command | Purpose |

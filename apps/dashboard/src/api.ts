@@ -114,7 +114,7 @@ export const api = {
   /** "jerry eval run" started from here: its state, output tail and the run it recorded. */
   evalRunner: () => request<EvalRunnerStatus>('GET', '/api/v1/evals/runner'),
   /** Starts real Claude Code sessions in the background; the user confirmed it first. */
-  startEvalRun: (suite: string | null, label: string) => request<EvalRunnerStatus>('POST', '/api/v1/evals/runner/start', { suite, label }),
+  startEvalRun: (suite: string | null, label: string, variants = false) => request<EvalRunnerStatus>('POST', '/api/v1/evals/runner/start', { suite, label, ...(variants ? { variants } : {}) }),
   stopEvalRun: () => request<EvalRunnerStatus>('POST', '/api/v1/evals/runner/stop', {}),
   evalCalibration: () => request<Array<{ rubricId: string; labels: number; agreement: number; calibrated: boolean }>>('GET', '/api/v1/evals/calibration'),
   /** The user's baseline choice, with a reason and the typed run ID. */

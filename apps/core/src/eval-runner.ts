@@ -114,7 +114,7 @@ export class EvalRunner {
     fs.mkdirSync(dir, { recursive: true });
     const logFile = path.join(dir, `${now.toISOString().replace(/[:.]/g, '-')}.log`);
     const log = fs.createWriteStream(logFile, { flags: 'a' });
-    const args = [this.options.cliPath!, 'eval', 'run', ...(request.suite === null ? [] : ['--suite', request.suite]), ...(request.label === '' ? [] : ['--label', request.label])];
+    const args = [this.options.cliPath!, 'eval', 'run', ...(request.suite === null ? [] : ['--suite', request.suite]), ...(request.label === '' ? [] : ['--label', request.label]), ...(request.variants ? ['--variants'] : [])];
     const child = spawn(this.options.nodePath ?? process.execPath, args, {
       env: { ...process.env, JERRY_HOME: this.options.home, JERRY_NO_EMOJI: '1', NO_COLOR: '1' },
       stdio: ['ignore', 'pipe', 'pipe'],

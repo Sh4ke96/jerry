@@ -1320,6 +1320,50 @@ describe('Dashboard app', () => {
     await body().get('form.dialog').trigger('submit');
     await flushPromises();
     expect(JSON.parse(String(calls.find((call) => call.url === '/api/v1/evals/baseline')!.init?.body))).toEqual({ runId: 'EVR-2', note: 'the regression is intended', confirm: 'EVR-2' });
+    // A run without metrics (older Core) shows no cost table.
+    expect(page.find('.eval-metrics').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('shows what each variant of a case cost and did, against the baseline', async () => {
+    const base = globalThis.fetch;
+    const fingerprint = { total: 'f', components: { skills: 'a', agents: 'b', hooks: 'c', rules: 'd' } };
+    const spread = (mean: number, min = mean, max = mean, n = 2) => ({ mean, min, max, n });
+    const metrics = (variant: string, cost: number, tokens: number, search: number) => ({ variant, attempts: 2, passRate: 1, costUsd: spread(cost, cost * 0.8, cost * 1.2), tokens: spread(tokens), outputTokens: spread(100), turns: spread(4), toolCalls: spread(search + 1), searchCalls: spread(search), jerryCalls: spread(1), sessionMs: spread(9000) });
+    const summary = { runId: 'EVR-4', startedAt: NOW, finishedAt: NOW, jerryVersion: '0.0.1', fingerprint, label: 'ab', counts: { PASS: 1, FAIL: 0, FLAKY: 0, ERROR: 0 }, isBaseline: false, costUsd: 1.234 };
+    const detail = {
+      ...summary,
+      results: [{ caseId: 'history-reuse', suite: 'capability', kind: 'repo-discovery', critical: false, outcome: 'PASS', attempts: [] }],
+      comparison: { baselineRunId: 'EVR-3', cases: [{ caseId: 'history-reuse', critical: false, baseline: 'PASS', current: 'PASS', comparison: 'UNCHANGED' }], regressions: [], releaseBlocked: false, deltas: [{ caseId: 'history-reuse', variant: 'jerry', costUsd: -0.1, tokens: -2000, costRatio: -0.25 }] },
+      metrics: [{ caseId: 'history-reuse', variants: [metrics('jerry', 0.3, 20000, 3), metrics('no-plugin', 0.5, 40000, 12)] }],
+    };
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (url === '/api/v1/evals/runs') return json([summary]);
+      if (url === '/api/v1/evals/runs/EVR-4') return json(detail);
+      if (url === '/api/v1/evals/status') return json({ baselineRunId: 'EVR-3', latestRunId: 'EVR-4', fingerprint, changedSinceBaseline: [], releaseBlocked: false });
+      if (url === '/api/v1/evals/calibration') return json([]);
+      if (url === '/api/v1/evals/runner') return json(idleRunner);
+      if (url === '/api/v1/evals/runner/start') {
+        calls.push({ url, init });
+        return json({ ...idleRunner, state: 'running', startedAt: NOW });
+      }
+      return base(url, init);
+    });
+    const wrapper = await mountApp();
+    await nav(wrapper, 'Evals').trigger('click');
+    await flushPromises();
+    expect(wrapper.get('.eval-runs [data-run-id="EVR-4"] [data-run-cost]').text()).toBe('$1.23');
+
+    await wrapper.get('.eval-runs [data-run-id="EVR-4"]').trigger('click');
+    await flushPromises();
+    const table = wrapper.get('[data-eval-run="EVR-4"] .eval-metrics');
+    const jerry = table.get('[data-eval-metrics="history-reuse:jerry"]').text();
+    expect(jerry).toContain('100%');
+    expect(jerry).toContain('$0.300 ($0.240–$0.360)');
+    expect(jerry).toContain('20,000');
+    expect(jerry).toContain('-25% cost, -2,000 tokens');
+    expect(table.get('[data-eval-metrics="history-reuse:no-plugin"]').text()).toContain('12');
     wrapper.unmount();
   });
 

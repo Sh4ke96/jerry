@@ -106,6 +106,6 @@ describe('eval runner (Core API)', () => {
     // It names the missing file and the fix.
     expect(missing.unavailable()).toContain(path.join(base, 'nope.mjs'));
     expect(missing.unavailable()).toContain('jerry install');
-    expect(() => missing.start({ suite: null, label: '' })).toThrow(/not next to this Core/);
+    expect(() => missing.start({ suite: null, label: '', variants: false })).toThrow(/not next to this Core/);
   });
 });

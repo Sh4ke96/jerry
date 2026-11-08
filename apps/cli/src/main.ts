@@ -314,9 +314,10 @@ evals
   .option('--repeats <n>', 'attempts per case', positiveInteger)
   .option('--parallel <n>', 'sessions at once (at most 3)', positiveInteger)
   .option('--model <model>', 'model for every case')
+  .option('--variants', 'run every variant of each case (A/B comparison: with and without JERRY or a feature); costs more sessions', false)
   .option('--label <text>', 'a note for this run')
   .option('--keep-failed', 'keep the fixtures of failed attempts', false)
-  .action((options: { dir?: string; suite?: string; case?: string[]; repeats?: number; parallel?: number; model?: string; label?: string; keepFailed: boolean }) => runEvals(options));
+  .action((options: { dir?: string; suite?: string; case?: string[]; repeats?: number; parallel?: number; model?: string; variants: boolean; label?: string; keepFailed: boolean }) => runEvals(options));
 evals.command('runs').description('List eval runs').action(() => listRuns());
 evals.command('show <runId>').description('Show a run, compared with the baseline').action((runId: string) => showRun(runId));
 evals.command('status').description('Baseline, what changed since it, calibration').action(() => evalStatus());

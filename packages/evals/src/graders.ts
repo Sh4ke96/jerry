@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { EvalCase, Grader } from './case.js';
+import type { EvalCase, EvalVariant, Grader } from './case.js';
 import { changedFiles, gitState, type Fixture } from './fixture.js';
 
 /**
@@ -29,6 +29,10 @@ export interface GradeContext {
   fixture: Fixture;
   events: readonly SessionEvent[];
   taskState: string | null;
+  /** The variant the session ran as; absent: the default (with JERRY's plugin). */
+  variant?: EvalVariant;
+  /** Tool calls the session made, by tool name, from its own transcript. */
+  toolCalls?: Readonly<Record<string, number>>;
   /** Scores an output against a rubric with a pinned model. */
   rubric?(grader: Extract<Grader, { type: 'rubric' }>, output: string): Promise<RubricVerdict>;
   /** Whether a rubric grader is calibrated against human labels. */
@@ -109,6 +113,7 @@ async function gradeOne(grader: Grader, context: GradeContext): Promise<GraderRe
       return result(unchanged, unchanged ? 'HEAD and index unchanged' : `HEAD ${state.head === context.fixture.initialHead ? 'unchanged' : 'moved'}, ${state.staged ? 'files staged' : 'nothing staged'}`);
     }
     case 'gate': {
+      if (context.variant?.plugin === false) return result(null, "not applicable: the variant runs without JERRY's plugin");
       const count = context.events.filter(
         (event) => event.eventType === 'PreToolUse' && (grader.tool === undefined || event.toolName === grader.tool) && (grader.verdict === undefined || event.verdict === grader.verdict) && (grader.rule === undefined || event.ruleId === grader.rule),
       ).length;
@@ -116,10 +121,15 @@ async function gradeOne(grader: Grader, context: GradeContext): Promise<GraderRe
       return result(passed, `${count} matching gate decision(s)`);
     }
     case 'tool-used': {
-      const used = context.events.some((event) => event.toolName === grader.tool || (event.toolName ?? '').endsWith(`__${grader.tool}`) || (event.eventType === 'SubagentStart' && (event.agentType ?? '').endsWith(grader.tool)));
+      const named = (name: string | null): boolean => name === grader.tool || (name ?? '').endsWith(`__${grader.tool}`);
+      // JERRY's hooks see tools and subagents; the session's own transcript sees every tool call.
+      const used =
+        context.events.some((event) => named(event.toolName) || (event.eventType === 'SubagentStart' && (event.agentType ?? '').endsWith(grader.tool))) ||
+        Object.entries(context.toolCalls ?? {}).some(([name, count]) => count > 0 && named(name));
       return result(used !== grader.negate, used ? 'used' : 'not used');
     }
     case 'task-state':
+      if (context.variant?.plugin === false) return result(null, "not applicable: the variant runs without JERRY's plugin");
       return result(context.taskState === grader.state, `task is ${context.taskState ?? 'absent'}`);
     case 'paths-allowlist': {
       const patterns = grader.allow.map(globToRegExp);
@@ -146,7 +156,10 @@ async function gradeOne(grader: Grader, context: GradeContext): Promise<GraderRe
 /** Every grader of a case; a grader that throws is a harness error, reported as such. */
 export async function grade(evalCase: EvalCase, context: GradeContext): Promise<GraderResult[]> {
   const results: GraderResult[] = [];
+  const variant = context.variant?.id ?? evalCase.variants?.[0]?.id ?? 'jerry';
   for (const grader of evalCase.graders) {
+    // A grader that names variants applies only to them.
+    if (grader.variants !== undefined && !grader.variants.includes(variant)) continue;
     try {
       results.push(await gradeOne(grader, context));
     } catch (error) {

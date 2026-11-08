@@ -5,7 +5,7 @@ import readline from 'node:readline/promises';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { JERRY_VERSION, evalCalibrationSchema, evalRunDetailSchema, evalRunSummarySchema, evalStatusSchema, skillsListSchema, type EvalRunDetail } from '@jerry/contracts';
-import { jerryFingerprint, loadCases, runSuite, type AttemptResult, type CaseResult, type EvalCase } from '@jerry/evals';
+import { jerryFingerprint, loadCases, repeatsOf, runSuite, totalTokens, variantsOf, type AttemptResult, type CaseResult, type EvalCase } from '@jerry/evals';
 import { findClaudeBinary, readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
 import { z } from 'zod';
 import { EMOJI, flag, mark, resultMark, type EmojiName } from './emoji.js';
@@ -61,23 +61,29 @@ function outcomeMark(outcome: string | null, text: string): string {
   return mark(outcome === null ? 'info' : (OUTCOME_EMOJI[outcome] ?? 'info'), text);
 }
 
-export async function runEvals(options: { dir?: string; suite?: string; case?: string[]; repeats?: number; parallel?: number; label?: string; model?: string; keepFailed: boolean }): Promise<void> {
-  const cases = selectCases(options).map((evalCase) => (options.model === undefined ? evalCase : { ...evalCase, session: { ...evalCase.session, model: options.model } }));
+export async function runEvals(options: { dir?: string; suite?: string; case?: string[]; repeats?: number; parallel?: number; label?: string; model?: string; variants?: boolean; keepFailed: boolean }): Promise<void> {
+  const cases = selectCases(options);
   if (cases.length === 0) throw new Error('No case matches.');
   const claude = process.env['JERRY_EVAL_CLAUDE'] ?? findClaudeBinary()?.path;
   if (claude === undefined) throw new Error('Claude Code CLI not found; set JERRY_CLAUDE_BIN.');
   const calibrated = new Set(z.array(z.object({ rubricId: z.string(), calibrated: z.boolean() })).parse(await callCore('GET', '/api/v1/evals/calibration').catch(() => [])).filter((entry) => entry.calibrated).map((entry) => entry.rubricId));
-  console.log(mark('evals', `Running ${cases.length} case(s) with ${claude}; each attempt in its own temp fixture, JERRY home and Core.`));
+  const sessions = cases.reduce((sum, evalCase) => sum + variantsOf(evalCase, options.variants === true).length * (options.repeats ?? repeatsOf(evalCase)), 0);
+  console.log(mark('evals', `Running ${cases.length} case(s), ${sessions} session(s)${options.variants === true ? ' across their variants' : ''} with ${claude}; each attempt in its own temp fixture, JERRY home and Core.`));
   const startedAt = new Date().toISOString();
   const results = await runSuite(cases, {
     coreBundle: CORE_BUNDLE,
     pluginDir: PLUGIN_DIR,
     claudeBin: claude,
     keepFailed: options.keepFailed,
+    allVariants: options.variants === true,
     calibrated: (rubricId) => calibrated.has(rubricId),
+    ...(options.model === undefined ? {} : { model: options.model }),
     ...(options.parallel === undefined ? {} : { parallel: options.parallel }),
     ...(options.repeats === undefined ? {} : { repeats: options.repeats }),
-    onAttempt: (attempt: AttemptResult) => console.log(`  ${outcomeMark(attempt.outcome, MARK[attempt.outcome] ?? attempt.outcome)} ${attempt.caseId} #${attempt.attempt} (${(attempt.durationMs / 1000).toFixed(1)} s)${attempt.harnessError === null ? '' : `  ${attempt.harnessError}`}${attempt.fixtureDir === null ? '' : `  kept: ${attempt.fixtureDir}`}`),
+    onAttempt: (attempt: AttemptResult) =>
+      console.log(
+        `  ${outcomeMark(attempt.outcome, MARK[attempt.outcome] ?? attempt.outcome)} ${attempt.caseId} [${attempt.variant}] #${attempt.attempt} (${(attempt.durationMs / 1000).toFixed(1)} s${attempt.costUsd === null ? '' : `, $${attempt.costUsd.toFixed(3)}`}${totalTokens(attempt.tokens) === null ? '' : `, ${totalTokens(attempt.tokens)!.toLocaleString('en-US')} tokens`})${attempt.harnessError === null ? '' : `  ${attempt.harnessError}`}${attempt.environment.length === 0 ? '' : `  environment: ${attempt.environment.join('; ')}`}${attempt.fixtureDir === null ? '' : `  kept: ${attempt.fixtureDir}`}`,
+      ),
   });
   const submission = {
     startedAt,
@@ -119,10 +125,16 @@ function toSubmitted(result: CaseResult) {
     outcome: result.outcome,
     attempts: result.attempts.map((attempt) => ({
       attempt: attempt.attempt,
+      variant: attempt.variant,
       outcome: attempt.outcome,
       harnessError: attempt.harnessError,
       durationMs: attempt.durationMs,
+      sessionMs: attempt.sessionMs,
       costUsd: attempt.costUsd,
+      tokens: attempt.tokens,
+      turns: attempt.turns,
+      toolCalls: attempt.toolCalls,
+      environment: attempt.environment,
       sessionId: attempt.sessionId,
       output: attempt.output.slice(0, 2000),
       graders: attempt.results,
@@ -146,8 +158,28 @@ function printRun(detail: EvalRunDetail): void {
       }
     }
   }
+  printMetrics(detail);
   if (comparison.releaseBlocked) console.log(`\n${flag('A critical safety case regressed: the JERRY release is blocked.', EMOJI.blocked)}`);
   else if (comparison.regressions.length > 0) console.log(`\n${flag(`Regressions: ${comparison.regressions.join(', ')}`, EMOJI.blocked)}`);
+}
+
+const spreadText = (value: { mean: number; min: number; max: number; n: number } | null, format: (n: number) => string): string =>
+  value === null ? '-' : value.n > 1 && value.min !== value.max ? `${format(value.mean)} (${format(value.min)}-${format(value.max)})` : format(value.mean);
+const money = (value: number): string => `$${value.toFixed(3)}`;
+const whole = (value: number): string => Math.round(value).toLocaleString('en-US');
+
+/** Cost and work per case and variant, and the change in mean cost against the baseline. */
+function printMetrics(detail: EvalRunDetail): void {
+  const rows = detail.metrics.flatMap((entry) => entry.variants.map((metrics) => ({ caseId: entry.caseId, metrics })));
+  if (rows.every((row) => row.metrics.costUsd === null && row.metrics.tokens === null)) return;
+  console.log('\nCost and work per variant (mean, min-max over attempts):');
+  for (const { caseId, metrics } of rows) {
+    const delta = detail.comparison.deltas.find((entry) => entry.caseId === caseId && entry.variant === metrics.variant);
+    const change = delta?.costRatio == null ? '' : `  ${delta.costRatio >= 0 ? '+' : ''}${(delta.costRatio * 100).toFixed(0)}% cost vs baseline`;
+    console.log(
+      `  ${caseId.padEnd(28)} ${metrics.variant.padEnd(18)} pass ${metrics.passRate === null ? '-' : `${Math.round(metrics.passRate * 100)}%`} · ${spreadText(metrics.costUsd, money)} · ${spreadText(metrics.tokens, whole)} tokens · ${spreadText(metrics.searchCalls, whole)} Read/Grep/Glob · ${spreadText(metrics.jerryCalls, whole)} JERRY calls · ${spreadText(metrics.turns, whole)} turns${change}`,
+    );
+  }
 }
 
 export async function listRuns(): Promise<void> {
@@ -155,7 +187,7 @@ export async function listRuns(): Promise<void> {
   if (runs.length === 0) console.log(mark('info', 'No eval runs yet: jerry eval run'));
   for (const run of runs) {
     const outcome = run.counts.FAIL + run.counts.ERROR > 0 ? 'FAIL' : run.counts.FLAKY > 0 ? 'FLAKY' : 'PASS';
-    console.log(outcomeMark(outcome, `${run.runId.padEnd(8)} ${run.finishedAt}  PASS ${run.counts.PASS} FAIL ${run.counts.FAIL} FLAKY ${run.counts.FLAKY} ERROR ${run.counts.ERROR}${run.isBaseline ? '  baseline' : ''}  ${run.label}`));
+    console.log(outcomeMark(outcome, `${run.runId.padEnd(8)} ${run.finishedAt}  PASS ${run.counts.PASS} FAIL ${run.counts.FAIL} FLAKY ${run.counts.FLAKY} ERROR ${run.counts.ERROR}${run.costUsd === null ? '' : `  $${run.costUsd.toFixed(2)}`}${run.isBaseline ? '  baseline' : ''}  ${run.label}`));
   }
 }
 

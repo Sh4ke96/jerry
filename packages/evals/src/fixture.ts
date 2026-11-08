@@ -16,6 +16,7 @@ export interface Fixture {
   /** The run's own directory: fixture repository, JERRY home and logs live below it. */
   base: string;
   repo: string;
+  /** HEAD when the session starts (after any seeded history). */
   initialHead: string;
 }
 
@@ -44,6 +45,18 @@ export function createFixture(evalCase: EvalCase, parent: string = os.tmpdir()):
   git(repo, 'commit', '-q', '-m', 'fixture');
   writeAll(repo, evalCase.fixture.uncommitted);
   return { base, repo, initialHead: git(repo, 'rev-parse', 'HEAD') };
+}
+
+/**
+ * Writes and commits the files of a seeded earlier task, only those paths (the user's uncommitted
+ * files stay uncommitted), and moves the fixture's initial HEAD there: the session starts after it.
+ */
+export function commitSeededFiles(fixture: Fixture, files: Record<string, string>, message: string): void {
+  if (Object.keys(files).length === 0) return;
+  writeAll(fixture.repo, files);
+  git(fixture.repo, 'add', '--', ...Object.keys(files));
+  git(fixture.repo, 'commit', '-q', '-m', message);
+  fixture.initialHead = git(fixture.repo, 'rev-parse', 'HEAD');
 }
 
 /** Files changed since the fixture's commit, including untracked ones (read-only Git). */
