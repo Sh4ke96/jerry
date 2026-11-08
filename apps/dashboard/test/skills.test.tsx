@@ -6,6 +6,7 @@ import { App } from '../src/App';
 import { parseRoute, route } from '../src/router';
 import type { WorkflowSettings } from '../src/settings';
 import { startDashboard, state } from '../src/state';
+import { skillFilters } from '../src/views/Skills';
 
 const CSRF = 'c'.repeat(64);
 const NOW = new Date().toISOString();
@@ -187,6 +188,67 @@ describe('Skills in the dashboard', () => {
     expect(wrapper.get('.personal-skills').text()).toContain('mine');
     expect(wrapper.text()).toContain('Applies to new Claude Code sessions.');
     wrapper.unmount();
+  });
+
+  it('filters the added skills by kind of change with tabs at the top, keeping the tab after a skill page', async () => {
+    const laravel: AddedSkill = { ...pdf, name: 'laravel-eloquent', classifications: ['api-backend', 'database'] };
+    const design: AddedSkill = { ...pdf, name: 'design', classifications: ['ui-ux'] };
+    list.added = [design, laravel, pdf];
+    const wrapper = await mountApp();
+    const tab = (kind: string) => wrapper.get(`.skill-filters [data-skill-filter="${kind}"]`);
+    const names = () => wrapper.findAll('.added-skills [data-skill]').map((tile) => tile.attributes('data-skill'));
+    expect(wrapper.findAll('.skill-filters [data-skill-filter]').map((entry) => entry.text())).toEqual([
+      'All3',
+      'UI / UX2',
+      'Frontend1',
+      'API / backend2',
+      'Database2',
+      'Infrastructure1',
+      'Security1',
+      'Docs1',
+      'Tests1',
+      'Refactoring1',
+      'Tooling1',
+    ]);
+    expect(names()).toEqual(['design', 'laravel-eloquent', 'pdf']);
+    // Kinds on the tiles; no kind means every change.
+    expect(wrapper.findAll('[data-skill="laravel-eloquent"] [data-kind-chip]').map((chip) => chip.text())).toEqual(['API / backend', 'Database']);
+    expect(wrapper.get('[data-skill="pdf"] [data-skill-kinds-shown]').text()).toBe('every change');
+
+    await tab('api-backend').trigger('mousedown');
+    await flushPromises();
+    expect(names()).toEqual(['laravel-eloquent', 'pdf']);
+    expect(tab('api-backend').attributes('data-state')).toBe('active');
+    // JERRY's own and the user's other skills have no kinds: only under All.
+    expect(wrapper.find('.own-skills').exists()).toBe(false);
+    expect(wrapper.find('.personal-skills').exists()).toBe(false);
+
+    // Back from a skill page, the tab is as it was left.
+    await wrapper.get('[data-skill="laravel-eloquent"] a').trigger('click');
+    await flushPromises();
+    window.location.hash = '#/skills';
+    route.value = { section: 'skills' };
+    await flushPromises();
+    expect(tab('api-backend').attributes('data-state')).toBe('active');
+    expect(names()).toEqual(['laravel-eloquent', 'pdf']);
+    wrapper.unmount();
+    skillFilters.kind = 'all';
+  });
+
+  it('says when no added skill is for the chosen kind', async () => {
+    list.added = [{ ...pdf, classifications: ['ui-ux'] }];
+    const wrapper = await mountApp();
+    await wrapper.get('.skill-filters [data-skill-filter="database"]').trigger('mousedown');
+    await flushPromises();
+    expect(wrapper.find('.added-skills').exists()).toBe(false);
+    expect(wrapper.get('.skills-empty').text()).toContain('No added skill is for Database changes.');
+    expect(wrapper.find('.own-skills').exists()).toBe(false);
+    await wrapper.get('.skill-filters [data-skill-filter="all"]').trigger('mousedown');
+    await flushPromises();
+    expect(wrapper.find('.added-skills [data-skill="pdf"]').exists()).toBe(true);
+    expect(wrapper.find('.own-skills').exists()).toBe(true);
+    wrapper.unmount();
+    skillFilters.kind = 'all';
   });
 
   it('adds a skill from a GitHub URL: preview with the scan, then install only with the typed name when typed confirmations are on', async () => {

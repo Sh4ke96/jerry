@@ -258,7 +258,8 @@ everything else stays until you prune it, which is fine: JERRY's data is usually
 - **Projects:** your projects as tiles, each with its own page (profile, tasks, links, data, review setting), and
   other repositories you can add;
 - **Timeline:** session events;
-- **Skills:** JERRY's skills and the ones you added: add, preview, switch off, update, remove;
+- **Skills:** JERRY's skills and the ones you added: add, preview, switch off, update, remove; tabs filter the added
+  skills by kind of change (a skill with no kind ticked shows under every kind);
 - **Data:** what JERRY stores, with preview-first clean-up;
 - **Evals:** where things stand (baseline, what changed since it, calibration) and the runs as rows; a click opens a
   run's own page with its cases against the baseline and **Make baseline**. **Run evals** starts `jerry eval run` in

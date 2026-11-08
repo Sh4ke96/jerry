@@ -1,7 +1,8 @@
-import type { AddedSkill, OtherSkill, SkillsList } from '@jerry/contracts';
+import type { AddedSkill, OtherSkill, PlanClassification, SkillsList } from '@jerry/contracts';
+import { PLAN_CLASSIFICATIONS } from '@jerry/contracts/constants';
 import { EMOJI } from '@jerry/contracts/emoji';
 import { Plus, RefreshCw, Trash2 } from '@lucide/vue';
-import { defineComponent, onMounted, ref } from 'vue';
+import { defineComponent, onMounted, reactive, ref } from 'vue';
 import { api } from '../api';
 import { Emoji } from '../components/Emoji';
 import { SKILL_NOTE, triggerText, useSkillActions } from '../components/SkillActions';
@@ -9,6 +10,7 @@ import { StatusBadge } from '../components/StatusBadge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Switch } from '../components/ui/switch';
+import { Tabs, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { formatTime } from '../format';
 import { CHIP } from '../lib/classes';
 import { linkTo, navigate, skillHref } from '../router';
@@ -19,6 +21,31 @@ export function sourceLine(skill: AddedSkill): string {
   const { source } = skill;
   if (source.kind === 'github') return `GitHub ${source.source.replace(/^https:\/\/github\.com\//, '')}${source.commit === null ? '' : ` @ ${source.commit.slice(0, 7)}`}`;
   return `${source.kind === 'zip' ? 'zip' : 'folder'} ${source.source}`;
+}
+
+/** The kinds of change as the filter tabs name them. */
+export const KIND_LABELS: Record<PlanClassification, string> = {
+  'ui-ux': 'UI / UX',
+  frontend: 'Frontend',
+  'api-backend': 'API / backend',
+  database: 'Database',
+  infrastructure: 'Infrastructure',
+  security: 'Security',
+  docs: 'Docs',
+  tests: 'Tests',
+  refactoring: 'Refactoring',
+  tooling: 'Tooling',
+};
+
+type SkillFilter = 'all' | PlanClassification;
+
+/** The filter outlives the view: back from a skill page, the list looks as it was left. */
+export const skillFilters = reactive<{ kind: SkillFilter }>({ kind: 'all' });
+
+/** An added skill under a kind's tab: the ones JERRY starts for that kind (ticked, or no kind = every change). */
+export function skillFitsKind(skill: Pick<AddedSkill, 'classifications'>, kind: SkillFilter): boolean {
+  const kinds = skill.classifications ?? [];
+  return kind === 'all' || kinds.length === 0 || kinds.includes(kind);
 }
 
 /** Clicks on these do their own thing; elsewhere on a row a click opens the skill's page. */
@@ -56,6 +83,17 @@ export function addedTile(skill: AddedSkill, actions: ReturnType<typeof useSkill
         <span class="skill-trigger text-muted-foreground" data-trigger={!skill.jerryTriggered ? 'claude' : skill.states.length === 0 ? 'none' : 'jerry'}>
           <Emoji symbol={EMOJI.jerry} />
           {triggerText(skill)}
+        </span>
+        <span class="skill-kinds flex flex-wrap gap-1" data-skill-kinds-shown>
+          {(skill.classifications ?? []).length === 0 ? (
+            <span class={CHIP}>every change</span>
+          ) : (
+            (skill.classifications ?? []).map((kind) => (
+              <span key={kind} class={CHIP} data-kind-chip={kind}>
+                {KIND_LABELS[kind]}
+              </span>
+            ))
+          )}
         </span>
         {!skill.present && <StatusBadge tone="deny">folder missing</StatusBadge>}
         {skill.modified && <StatusBadge tone="warn" title="The files differ from what JERRY installed">changed by hand</StatusBadge>}
@@ -109,10 +147,27 @@ export const Skills = defineComponent({
     const actions = useSkillActions(load);
     onMounted(() => void load());
 
+    const filterTabs = (added: readonly AddedSkill[]) => (
+      <Tabs modelValue={skillFilters.kind} onUpdate:modelValue={(value: string) => (skillFilters.kind = value as SkillFilter)}>
+        <TabsList aria-label="Filter skills by kind of change" class="skill-filters max-w-full justify-start overflow-x-auto">
+          {(['all', ...PLAN_CLASSIFICATIONS] as const).map((kind) => (
+            <TabsTrigger key={kind} value={kind} data-skill-filter={kind} class="flex-none">
+              {kind === 'all' ? 'All' : KIND_LABELS[kind]}
+              <span class="text-muted-foreground tabular-nums">{added.filter((skill) => skillFitsKind(skill, kind)).length}</span>
+            </TabsTrigger>
+          ))}
+        </TabsList>
+      </Tabs>
+    );
+
     return () => {
       const current = list.value;
+      const kind = skillFilters.kind;
+      const shown = current === null ? [] : current.added.filter((skill) => skillFitsKind(skill, kind));
+      const others = kind === 'all';
       return (
         <div class="skills flex flex-col gap-4 md:gap-6">
+          {filterTabs(current?.added ?? [])}
           <Card>
             <CardHeader>
               <CardTitle class="flex items-center">
@@ -134,12 +189,16 @@ export const Skills = defineComponent({
                 <p class="text-muted-foreground text-sm">Loading…</p>
               ) : current.added.length === 0 ? (
                 <p class="text-muted-foreground text-sm">No skills added through JERRY yet. Add one from GitHub, a folder or a zip file.</p>
+              ) : shown.length === 0 ? (
+                <p class="skills-empty text-muted-foreground rounded-xl border border-dashed p-8 text-center text-sm">
+                  No added skill is for {kind === 'all' ? 'any' : KIND_LABELS[kind]} changes. Tick the kinds of change on a skill’s page.
+                </p>
               ) : (
-                <ul class="added-skills grid grid-cols-1 gap-3">{current.added.map((skill) => addedTile(skill, actions))}</ul>
+                <ul class="added-skills grid grid-cols-1 gap-3">{shown.map((skill) => addedTile(skill, actions))}</ul>
               )}
             </CardContent>
           </Card>
-          {current !== null && current.own.length > 0 && (
+          {others && current !== null && current.own.length > 0 && (
             <Card>
               <CardHeader>
                 <CardTitle class="flex items-center">
@@ -153,7 +212,7 @@ export const Skills = defineComponent({
               </CardContent>
             </Card>
           )}
-          {current !== null && current.personal.length > 0 && (
+          {others && current !== null && current.personal.length > 0 && (
             <Card>
               <CardHeader>
                 <CardTitle class="flex items-center">
