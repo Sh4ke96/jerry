@@ -94,7 +94,8 @@ export async function buildFinalReport(store: StateStore, task: Task, now: Date 
     },
     commitSubjects: document?.commitSubjects ?? plan?.commitSubjects ?? [],
     artifact: {
-      planned: plan?.artifact ?? '',
+      // The user's switch wins over the plan's field.
+      planned: task.artifactRequest !== undefined ? (task.artifactRequest.wanted ? `wanted: ${task.artifactRequest.kind} (requested by the user)` : 'not wanted (the user turned it off)') : (plan?.artifact ?? ''),
       decision: artifact?.decision ?? 'not-asked',
       kind: artifact?.kind ?? null,
       title: artifact?.title ?? null,

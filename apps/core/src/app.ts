@@ -61,6 +61,8 @@ import {
   evalLabelRequestSchema,
   evalRunSubmissionSchema,
   artifactDecisionRequestSchema,
+  artifactRequestSchema,
+  effectiveArtifactRequest,
   taskIdSchema,
   taskTransitionRequestSchema,
   checkpointRequestSchema,
@@ -1101,6 +1103,14 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
 
   app.get('/api/v1/artifacts', { config: TOKEN_OR_SESSION }, async () => store.artifactDecisions());
 
+  /** The user's switch for an Artifact when the task is done (task page); Claude has no way to set it. */
+  app.post('/api/v1/tasks/:taskId/artifact-request', { config: TOKEN_OR_SESSION }, async (request) => {
+    const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId.toUpperCase());
+    const body = parse(artifactRequestSchema, request.body);
+    const task = await store.setArtifactRequest(taskId, body, new Date(), request.client?.kind === 'session' ? 'dashboard' : 'cli');
+    return { taskId, request: effectiveArtifactRequest(task) };
+  });
+
   // --- Evals -------------------------------------------------------------------------------------
   const evals = new EvalStore(store.kysely);
   // The plugin this Core ships with (dist/plugin next to dist/core): what the evals measure.
@@ -1415,7 +1425,7 @@ function reviewRequested(decision: ApprovalRecord | null): boolean | null {
 }
 
 async function summarize(store: StateStore, tasks: readonly Task[]): Promise<TaskSummary[]> {
-  const [activity, reports, checks, findingCounts, testRuns] = await Promise.all([store.taskActivity(), store.latestReports(), store.latestCompletionChecks(), store.findingCounts(), store.latestTestRuns()]);
+  const [activity, reports, checks, findingCounts, testRuns, artifactDecisions] = await Promise.all([store.taskActivity(), store.latestReports(), store.latestCompletionChecks(), store.findingCounts(), store.latestTestRuns(), store.artifactDecisions()]);
   const summaries: TaskSummary[] = [];
   for (const task of tasks) {
     const report = reports.get(task.taskId) ?? null;
@@ -1439,6 +1449,7 @@ async function summarize(store: StateStore, tasks: readonly Task[]): Promise<Tas
       lastTestRun: testRuns.get(task.taskId) ?? null,
       reviewRequested: reviewRequested(decision),
       effectiveReviewMode: store.effectiveReviewModeOf(task),
+      artifact: { request: effectiveArtifactRequest(task), decision: artifactDecisions.find((entry) => entry.taskId === task.taskId) ?? null },
     });
   }
   return summaries;

@@ -1,4 +1,4 @@
-import type { AgentModelsResponse, AgentModelsUpdateRequest, ApprovalRecord, ArtifactDecision, CoreStatus, FinalChecksRerun, FinalReport, EvalRunnerStatus, EvalRunDetail, EvalRunSummary, EvalStatus, Finding, Plan, PlanDrift, ReviewState, ProjectProfile, ProjectAddResult, ProjectRemoveResult, ProjectSummary, DataUsage, PruneOptions, PrunePreview, PruneResult, ForgetPreview, ForgetResult, RepositorySummary, SkillChangeResult, SkillDetail, SkillPreview, SkillsList, StoredEvent, Task, TaskSummary, WorkflowState, WorkflowTransition, Workspace, WorkspaceChangeResult, WorkspaceGraph, WorkspaceScan } from '@jerry/contracts';
+import type { AgentModelsResponse, AgentModelsUpdateRequest, ApprovalRecord, ArtifactDecision, ArtifactRequest, CoreStatus, FinalChecksRerun, FinalReport, EvalRunnerStatus, EvalRunDetail, EvalRunSummary, EvalStatus, Finding, Plan, PlanDrift, ReviewState, ProjectProfile, ProjectAddResult, ProjectRemoveResult, ProjectSummary, DataUsage, PruneOptions, PrunePreview, PruneResult, ForgetPreview, ForgetResult, RepositorySummary, SkillChangeResult, SkillDetail, SkillPreview, SkillsList, StoredEvent, Task, TaskSummary, WorkflowState, WorkflowTransition, Workspace, WorkspaceChangeResult, WorkspaceGraph, WorkspaceScan } from '@jerry/contracts';
 
 import type { ProjectReviewMode, SettingsUpdate, WorkflowSettings } from './settings.js';
 
@@ -70,13 +70,17 @@ export const api = {
     if (query.since !== undefined) params.set('since', query.since);
     return request<StoredEvent[]>('GET', `/api/v1/events?${params.toString()}`);
   },
-  decide: (task: TaskSummary, decision: 'APPROVED' | 'REJECTED', confirmTaskId: string) =>
+  decide: (task: TaskSummary, decision: 'APPROVED' | 'REJECTED', confirmTaskId: string, artifact?: ArtifactRequest) =>
     request<ApprovalRecord>('POST', `/api/v1/tasks/${encodeURIComponent(task.taskId)}/approvals`, {
       stage: 'PLAN',
       version: task.plan.version,
       decision,
       confirmTaskId,
+      // Approving only: whether Claude creates an Artifact when the task is done.
+      ...(decision === 'APPROVED' && artifact !== undefined ? { artifact } : {}),
     }),
+  /** The user's Artifact switch for a task (until an Artifact decision is recorded). */
+  setArtifactRequest: (taskId: string, artifact: ArtifactRequest) => request<{ taskId: string }>('POST', `/api/v1/tasks/${encodeURIComponent(taskId)}/artifact-request`, artifact),
   /** Accept the latest implementation report, or send it back with what should change. */
   decideReport: (task: TaskSummary, reportVersion: number, decision: 'APPROVED' | 'REJECTED', confirmTaskId: string, comment: string, review?: boolean) =>
     request<ApprovalRecord>('POST', `/api/v1/tasks/${encodeURIComponent(task.taskId)}/approvals`, {

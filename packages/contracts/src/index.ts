@@ -519,6 +519,8 @@ export const taskSchema = z.object({
   goal: z.string().optional(),
   /** The analysts JERRY suggested at intake for this kind of change; absent: all three are expected. */
   analysts: z.object({ roles: z.array(z.enum(ANALYST_ROLES)), reasons: z.array(z.string()) }).optional(),
+  /** The user's switch for an Artifact when the task is done; absent when they never set it. */
+  artifactRequest: z.object({ wanted: z.boolean(), kind: z.string(), at: z.string() }).optional(),
 });
 export type Task = z.infer<typeof taskSchema>;
 
@@ -600,6 +602,46 @@ export const reportSubmitRequestSchema = z.object({
 });
 export type PlanReviseRequest = z.infer<typeof planReviseRequestSchema>;
 
+/** The kinds of optional Artifact Claude can create for a finished task. */
+export const ARTIFACT_KINDS = ['stakeholder-presentation', 'architecture-before-after', 'ui-flows', 'endpoint-contract-map', 'other'] as const;
+
+/**
+ * The user's request for an Artifact when a task is done (the switch at plan approval or on the
+ * task page). Only the user sets it; Claude creates the Artifact when the task is done.
+ */
+export const artifactRequestSchema = z.strictObject({ wanted: z.boolean(), kind: z.enum(ARTIFACT_KINDS).default('stakeholder-presentation') });
+export type ArtifactRequest = z.infer<typeof artifactRequestSchema>;
+
+/** The request in effect for a task: the user's switch, or the plan's artifact field when it records the user's wish. */
+export const taskArtifactRequestSchema = z.object({ wanted: z.boolean(), kind: z.enum(ARTIFACT_KINDS), by: z.enum(['user', 'plan']), at: z.string().nullable() });
+export type TaskArtifactRequest = z.infer<typeof taskArtifactRequestSchema>;
+
+/** The Artifact kind a plan's free-text artifact field names. */
+function artifactKindIn(text: string): (typeof ARTIFACT_KINDS)[number] {
+  const lower = text.toLowerCase();
+  if (/architect/.test(lower)) return 'architecture-before-after';
+  if (/\bui\b|flow|screen/.test(lower)) return 'ui-flows';
+  if (/endpoint|contract|api/.test(lower)) return 'endpoint-contract-map';
+  if (/presentation|stakeholder/.test(lower)) return 'stakeholder-presentation';
+  return 'other';
+}
+
+/**
+ * The Artifact request in effect: the user's switch when they set it, else the plan's artifact field
+ * when it records the user's wish ("wanted: <kind>", as the plan skill writes it). Anything else is no
+ * request: Claude never decides for the user.
+ */
+export function effectiveArtifactRequest(task: { artifactRequest?: { wanted: boolean; kind: string; at: string } | undefined; plan: { document?: { artifact: string } | undefined } }): TaskArtifactRequest | null {
+  if (task.artifactRequest !== undefined) {
+    const kind = (ARTIFACT_KINDS as readonly string[]).includes(task.artifactRequest.kind) ? (task.artifactRequest.kind as (typeof ARTIFACT_KINDS)[number]) : 'stakeholder-presentation';
+    return { wanted: task.artifactRequest.wanted, kind, by: 'user', at: task.artifactRequest.at };
+  }
+  const planned = task.plan.document?.artifact.trim() ?? '';
+  const wanted = /^wanted\b\s*:?\s*(.*)$/i.exec(planned);
+  if (wanted === null) return null;
+  return { wanted: true, kind: artifactKindIn(wanted[1] ?? ''), by: 'plan', at: null };
+}
+
 export const approvalRequestSchema = z.object({
   stage: approvalStageSchema,
   version: z.number().int().positive(),
@@ -615,6 +657,8 @@ export const approvalRequestSchema = z.object({
    * mode decides (optional: no review, required: review); false is refused while review is required.
    */
   review: z.boolean().optional(),
+  /** Approving a plan only: whether Claude creates an Artifact when the task is done, and which kind. */
+  artifact: artifactRequestSchema.optional(),
 });
 export type ApprovalRequest = z.infer<typeof approvalRequestSchema>;
 
@@ -1208,7 +1252,6 @@ export type ReviewState = z.infer<typeof reviewStateSchema>;
 
 /** Only claude.ai artifact links are recorded: the Artifact is Claude's, the link is JERRY's. */
 export const artifactUrlSchema = z.url().refine((value) => /^https:\/\/claude\.ai\/(code\/)?artifact\/[\w-]+(?:[/?#][^\s]*)?$/.test(value), 'a https://claude.ai/…/artifact/… link');
-export const ARTIFACT_KINDS = ['stakeholder-presentation', 'architecture-before-after', 'ui-flows', 'endpoint-contract-map', 'other'] as const;
 /** The user's choice about an Artifact for a task: created by Claude (with its link), or declined. */
 export const artifactDecisionRequestSchema = z.discriminatedUnion('decision', [
   z.object({ decision: z.literal('created'), kind: z.enum(ARTIFACT_KINDS), title: z.string().trim().min(1).max(200), url: artifactUrlSchema, origin: callOriginSchema.optional() }),
@@ -1447,6 +1490,8 @@ export const findingCountsSchema = z.object({
 export type FindingCounts = z.infer<typeof findingCountsSchema>;
 
 export const taskSummarySchema = taskWithDecisionSchema.extend({
+  /** The Artifact request in effect (the user's switch, else the plan's field) and the recorded decision. */
+  artifact: z.object({ request: taskArtifactRequestSchema.nullable(), decision: artifactDecisionSchema.nullable() }).optional(),
   /** Quality findings of the task; open tasks only. */
   findings: findingCountsSchema.nullable().default(null),
   /** The latest test command Claude ran for the task. */

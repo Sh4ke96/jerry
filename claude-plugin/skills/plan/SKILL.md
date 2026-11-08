@@ -57,7 +57,7 @@ Fill every section of the plan document:
 | `regression` | what could break elsewhere and how you will check it |
 | `commitSubjects` | proposed commit subjects in the repository's convention; the user commits |
 | `qaScenarios` | manual test scenarios: title, steps, expected result |
-| `artifact` | ask the user whether they want Claude to create an Artifact when the task is done (stakeholder presentation, architecture before/after, UI flows, endpoint and contract map); write their answer, e.g. `wanted: stakeholder presentation`, or leave it empty when they do not want one |
+| `artifact` | ask the user whether they want Claude to create an Artifact when the task is done (stakeholder presentation, architecture before/after, UI flows, endpoint and contract map), in the same message as the plan's other open decisions; write their answer, e.g. `wanted: stakeholder presentation`, or leave it empty when they do not want one. They can also switch it at approval or on the task page in the dashboard; their switch wins |
 | `definitionOfDone` | verifiable conditions |
 | `openQuestions` | decisions the user has to make |
 | `analysis` | only after `/jerry:analyze`: `reports` (the analysis report IDs the plan uses) and `gaps` (missing analysts, unverified citations, what could not be checked) |

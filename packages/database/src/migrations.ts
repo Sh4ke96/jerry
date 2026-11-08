@@ -751,4 +751,12 @@ export const MIGRATIONS: Readonly<Record<string, Migration>> = {
       await db.schema.alterTable('review_rounds').addColumn('reviewers_json', 'text').execute();
     },
   },
+
+  '0028_task_artifact_request': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // The user's switch for an Artifact when the task is done ({ wanted, kind, at } as JSON); null
+      // when they never set it (the plan's artifact field may still record their wish).
+      await db.schema.alterTable('tasks').addColumn('artifact_request_json', 'text').execute();
+    },
+  },
 };

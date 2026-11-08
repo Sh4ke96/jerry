@@ -1,4 +1,4 @@
-import type { TaskSummary } from '@jerry/contracts';
+import type { ArtifactRequest, TaskSummary } from '@jerry/contracts';
 import { EMOJI } from '@jerry/contracts/emoji';
 import { availableEvents } from '@jerry/workflow';
 import { Check, Copy, Ellipsis } from '@lucide/vue';
@@ -22,6 +22,56 @@ import { Switch } from './ui/switch';
  * Pause and resume are one click without a dialog.
  */
 type ConfirmedAction = 'approve' | 'reject' | 'withdraw' | 'accept' | 'request-changes' | 'cancel' | 'skip-review' | 'approve-fixes' | 'reject-fixes' | 'recheck';
+
+/** The kinds of Artifact (kept here: a value import from the contracts would bundle Zod). */
+export const ARTIFACT_KIND_LABEL: Record<ArtifactRequest['kind'], string> = {
+  'stakeholder-presentation': 'Stakeholder presentation',
+  'architecture-before-after': 'Architecture before and after',
+  'ui-flows': 'UI flows and screens',
+  'endpoint-contract-map': 'Endpoint and contract map',
+  other: 'Other (as the plan describes)',
+};
+
+/** The Artifact switch and its kind: in the plan-approval dialog and on the task page. */
+export function artifactChoice(id: string, wanted: boolean, kind: ArtifactRequest['kind'], change: (next: ArtifactRequest) => void, disabled = false) {
+  return (
+    <div class="artifact-choice bg-muted/50 grid gap-2 rounded-lg border p-3" data-artifact-choice={wanted ? kind : 'off'}>
+      <div class="flex items-center justify-between gap-3">
+        <Label for={`${id}-switch`} class="flex items-center">
+          <Emoji symbol={EMOJI.artifact} />
+          Create an Artifact when the task is done
+        </Label>
+        <Switch id={`${id}-switch`} modelValue={wanted} disabled={disabled} onUpdate:modelValue={(value: boolean) => change({ wanted: value, kind })} />
+      </div>
+      {wanted && (
+        <div class="flex flex-wrap items-center gap-2">
+          <Label for={`${id}-kind`} class="text-muted-foreground text-xs">
+            Kind
+          </Label>
+          <select
+            id={`${id}-kind`}
+            class="border-input bg-background h-8 rounded-md border px-2 text-sm"
+            value={kind}
+            disabled={disabled}
+            data-artifact-kind
+            onChange={(event: Event) => change({ wanted, kind: (event.target as HTMLSelectElement).value as ArtifactRequest['kind'] })}
+          >
+            {Object.entries(ARTIFACT_KIND_LABEL).map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+      <p class="text-muted-foreground text-xs">
+        {wanted
+          ? 'When the task is done, Claude creates it in your claude.ai account (a private page you can share or delete) without asking again. Nothing goes into the repository.'
+          : 'No Artifact. You can switch it on later on the task page, until the task is done.'}
+      </p>
+    </div>
+  );
+}
 
 interface Pending {
   task: TaskSummary;
@@ -139,8 +189,15 @@ function useTaskDecisions(task: () => TaskSummary, changed: () => void) {
   const startingReview = ref(false);
   const copied = ref(false);
 
+  /** The Artifact switch of the approve dialog, prefilled from the user's earlier choice or the plan's answer. */
+  const artifact = ref<ArtifactRequest>({ wanted: false, kind: 'stakeholder-presentation' });
+
   const ask = (action: ConfirmedAction): void => {
     if (action === 'accept') sendToReview.value = effectiveReviewMode(task()) !== 'optional';
+    if (action === 'approve') {
+      const request = task().artifact?.request ?? null;
+      artifact.value = request === null ? { wanted: false, kind: 'stakeholder-presentation' } : { wanted: request.wanted, kind: request.kind };
+    }
     pending.value = { task: task(), action };
   };
 
@@ -198,7 +255,9 @@ function useTaskDecisions(task: () => TaskSummary, changed: () => void) {
       }
       default: {
         const approved = action === 'approve';
-        return perform(() => api.decide(subject, approved ? 'APPROVED' : 'REJECTED', typed), `${approved ? 'Approved' : 'Rejected'} ${id} plan v${subject.plan.version}.`);
+        // The switch is sent only when it says something: on, or off against the plan's answer.
+        const sendArtifact = approved && (artifact.value.wanted || subject.artifact?.request?.wanted === true) ? artifact.value : undefined;
+        return perform(() => api.decide(subject, approved ? 'APPROVED' : 'REJECTED', typed, sendArtifact), `${approved ? 'Approved' : 'Rejected'} ${id} plan v${subject.plan.version}.`);
       }
     }
   };
@@ -248,9 +307,9 @@ function useTaskDecisions(task: () => TaskSummary, changed: () => void) {
           {mode === null
             ? 'This JERRY Core always runs the independent review after acceptance.'
             : mode === 'required'
-              ? 'Review is required for this project: three read-only reviewers check every changed file before the final checks.'
+              ? 'Review is required for this project: the read-only reviewers this change needs (up to three) check every changed file before the final checks.'
               : sendToReview.value
-                ? 'Three read-only reviewers check every changed file; you then run /jerry:review in Claude Code.'
+                ? 'The read-only reviewers this change needs (up to three) check every changed file; you then run /jerry:review in Claude Code.'
                 : 'No review: JERRY runs the final checks right away, and the task is done when they pass.'}
         </p>
       </div>
@@ -291,7 +350,12 @@ function useTaskDecisions(task: () => TaskSummary, changed: () => void) {
               ),
               <p class="text-xs">{DIALOG[current.action].note}</p>,
             ],
-            controls: current.action === 'accept' ? () => reviewSwitch(current.task) : undefined,
+            controls:
+              current.action === 'accept'
+                ? () => reviewSwitch(current.task)
+                : current.action === 'approve'
+                  ? () => artifactChoice('approve-artifact', artifact.value.wanted, artifact.value.kind, (next) => (artifact.value = next))
+                  : undefined,
           }}
         </ConfirmDialog>
       ),
@@ -299,7 +363,7 @@ function useTaskDecisions(task: () => TaskSummary, changed: () => void) {
         <DialogContent class="start-review">
           <DialogHeader>
             <DialogTitle>Start the review of {task().taskId}</DialogTitle>
-            <DialogDescription>Claude runs the three read-only reviewers; the dashboard cannot start them. In Claude Code, in this repository, run:</DialogDescription>
+            <DialogDescription>Claude runs the read-only reviewers this change needs; the dashboard cannot start them. In Claude Code, in this repository, run:</DialogDescription>
           </DialogHeader>
           <div class="bg-muted flex items-center justify-between gap-3 rounded-md border px-3 py-2">
             <code class="font-mono text-sm break-all" data-instruction>

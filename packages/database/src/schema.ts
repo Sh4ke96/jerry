@@ -26,6 +26,8 @@ export interface TasksTable {
   goal: string | null;
   /** The analysts suggested at intake ({ roles, reasons } as JSON); null when not sized. */
   analysts_json: ColumnType<string | null, string | null | undefined, string | null>;
+  /** The user's Artifact switch ({ wanted, kind, at } as JSON); null when never set. */
+  artifact_request_json: ColumnType<string | null, string | null | undefined, string | null>;
   created_at: string;
   updated_at: string;
 }

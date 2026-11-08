@@ -993,6 +993,16 @@ export const TOOLS: readonly ToolDefinition[] = [
             // Only a hint: the next get_state carries it too.
           }
         }
+        // A task the user wants an Artifact for is done: Claude creates it now.
+        if (result.status === 'approved' && result.state === 'DONE') {
+          try {
+            const task = taskSummarySchema.parse(await core('GET', `/api/v1/tasks/${encodeURIComponent(result.taskId)}`));
+            const artifact = artifactInstruction([task]);
+            if (artifact !== '') skills = `${skills} ${artifact}`.trim();
+          } catch {
+            // Only a hint: the next get_state carries it too.
+          }
+        }
         return ok({ ...result, nextStep: skills === '' ? decisionNextStep(result) : `${decisionNextStep(result)} ${skills}` }, decisionSummary(result));
       }),
   },
@@ -1216,6 +1226,25 @@ export function skillsInstruction(skills: RepositoryState['skills'], tasks: Read
   return lines.length === 0 ? '' : `${EMOJI.jerry} JERRY starts skills here. ${lines.join(' ')}`;
 }
 
+const ARTIFACT_KIND_WORDS: Record<string, string> = {
+  'stakeholder-presentation': 'a stakeholder presentation',
+  'architecture-before-after': 'the architecture before and after',
+  'ui-flows': 'the UI flows and screens',
+  'endpoint-contract-map': 'an endpoint and contract map',
+  other: 'an Artifact of the kind the plan describes',
+};
+
+/**
+ * Finished tasks the user wants an Artifact for that has not been made yet: Claude creates it with
+ * /jerry:artifact, without asking again. '' when none (no reminder without the user's request).
+ */
+export function artifactInstruction(tasks: readonly TaskSummary[]): string {
+  const due = tasks.flatMap((task) => (task.state === 'DONE' && task.artifact?.request?.wanted === true && task.artifact.decision === null ? [{ taskId: task.taskId, request: task.artifact.request }] : []));
+  if (due.length === 0) return '';
+  const list = due.map(({ taskId, request }) => `${taskId}: ${ARTIFACT_KIND_WORDS[request.kind] ?? request.kind} (${request.by === 'user' ? 'the user switched it on' : "the user's answer in the plan"})`).join('; ');
+  return `${EMOJI.artifact} The user asked for an Artifact when the task is done: ${list}. Create it now with /jerry:artifact for that task and kind, without asking again, and record it with record_artifact.`;
+}
+
 /** The workspace's other repositories with decisions waiting for the user, in one line; '' when none. */
 export function workspaceInstruction(state: RepositoryState): string {
   const workspace = state.workspace;
@@ -1238,7 +1267,7 @@ export function nextAction(state: RepositoryState): { action: string; details: s
   const base = stateAction(state);
   if (state.repoRoot === null || notAdded(state)) return base;
   const open = state.tasks.filter((task) => !isTerminal(task.state));
-  const extra = [skillsInstruction(state.skills, open), workspaceInstruction(state)].filter((line) => line !== '');
+  const extra = [skillsInstruction(state.skills, open), workspaceInstruction(state), artifactInstruction(state.tasks)].filter((line) => line !== '');
   return extra.length === 0 ? base : { action: base.action, details: [base.details, ...extra].join('\n') };
 }
 

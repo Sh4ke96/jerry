@@ -20,7 +20,7 @@ local dashboard. It never changes your code and never touches Git: you do all Gi
 | 🔍 **Independent review, when you want it** | Three read-only reviewers check every changed file. It is optional by default: you ask for it when you accept a report, or make it required for all projects or one. Fixes need your approval, and the same reviewers check again. |
 | 📄 **Reports from facts** | Implementation and final reports are built from what JERRY recorded, not from what Claude says: real test results, deviations, risks, and QA scenarios in Polish or English (your setting). |
 | 📊 **Evals** | Golden cases run as real Claude Code sessions in throwaway fixtures, compared with a baseline to catch regressions. |
-| 🎨 **Optional Artifact** | After a task is done, Claude can create a presentation or diagram in your claude.ai account, only if you say yes. |
+| 🎨 **Optional Artifact** | After a task is done, Claude can create a presentation or diagram in your claude.ai account, only if you say yes: switch it on (with its kind) when you approve the plan or later on the task page, or answer Claude's question while it plans. When the task is done, JERRY tells Claude to create it without asking again. |
 
 ### 🔄 The life of a task
 

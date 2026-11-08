@@ -13,6 +13,9 @@ only when the user says yes. It is never written into the repository.
 If the user has already said they do not want an Artifact, skip to 3a: record the decline, and do nothing
 else.
 
+If JERRY says the user asked for an Artifact of a kind (the switch at plan approval or on the task page, or
+their answer in the plan), that is their answer: skip step 2 and create that kind (3b) without asking again.
+
 ## 1. Read the task
 
 - Call `get_final_report` with the task ID. Its `artifact.planned` field shows whether the plan already

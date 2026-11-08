@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import {
   agentModelChoiceSchema,
   type AgentModelChoice,
+  type ArtifactRequest,
   type AgentModelsUpdateRequest,
   MODEL_CHOICE_ROLES,
   SKILL_MODEL_ROLES,
@@ -371,6 +372,7 @@ export class StateStore {
     const approvingPlan = request.stage === 'PLAN' && request.decision === 'APPROVED';
     const accepting = request.stage === 'IMPLEMENTATION' && request.decision === 'APPROVED';
     if (request.review !== undefined && !accepting) throw new StateError(400, 'review applies only to accepting an implementation (stage IMPLEMENTATION, decision APPROVED)');
+    if (request.artifact !== undefined && !approvingPlan) throw new StateError(400, 'artifact applies only to approving a plan (stage PLAN, decision APPROVED)');
     // Review is the user's choice at acceptance, within the review mode of the task's project.
     let review: boolean | null = null;
     if (accepting) {
@@ -442,6 +444,8 @@ export class StateStore {
         .execute();
       await audit(trx, at, `approval.${record.decision.toLowerCase()}`, taskId, { stage: record.stage, version: record.version, contentHash: record.contentHash, channel, ...(review === null ? {} : { review }) });
       if (event === 'plan.approved' && gitNow !== null) await insertSnapshots(trx, gitNow, 'plan.approved', at);
+      // The user's Artifact switch, chosen with the approval.
+      if (event === 'plan.approved' && request.artifact !== undefined) await writeArtifactRequest(trx, taskId, request.artifact, at, channel);
       // Accepting the implementation with review starts the independent review, whose end runs the
       // final checks; without review the final checks run now.
       if (event === 'implementation.accepted' && review === true) {
@@ -1693,6 +1697,21 @@ export class StateStore {
     return row !== undefined;
   }
 
+  /**
+   * The user's switch for an Artifact when the task is done (task page). Refused for a cancelled task
+   * and once an Artifact decision is recorded: then the choice is made.
+   */
+  async setArtifactRequest(taskId: string, request: ArtifactRequest, now: Date, channel: Channel): Promise<Task> {
+    const task = this.requireTask(taskId);
+    if (task.state === 'CANCELLED') throw new StateError(409, `${taskId} is cancelled`);
+    const decided = await this.database.db.selectFrom('artifact_decisions').select('id').where('task_id', '=', taskId).limit(1).executeTakeFirst();
+    if (decided !== undefined) throw new StateError(409, `An Artifact decision is already recorded for ${taskId}`);
+    const at = now.toISOString();
+    await this.database.db.transaction().execute(async (trx) => writeArtifactRequest(trx, taskId, request, at, channel));
+    await this.reload();
+    return this.requireTask(taskId);
+  }
+
   /** Claude's progress note; open tasks only. It changes no state. */
   async saveCheckpoint(taskId: string, note: { summary: string; nextSteps: string[] }, sessionId: string | null, now: Date): Promise<Checkpoint> {
     const task = this.requireTask(taskId);
@@ -2151,7 +2170,7 @@ export class StateStore {
       .selectFrom('tasks')
       .innerJoin('repositories', 'repositories.repo_id', 'tasks.repo_id')
       .innerJoin('plans', (join) => join.onRef('plans.task_id', '=', 'tasks.task_id').onRef('plans.version', '=', 'tasks.current_plan_version'))
-      .select(['tasks.task_id', 'tasks.title', 'tasks.state', 'tasks.goal', 'tasks.analysts_json', 'tasks.created_at', 'repositories.root_path', 'plans.version', 'plans.content_hash', 'plans.scope_json', 'plans.document_json', 'plans.created_at as plan_created_at'])
+      .select(['tasks.task_id', 'tasks.title', 'tasks.state', 'tasks.goal', 'tasks.analysts_json', 'tasks.artifact_request_json', 'tasks.created_at', 'repositories.root_path', 'plans.version', 'plans.content_hash', 'plans.scope_json', 'plans.document_json', 'plans.created_at as plan_created_at'])
       .orderBy('tasks.task_id')
       .execute();
     const approvals = await db.selectFrom('approvals').selectAll().orderBy('approved_at').orderBy(sql`rowid`).execute();
@@ -2188,6 +2207,7 @@ export class StateStore {
         state: row.state,
         ...(row.goal === null ? {} : { goal: row.goal }),
         ...(row.analysts_json === null ? {} : { analysts: JSON.parse(row.analysts_json) }),
+        ...(row.artifact_request_json === null ? {} : { artifactRequest: JSON.parse(row.artifact_request_json) }),
         plan: {
           version: row.version,
           contentHash: row.content_hash,
@@ -2421,6 +2441,13 @@ function approvalFromRow(row: Selectable<JerrySchema['approvals']>): ApprovalRec
 }
 
 /** A stored setting, or the default when it is missing or not a valid value. */
+/** Stores the user's Artifact switch for a task, with an audit row. */
+async function writeArtifactRequest(trx: Transaction<JerrySchema>, taskId: string, request: ArtifactRequest, at: string, channel: Channel): Promise<void> {
+  const value = { wanted: request.wanted, kind: request.kind, at };
+  await trx.updateTable('tasks').set({ artifact_request_json: JSON.stringify(value), updated_at: at }).where('task_id', '=', taskId).execute();
+  await audit(trx, at, 'artifact.request', taskId, { ...request, channel });
+}
+
 /** A round's expected reviewers; null or unreadable (rounds before sizing): all three. */
 function reviewersOf(json: string | null): ReviewerRole[] {
   if (json === null) return [...REVIEWER_ROLES];

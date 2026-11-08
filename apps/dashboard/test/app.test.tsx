@@ -1500,6 +1500,57 @@ describe('Dashboard app', () => {
     wrapper.unmount();
   });
 
+  it('approves a plan with the Artifact switch on and the chosen kind', async () => {
+    const wrapper = await mountApp();
+    await openTasks(wrapper);
+    await buttonIn(await expand(wrapper, 'JRY-0002'), 'Approve plan v1')!.trigger('click');
+    await flushPromises();
+    const choice = body().get('form.dialog [data-artifact-choice]');
+    expect(choice.attributes('data-artifact-choice')).toBe('off');
+    expect(choice.text()).toContain('You can switch it on later on the task page');
+    await body().get('#approve-artifact-switch').trigger('click');
+    await flushPromises();
+    await body().get('form.dialog [data-artifact-kind]').setValue('ui-flows');
+    expect(body().get('form.dialog [data-artifact-choice]').text()).toContain('without asking again');
+    await confirmWith('JRY-0002');
+    expect(posted('/api/v1/tasks/JRY-0002/approvals')).toEqual([{ stage: 'PLAN', version: 1, decision: 'APPROVED', confirmTaskId: 'JRY-0002', artifact: { wanted: true, kind: 'ui-flows' } }]);
+    wrapper.unmount();
+  });
+
+  it('changes the Artifact choice on the task page until a decision is recorded, then shows the decision', async () => {
+    const base = globalThis.fetch;
+    let task: TaskSummary = { ...waitingTask, artifact: { request: { wanted: true, kind: 'endpoint-contract-map', by: 'plan', at: null }, decision: null } };
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (url === '/api/v1/tasks') return json([task]);
+      if (url === '/api/v1/tasks/JRY-0002/artifact-request') {
+        calls.push({ url, init });
+        const next = JSON.parse(String(init?.body)) as { wanted: boolean; kind: 'endpoint-contract-map' };
+        task = { ...task, artifact: { request: { ...next, by: 'user', at: NOW }, decision: null } };
+        return json({ taskId: 'JRY-0002', request: task.artifact!.request });
+      }
+      return base(url, init);
+    });
+    const wrapper = await mountApp();
+    const page = await openTask(wrapper, 'JRY-0002', 'overview');
+    const fact = page.get('[data-artifact-choice]');
+    expect(fact.attributes('data-artifact-choice')).toBe('endpoint-contract-map');
+    expect(page.text()).toContain('From your answer in the plan; the switch overrides it.');
+    await page.get('#task-artifact-JRY-0002-switch').trigger('click');
+    await flushPromises();
+    expect(posted('/api/v1/tasks/JRY-0002/artifact-request')).toEqual([{ wanted: false, kind: 'endpoint-contract-map' }]);
+    expect(state.notice).toBe('JRY-0002: no Artifact.');
+    wrapper.unmount();
+
+    // Once Claude recorded the Artifact, the page shows it and no switch.
+    task = { ...task, state: 'DONE', artifact: { request: { wanted: true, kind: 'ui-flows', by: 'user', at: NOW }, decision: { taskId: 'JRY-0002', decision: 'created', kind: 'ui-flows', title: 'Login flows', url: 'https://claude.ai/code/artifact/0f6c1a2b-aaaa-bbbb-cccc-000000000002', reason: '', at: NOW } } };
+    const again = await mountApp();
+    const done = await openTask(again, 'JRY-0002', 'overview');
+    expect(done.find('[data-artifact-choice]').exists()).toBe(false);
+    expect(done.get('[data-artifact-decision="created"] a').attributes('href')).toBe('https://claude.ai/code/artifact/0f6c1a2b-aaaa-bbbb-cccc-000000000002');
+    again.unmount();
+  });
+
   it('asks in an alert dialog and decides nothing without the exact task ID', async () => {
     const wrapper = await mountApp();
     await openTasks(wrapper);

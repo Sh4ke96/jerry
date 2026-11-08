@@ -16,7 +16,7 @@ import { PlanDriftView } from '../components/PlanDrift';
 import { PlanGradeView } from '../components/PlanGrade';
 import { ReviewPanel } from '../components/Review';
 import { StatusBadge } from '../components/StatusBadge';
-import { effectiveReviewMode, TaskActions, TaskMenu } from '../components/TaskActions';
+import { ARTIFACT_KIND_LABEL, artifactChoice, effectiveReviewMode, TaskActions, TaskMenu } from '../components/TaskActions';
 import { checksSummary, findingsSummary, reviewSummary, WaitingMarker } from '../components/TaskTile';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
@@ -27,7 +27,44 @@ import { lastActivity, nextStepText, projectName, REVIEW_STATES, REVIEWER_STATES
 import { cn } from '../lib/utils';
 import { linkTo, projectHref, taskHref } from '../router';
 import { taskReviewRequested } from '../settings';
-import { handleError, state } from '../state';
+import { handleError, perform, state } from '../state';
+
+/**
+ * The Artifact of a task: the recorded decision once there is one, else the user's switch (with the
+ * kind), which stays changeable until then. An older Core sends no artifact field: nothing is shown.
+ */
+function artifactFact(task: TaskSummary) {
+  const artifact = task.artifact;
+  if (artifact === undefined) return null;
+  const { decision, request } = artifact;
+  if (decision !== null) {
+    return (
+      <Fact label="Artifact">
+        <span data-artifact-decision={decision.decision}>
+          {decision.decision === 'created' && decision.url !== null ? (
+            <a class="hover:underline" href={decision.url} target="_blank" rel="noopener noreferrer">
+              {decision.title ?? 'Artifact'}
+            </a>
+          ) : (
+            <span class="text-muted-foreground">declined{decision.reason === '' ? '' : ` · ${decision.reason}`}</span>
+          )}{' '}
+          <span class="text-muted-foreground text-xs">{formatTime(decision.at)}</span>
+        </span>
+      </Fact>
+    );
+  }
+  if (task.state === 'CANCELLED') return null;
+  const save = (next: { wanted: boolean; kind: keyof typeof ARTIFACT_KIND_LABEL }) =>
+    void perform(() => api.setArtifactRequest(task.taskId, next), next.wanted ? `${task.taskId}: Claude creates ${ARTIFACT_KIND_LABEL[next.kind].toLowerCase()} when the task is done.` : `${task.taskId}: no Artifact.`);
+  return (
+    <Fact label="Artifact">
+      <div class="grid gap-1">
+        {artifactChoice(`task-artifact-${task.taskId}`, request?.wanted === true, request?.kind ?? 'stakeholder-presentation', save)}
+        {request?.by === 'plan' && <span class="text-muted-foreground text-xs">From your answer in the plan; the switch overrides it.</span>}
+      </div>
+    </Fact>
+  );
+}
 
 type TaskTab = 'overview' | 'plan' | 'analysis' | 'report' | 'review' | 'final' | 'history';
 
@@ -319,6 +356,7 @@ export const TaskPage = defineComponent({
             )}
             <Fact label="Findings">{findingsSummary(current)}</Fact>
             {review !== null && <Fact label="Review">{review}</Fact>}
+            {artifactFact(current)}
           </Facts>
           {current.lastCheckpoint !== null && (
             <section class="checkpoint bg-muted/50 grid gap-1.5 rounded-lg border-l-2 border-l-primary p-4 text-sm">
