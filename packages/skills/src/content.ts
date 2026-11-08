@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { MAX_SKILL_BYTES, MAX_SKILL_FILES, SKILL_NAME_MAX_LENGTH, SKILL_NAME_PATTERN, type SkillFile } from '@jerry/contracts';
 import { invalid } from './errors.js';
-import { fieldText, parseFrontmatter, type Frontmatter } from './frontmatter.js';
+import { fieldText, parseFrontmatter, withSkillName, type Frontmatter } from './frontmatter.js';
 import { isSafeEntryName, readZip, type ZipEntry } from './zip.js';
 
 /**
@@ -32,6 +32,10 @@ export interface ValidatedSkill {
   files: SkillFile[];
   totalBytes: number;
   contentHash: string;
+  /** The name SKILL.md declared when it was not a valid skill name and JERRY normalized it; else null. */
+  renamedFrom: string | null;
+  /** The files as they are installed (SKILL.md's name line normalized when `renamedFrom` is set). */
+  content: SkillContent;
 }
 
 /** Folders that are never part of a skill (version control, OS metadata). */
@@ -192,22 +196,36 @@ export function validateSkill(content: SkillContent): ValidatedSkill {
     const near = content.files.find((file) => file.path.toLowerCase() === 'skill.md');
     throw invalid(near === undefined ? 'The skill has no SKILL.md at its top.' : `The skill's main file must be named exactly SKILL.md, not ${near.path}.`);
   }
-  const skillMd = skillFile.data.toString('utf8');
-  const frontmatter = parseFrontmatter(skillMd);
+  let skillMd = skillFile.data.toString('utf8');
+  let frontmatter = parseFrontmatter(skillMd);
   const description = fieldText(frontmatter, 'description').trim();
   if (description === '') throw invalid('SKILL.md frontmatter needs a "description": Claude uses it to decide when the skill applies.');
   const declared = frontmatter.fields['name'];
   let name: string;
+  let renamedFrom: string | null = null;
+  let installed = content;
   if (declared !== undefined) {
-    if (typeof declared !== 'string' || !SKILL_NAME_PATTERN.test(declared) || declared.length > SKILL_NAME_MAX_LENGTH) {
+    const valid = typeof declared === 'string' && SKILL_NAME_PATTERN.test(declared) && declared.length <= SKILL_NAME_MAX_LENGTH;
+    const normalized = typeof declared === 'string' ? sanitizeSkillName(declared) : '';
+    if (!valid && normalized === '') {
       throw invalid(`SKILL.md "name" must be lowercase letters, digits and single hyphens, at most ${SKILL_NAME_MAX_LENGTH} characters (got "${String(declared).slice(0, 80)}").`);
     }
-    name = declared;
+    name = valid ? declared : normalized;
+    if (!valid) {
+      // A name Claude Code would not load ("laravel:eloquent-relationships"): installed under its
+      // normalized form, with only the name line of SKILL.md changed so the folder and name agree.
+      renamedFrom = declared as string;
+      skillMd = withSkillName(skillMd, name);
+      frontmatter = parseFrontmatter(skillMd);
+      const renamedSkillMd = Buffer.from(skillMd, 'utf8');
+      installed = { ...content, files: content.files.map((file) => (file === skillFile ? { path: file.path, data: renamedSkillMd } : file)) };
+    }
   } else {
     name = sanitizeSkillName(content.nameHint);
     if (name === '') throw invalid('SKILL.md has no "name" and the folder name has no letters or digits to name the skill with; add a "name" to the frontmatter.');
   }
   if (reservedSkillName(name)) throw invalid(`"${name}" is a name Claude Code reserves for synced skills; rename the skill.`);
-  const files = content.files.map((file): SkillFile => ({ path: file.path, size: file.data.length, sha256: sha256(file.data) })).sort((a, b) => (a.path < b.path ? -1 : 1));
-  return { name, description, frontmatter, skillMd, files, totalBytes, contentHash: contentHashOf(files) };
+  const files = installed.files.map((file): SkillFile => ({ path: file.path, size: file.data.length, sha256: sha256(file.data) })).sort((a, b) => (a.path < b.path ? -1 : 1));
+  const total = files.reduce((sum, file) => sum + file.size, 0);
+  return { name, description, frontmatter, skillMd, files, totalBytes: total, contentHash: contentHashOf(files), renamedFrom, content: installed };
 }

@@ -84,6 +84,26 @@ export function parseFrontmatter(text: string): Frontmatter {
   return { fields, body: lines.slice(end + 1).join('\n'), bodyLine: end + 2 };
 }
 
+/**
+ * SKILL.md with its top-level "name" set to `name`: only that line (and indented lines continuing it)
+ * changes; the BOM, line endings and every other line stay as they are. `name` must be a plain
+ * scalar (a valid skill name needs no quoting).
+ */
+export function withSkillName(text: string, name: string): string {
+  const bom = text.startsWith('﻿') ? '﻿' : '';
+  // Each line keeps its own ending, so CRLF and LF files come back unchanged.
+  const lines = text.slice(bom.length).split(/(?<=\n)/);
+  const ending = (line: string): string => /\r?\n$/.exec(line)?.[0] ?? '';
+  const end = lines.findIndex((line, index) => index > 0 && /^(---|\.\.\.)\s*$/.test(line.replace(/\r?\n$/, '')));
+  if (lines[0]?.replace(/\r?\n$/, '').trim() !== '---' || end === -1) throw invalid('SKILL.md has no closed frontmatter to set the name in.');
+  const at = lines.findIndex((line, index) => index > 0 && index < end && /^name\s*:/.test(line));
+  if (at === -1) throw invalid('SKILL.md frontmatter has no "name" to set.');
+  let next = at + 1;
+  while (next < end && /^\s+\S/.test(lines[next]!)) next += 1;
+  lines.splice(at, next - at, `name: ${name}${ending(lines[at]!)}`);
+  return bom + lines.join('');
+}
+
 /** A field as one string ('' when absent, a list joined with ", "). */
 export function fieldText(frontmatter: Frontmatter, key: string): string {
   const value = frontmatter.fields[key];

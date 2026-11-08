@@ -69,5 +69,16 @@ export async function loadSkill(input: SkillInput, options: LoadOptions = {}): P
     }
   }
   const skill = validateSkill(content);
-  return { source, content, skill, scan: scanSkill(content.files, skill.frontmatter) };
+  const scan = scanSkill(skill.content.files, skill.frontmatter);
+  if (skill.renamedFrom !== null) {
+    scan.unshift({
+      level: 'warning',
+      rule: 'name-normalized',
+      file: 'SKILL.md',
+      line: null,
+      message: `SKILL.md names the skill "${skill.renamedFrom.slice(0, 80)}"; Claude Code needs lowercase letters, digits and hyphens, so JERRY installs it as "${skill.name}" and changes only that line.`,
+      excerpt: null,
+    });
+  }
+  return { source, content: skill.content, skill, scan };
 }

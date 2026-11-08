@@ -331,4 +331,21 @@ describe('skills manager (Core API)', () => {
     const history = (await asCli('GET', '/api/v1/skills')).json() as SkillsList;
     expect(history.added.map((skill) => skill.name)).not.toContain('pdf');
   });
+
+  it('installs a skill whose SKILL.md name Claude Code would not load under its normalized name, and updates it without a spurious diff', async () => {
+    const folder = writeFolder('eloquent-relationships-and-loading', { 'SKILL.md': skillMd('laravel:eloquent-relationships', 'Eager loading.') });
+    const shown = await preview({ source: folder });
+    expect(shown).toMatchObject({ purpose: 'install', name: 'laravel-eloquent-relationships', blocked: null });
+    expect(shown.scan[0]).toMatchObject({ level: 'warning', rule: 'name-normalized', file: 'SKILL.md', message: expect.stringContaining('"laravel:eloquent-relationships"') });
+    expect(shown.skillMd).toMatch(/^name: laravel-eloquent-relationships$/m);
+    const installed = await asCli('POST', '/api/v1/skills/install', { previewId: shown.previewId });
+    expect(installed.statusCode, installed.body).toBe(201);
+    const onDisk = fs.readFileSync(path.join(claudeConfigDir, 'skills', 'laravel-eloquent-relationships', 'SKILL.md'), 'utf8');
+    expect(onDisk).toMatch(/^name: laravel-eloquent-relationships$/m);
+    expect(onDisk).not.toContain('laravel:eloquent-relationships');
+    expect((installed.json() as SkillChangeResult).skill).toMatchObject({ name: 'laravel-eloquent-relationships', modified: false });
+
+    const again = (await asCli('POST', '/api/v1/skills/laravel-eloquent-relationships/update/preview', {})).json() as SkillPreview;
+    expect(again).toMatchObject({ name: 'laravel-eloquent-relationships', blocked: null, upToDate: true, diff: { added: [], removed: [], changed: [] } });
+  });
 });

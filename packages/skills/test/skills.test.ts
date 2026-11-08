@@ -95,10 +95,43 @@ describe('validation', () => {
   it('refuses a missing SKILL.md, a bad name, a missing description and reserved names', () => {
     expect(() => validateSkill(content({ 'README.md': '# x' }))).toThrow(/no SKILL\.md/);
     expect(() => validateSkill(content({ 'skill.md': skillMd('x') }))).toThrow(/exactly SKILL\.md/);
-    expect(() => validateSkill(content({ 'SKILL.md': skillMd('Bad Name') }))).toThrow(/lowercase letters/);
+    expect(() => validateSkill(content({ 'SKILL.md': skillMd('"***"') }))).toThrow(/lowercase letters/);
+    expect(() => validateSkill(content({ 'SKILL.md': skillMd('[a, b]') }))).toThrow(/lowercase letters/);
     expect(() => validateSkill(content({ 'SKILL.md': '---\nname: x\n---\n' }))).toThrow(/needs a "description"/);
     expect(() => validateSkill(content({ 'SKILL.md': skillMd('synced') }))).toThrow(/reserves/);
+    expect(() => validateSkill(content({ 'SKILL.md': skillMd('Synced!') }))).toThrow(/reserves/);
     expect(() => validateSkill(content({ 'SKILL.md': skillMd(null) }, '***'))).toThrow(/add a "name"/);
+  });
+
+  it('installs a declared name Claude Code would not load under its normalized form, changing only that line', () => {
+    const original = ['﻿---', 'name: "laravel:eloquent-relationships"', 'description: Eager loading.', '---', '# Use', 'name: laravel:stays-in-body', ''].join('\r\n');
+    const skill = validateSkill(content({ 'SKILL.md': original, 'notes.md': 'n' }));
+    expect(skill.name).toBe('laravel-eloquent-relationships');
+    expect(skill.renamedFrom).toBe('laravel:eloquent-relationships');
+    const installed = skill.content.files.find((file) => file.path === 'SKILL.md')!.data.toString('utf8');
+    expect(installed).toBe(original.replace('name: "laravel:eloquent-relationships"', 'name: laravel-eloquent-relationships'));
+    expect(skill.skillMd).toBe(installed);
+    expect(skill.frontmatter.fields['name']).toBe('laravel-eloquent-relationships');
+    expect(skill.content.files.find((file) => file.path === 'notes.md')!.data.toString()).toBe('n');
+    // The hash is of what is installed, so the same source gives the same hash again.
+    expect(skill.files.find((file) => file.path === 'SKILL.md')!.size).toBe(Buffer.byteLength(installed));
+    expect(validateSkill(content({ 'SKILL.md': original, 'notes.md': 'n' })).contentHash).toBe(skill.contentHash);
+    expect(validateSkill(content({ 'SKILL.md': skillMd('pdf') })).renamedFrom).toBeNull();
+    // A name continued on indented lines is replaced as a whole.
+    const folded = validateSkill(content({ 'SKILL.md': '---\nname: Long\n  Name\ndescription: d\n---\n' }));
+    expect(folded.name).toBe('long-name');
+    expect(folded.skillMd).toBe('---\nname: long-name\ndescription: d\n---\n');
+  });
+
+  it('says in the preview scan when it normalized the name', async () => {
+    const dir = writeFolder({ 'SKILL.md': skillMd('laravel:eloquent-relationships') });
+    const loaded = await loadSkill({ source: dir });
+    expect(loaded.skill.name).toBe('laravel-eloquent-relationships');
+    expect(loaded.content.files[0]!.data.toString()).toContain('name: laravel-eloquent-relationships\n');
+    expect(loaded.scan[0]).toMatchObject({ level: 'warning', rule: 'name-normalized', file: 'SKILL.md' });
+    expect(loaded.scan[0]!.message).toContain('"laravel:eloquent-relationships"');
+    const plain = await loadSkill({ source: writeFolder({ 'SKILL.md': skillMd('pdf') }) });
+    expect(plain.scan.some((finding) => finding.rule === 'name-normalized')).toBe(false);
   });
 
   it('refuses too many files and too many bytes', () => {

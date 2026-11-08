@@ -113,6 +113,9 @@ a `.zip`/`.skill` file or a local folder.
   line per skill).
 - 📏 A skill may have up to 50 MB and 5000 files (an uploaded zip up to 50 MB). Above 2 MB or 200 files the preview
   marks it as a large skill and sums up its scripts: read it with that in mind.
+- 🏷️ A `name` in `SKILL.md` that Claude Code would not load (e.g. `laravel:eloquent-relationships`) is installed
+  under its normalized form (`laravel-eloquent-relationships`); JERRY changes only that line and says so in the
+  preview.
 
 Skills you add are started only by JERRY, by task state, and used by Claude:
 
