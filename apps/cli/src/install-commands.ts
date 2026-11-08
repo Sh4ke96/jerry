@@ -29,6 +29,8 @@ import { disableUsage, enableUsage, reportCollectionChange, reportTelemetryEnabl
 
 const PLUGIN_PAYLOAD = fileURLToPath(new URL('../plugin/', import.meta.url));
 const CORE_PAYLOAD = fileURLToPath(new URL('../core/', import.meta.url));
+const CLI_PAYLOAD = fileURLToPath(new URL('../cli/', import.meta.url));
+const CASES_PAYLOAD = fileURLToPath(new URL('../evals/cases/', import.meta.url));
 
 /**
  * Runs a settings change and returns what went wrong, or null. Its failure never undoes the rest
@@ -45,6 +47,9 @@ function settingsProblem(change: () => void): string | null {
 
 /** Stage then swap, so a session never loads a half-copied plugin or Core. */
 function copyStagedThenSwap(source: string, target: string): void {
+  // An install run by the runtime CLI itself: its payload already is the target.
+  const same = (a: string): string => (process.platform === 'win32' ? path.resolve(a).toLowerCase() : path.resolve(a));
+  if (same(source) === same(target)) return;
   const staging = `${target}.staging`;
   fs.rmSync(staging, { recursive: true, force: true });
   fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -77,6 +82,12 @@ export async function install(options: { statusline: boolean; usage: boolean } =
   // The runtime copy of Core is what the hooks start automatically (work goes on without Core,
   // but monitoring needs it running).
   copyStagedThenSwap(CORE_PAYLOAD, path.dirname(paths.runtimeCoreFile));
+  // The runtime mirrors dist: "Run evals" in the dashboard starts the CLI next to Core, and that CLI
+  // finds the Core bundle, the plugin under test and the bundled cases next to itself.
+  copyStagedThenSwap(CLI_PAYLOAD, path.join(paths.runtimeDir, 'cli'));
+  copyStagedThenSwap(PLUGIN_PAYLOAD, path.join(paths.runtimeDir, 'plugin'));
+  const hasCases = fs.existsSync(CASES_PAYLOAD);
+  if (hasCases) copyStagedThenSwap(CASES_PAYLOAD, path.join(paths.runtimeDir, 'evals', 'cases'));
 
   writeFileAtomic(
     path.join(paths.marketplaceDir, '.claude-plugin', 'marketplace.json'),
@@ -122,6 +133,7 @@ export async function install(options: { statusline: boolean; usage: boolean } =
   );
   console.log(mark('pass', `Installed ${PLUGIN_ID} (user scope), loaded from ${installed.readFromFolder ?? installed.installPath ?? pluginDir}.`));
   console.log(mark('pass', `Installed JERRY Core runtime at ${paths.runtimeCoreFile}; Claude Code sessions start it automatically.`));
+  console.log(mark('pass', `Installed the CLI and plugin next to it${hasCases ? ' with the eval cases' : ''}, so the dashboard can run evals.`));
 
   // Installing is the user's explicit action; Claude usage collection is part of it, and easy to turn off.
   const locations = { home, claudeConfigDir: resolveClaudeConfigDir() };

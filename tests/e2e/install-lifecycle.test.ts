@@ -89,6 +89,10 @@ describe.skipIf(claude === null)('jerry install / doctor / uninstall (isolated C
     expect(jerryPlugin).toMatchObject({ enabled: true, scope: 'user' });
     expect(path.resolve(jerryPlugin!.readFromFolder!)).toBe(path.resolve(jerryHome, 'marketplace', 'plugins', 'jerry'));
     expect(fs.existsSync(path.join(jerryHome, 'runtime', 'core', 'core.mjs'))).toBe(true);
+    // Next to the runtime Core, what "Run evals" in the dashboard needs: the CLI, the plugin and the cases.
+    expect(fs.existsSync(path.join(jerryHome, 'runtime', 'cli', 'jerry.mjs'))).toBe(true);
+    expect(fs.existsSync(path.join(jerryHome, 'runtime', 'plugin', 'hooks', 'bridge.mjs'))).toBe(true);
+    expect(fs.existsSync(path.join(jerryHome, 'runtime', 'evals', 'cases'))).toBe(true);
   });
 
   it('produces a plugin that passes official validation', () => {

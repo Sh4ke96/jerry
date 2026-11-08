@@ -68,7 +68,10 @@ export class EvalRunner {
 
   /** Why a run cannot start here; null when it can. */
   unavailable(): string | null {
-    if (this.options.cliPath === null || !fs.existsSync(this.options.cliPath)) return 'The jerry CLI is not next to this Core (dist/cli/jerry.mjs); run "jerry eval run" in a terminal.';
+    if (this.options.cliPath === null || !fs.existsSync(this.options.cliPath)) {
+      const where = this.options.cliPath ?? 'cli/jerry.mjs next to the core folder';
+      return `The jerry CLI is not next to this Core (${where}). Run "jerry install" again and restart Core, or run "jerry eval run" in a terminal.`;
+    }
     return null;
   }
 

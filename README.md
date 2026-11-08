@@ -239,7 +239,8 @@ everything else stays until you prune it, which is fine: JERRY's data is usually
 - **Evals:** where things stand (baseline, what changed since it, calibration) and the runs as rows; a click opens a
   run's own page with its cases against the baseline and **Make baseline**. **Run evals** starts `jerry eval run` in
   the background (after a confirmation: it starts real Claude Code sessions); its closable progress panel shows the
-  output, can stop the run and opens the recorded run;
+  output, can stop the run and opens the recorded run. It uses the CLI, plugin and cases that `jerry install` puts next
+  to the installed Core; after updating from an older install, run `jerry install` once and restart Core;
 - **⚙️ Settings** (bottom of the sidebar): review optional or required, QA language (Polish or English), how decisions
   are confirmed, Claude usage collection and the usage bar, theme; inside the Jerry app also its own settings (start
   with Windows, notifications).

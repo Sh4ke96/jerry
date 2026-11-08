@@ -103,6 +103,9 @@ describe('eval runner (Core API)', () => {
   it('says when no CLI is next to Core', async () => {
     const missing = new EvalRunner({ home, cliPath: path.join(base, 'nope.mjs'), casesDir: null });
     expect(missing.unavailable()).toMatch(/not next to this Core/);
+    // It names the missing file and the fix.
+    expect(missing.unavailable()).toContain(path.join(base, 'nope.mjs'));
+    expect(missing.unavailable()).toContain('jerry install');
     expect(() => missing.start({ suite: null, label: '' })).toThrow(/not next to this Core/);
   });
 });
