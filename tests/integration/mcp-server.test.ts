@@ -50,7 +50,8 @@ describe('JERRY MCP server (bundled)', () => {
     const taskId = submitted.structured['taskId'] as string;
     // The first block is the human line the user sees in the tool row; the JSON follows it.
     expect(submitted.summary).toMatch(new RegExp(`^📋 ${taskId} plan v1 submitted · ⏳ waiting for your approval`));
-    expect(submitted.text.split('\n').slice(1).join('\n')).toBe(JSON.stringify(submitted.structured, null, 2));
+    // Compact JSON in one line: no indentation tokens.
+    expect(submitted.text.split('\n').slice(1)).toEqual([JSON.stringify(submitted.structured)]);
 
     const state = await mcp.call('get_state', { path: otherRepo });
     expect(state.summary).toBe(`🛡️ GUARDED · ⏳ ${taskId} waiting for plan approval · ⏳ 1 waiting for you`);

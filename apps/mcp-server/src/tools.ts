@@ -131,7 +131,8 @@ const DECISION_REQUEST_TIMEOUT_MS = DECISION_WAIT_MS + 15_000;
  * the full JSON Claude works with. The summary is built from the same result, never separately.
  */
 function ok(result: Record<string, unknown>, summary: string): ToolResult {
-  return { content: [{ type: 'text', text: summary }, { type: 'text', text: JSON.stringify(result, null, 2) }], structuredContent: result };
+  // Compact JSON: indentation would cost Claude tokens on every call and adds nothing it needs.
+  return { content: [{ type: 'text', text: summary }, { type: 'text', text: JSON.stringify(result) }], structuredContent: result };
 }
 
 /** WAIT_PLAN_APPROVAL -> "waiting for plan approval": workflow states as words. */
