@@ -93,12 +93,31 @@ describe('plan completeness grader', () => {
   it('checks that an analysed plan cites its reports, carries gaps and addresses serious risks', () => {
     const analyses = [analysis(1, 'high'), analysis(2, 'low', ['could not run tests'])];
     const runs: Pick<AgentRun, 'agentType' | 'status'>[] = [{ agentType: 'jerry:jerry-quality-analyst', status: 'no-report' }];
-    expect(failed(grade(plan(), { analyses, agentRuns: runs }))).toEqual(['analysis.reports-cited', 'analysis.gaps-carried']);
-    const partial = grade(plan({ analysis: { reports: [1], gaps: [] } }), { analyses, agentRuns: runs });
-    expect(failed(partial)).toEqual(['analysis.reports-cited', 'analysis.gaps-carried']);
+    // A tests-only change needs the quality analyst, whose run left no report.
+    const tests = { classification: ['tests' as const] };
+    expect(failed(grade(plan(tests), { analyses, agentRuns: runs }))).toEqual(['analysis.reports-cited', 'analysis.gaps-carried', 'analysis.depth-fits-plan']);
+    const partial = grade(plan({ ...tests, analysis: { reports: [1], gaps: [] } }), { analyses, agentRuns: runs });
+    expect(failed(partial)).toEqual(['analysis.reports-cited', 'analysis.gaps-carried', 'analysis.depth-fits-plan']);
     expect(partial.checks.find((check) => check.id === 'analysis.reports-cited')?.detail).toContain('#2');
-    expect(failed(grade(plan({ analysis: { reports: [1, 2], gaps: ['quality analyst gave no result'] } }), { analyses, agentRuns: runs }))).toEqual([]);
-    expect(failed(grade(plan({ risks: [], analysis: { reports: [1, 2], gaps: ['x'] } }), { analyses }))).toEqual(['risks.listed', 'analysis.risks-addressed']);
+    expect(failed(grade(plan({ ...tests, analysis: { reports: [1, 2], gaps: ['quality analyst gave no result'] } }), { analyses, agentRuns: runs }))).toEqual([]);
+    expect(failed(grade(plan({ ...tests, risks: [], analysis: { reports: [1, 2], gaps: ['x', 'no quality analyst'] } }), { analyses }))).toEqual(['risks.listed', 'analysis.risks-addressed']);
+  });
+
+  it('checks that the analysis was deep enough for the change the plan turned out to be', () => {
+    const risk = analysis(1);
+    const quality = { ...analysis(2), report: { ...analysis(2).report, role: 'jerry-quality-analyst' as const } };
+    const cites = (gaps: string[] = []) => ({ analysis: { reports: [1, 2], gaps } });
+    // Sized for a tests-only change: enough.
+    expect(failed(grade(plan({ classification: ['tests'], ...cites() }), { analyses: [quality, risk] }))).toEqual([]);
+    // The plan became a security change: the architecture analyst is missing too.
+    const deeper = grade(plan({ classification: ['security'], risks: [{ risk: 'x', severity: 'high', mitigation: 'y' }], ...cites() }), { analyses: [quality, risk] });
+    expect(failed(deeper)).toEqual(['analysis.depth-fits-plan']);
+    expect(deeper.checks.find((check) => check.id === 'analysis.depth-fits-plan')?.detail).toContain('jerry-architecture-analyst');
+    expect(deeper.level).toBe('mostly-complete');
+    // Carried as a gap: fine.
+    expect(failed(grade(plan({ classification: ['security'], risks: [{ risk: 'x', severity: 'high', mitigation: 'y' }], ...cites(['no architecture analyst run']) }), { analyses: [quality, risk] }))).toEqual([]);
+    // A plan that was not analysed is not judged on it.
+    expect(failed(grade(plan({ classification: ['security'], risks: [{ risk: 'x', severity: 'high', mitigation: 'y' }] })))).toEqual([]);
   });
 });
 

@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AGENT_ROLES, JERRY_VERSION } from '@jerry/contracts';
 import {
+  withoutAgentModel,
   assertJerryHomeOutsideRepositories,
   buildHash,
   CoreHttpError,
@@ -272,7 +273,9 @@ function findOnPath(command: string): string | null {
 
 function fileHash(file: string): string | null {
   try {
-    return createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+    // An agent's model and effort are the user's choice, which Core writes into the installed copy.
+    const contents = file.endsWith('.md') && path.basename(path.dirname(file)) === 'agents' ? withoutAgentModel(fs.readFileSync(file, 'utf8')) : fs.readFileSync(file);
+    return createHash('sha256').update(contents).digest('hex');
   } catch {
     return null;
   }

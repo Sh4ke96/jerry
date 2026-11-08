@@ -218,6 +218,18 @@ function emit(decision: GateDecision): never {
       block(`${decision.reason} [${decision.ruleId}]`);
       break;
     case 'WARN':
+      if (decision.quiet === true) {
+        // Claude was already given this warning in this session: the user still sees the line,
+        // Claude gets only new quality findings. Core recorded the deviation either way.
+        writeOut(
+          JSON.stringify({
+            systemMessage: decorate(EMOJI.warning, `JERRY: ${decision.reason} [${decision.ruleId}]`),
+            ...(decision.feedback === undefined ? {} : { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: decision.feedback } }),
+          }),
+        );
+        proceed();
+        break;
+      }
       writeOut(
         JSON.stringify({
           systemMessage: decorate(EMOJI.warning, `JERRY: ${decision.reason} [${decision.ruleId}]`),

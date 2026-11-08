@@ -47,7 +47,9 @@ describe('analysis first: intake, analysts, plan from their reports (bundled bri
     const started = await client.call('start_task', { title: 'Make the answer configurable', goal: 'Read the answer from configuration instead of a constant', focus: ['src/**'] });
     expect(started.isError, started.text).toBe(false);
     expect(started.structured).toMatchObject({ state: 'DISCOVERY', focus: ['src/**'] });
-    expect(started.text).toContain('at most three');
+    // No classification: all three analysts, as before JERRY sized the analysis.
+    expect(started.text).toContain("all three of JERRY's analysts");
+    expect(started.structured['analysts']).toEqual(['jerry-architecture-analyst', 'jerry-risk-analyst', 'jerry-quality-analyst']);
     taskId = started.structured['taskId'] as string;
 
     const task = await detail();
@@ -151,5 +153,29 @@ describe('analysis first: intake, analysts, plan from their reports (bundled bri
     expect(summary.planGrade).toMatchObject({ planVersion: 2, level: 'incomplete' });
     const approved = await api(core, 'POST', `/api/v1/tasks/${id}/approvals`, { stage: 'PLAN', version: 2, decision: 'APPROVED', confirmTaskId: id });
     expect(approved.status).toBe(201);
+  });
+
+  it('sizes the analysis to the kind of change and measures missing reports against it', async () => {
+    const client = await connect();
+    const tests = await client.call('start_task', { title: 'More tests', goal: 'Cover the answer with tests', focus: ['tests/**'], classification: ['tests'] });
+    expect(tests.isError, tests.text).toBe(false);
+    expect(tests.structured['analysts']).toEqual(['jerry-quality-analyst']);
+    expect(tests.text).toContain('only these JERRY analyst(s)');
+    const testsId = tests.structured['taskId'] as string;
+    expect(((await api(core, 'GET', `/api/v1/tasks/${testsId}`)).body as TaskDetail).analysts).toMatchObject({ roles: ['jerry-quality-analyst'], reasons: [expect.stringContaining('tests')] });
+    // Only the suggested analyst counts as missing.
+    expect((await client.call('get_analysis', { taskId: testsId })).structured).toMatchObject({ rolesWithoutReport: ['jerry-quality-analyst'] });
+    await client.call('submit_analysis_report', { taskId: testsId, report: report('jerry-quality-analyst') });
+    expect((await client.call('get_analysis', { taskId: testsId })).structured).toMatchObject({ rolesWithoutReport: [] });
+
+    const docs = await client.call('start_task', { title: 'Docs', goal: 'Explain the answer', focus: ['README.md'], classification: ['docs'] });
+    expect(docs.structured['analysts']).toEqual([]);
+    expect(docs.text).toContain('No analyst is needed');
+
+    const sensitive = await client.call('start_task', { title: 'Auth', goal: 'Sign requests', focus: ['src/**'], classification: ['api-backend', 'security'] });
+    expect(sensitive.structured['analysts']).toEqual(['jerry-architecture-analyst', 'jerry-risk-analyst', 'jerry-quality-analyst']);
+    const full = await client.call('start_task', { title: 'Docs, deeply', goal: 'Explain the answer', focus: ['README.md'], classification: ['docs'], depth: 'full' });
+    expect(full.structured['analysts']).toHaveLength(3);
+    expect((await client.call('start_task', { title: 'x', goal: 'y', focus: ['src/**'], classification: ['everything'] })).isError).toBe(true);
   });
 });

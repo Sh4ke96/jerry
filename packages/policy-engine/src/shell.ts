@@ -21,6 +21,7 @@ const BASH_READ_ONLY = new Set([
   'ls', 'cat', 'head', 'tail', 'wc', 'pwd', 'echo', 'grep', 'egrep', 'fgrep', 'rg', 'find', 'which',
   'file', 'stat', 'du', 'df', 'diff', 'cmp', 'basename', 'dirname', 'realpath', 'readlink', 'date',
   'whoami', 'sort', 'test', '[', 'true', 'false', 'cd', 'pushd', 'popd', 'git', 'node', 'jerry',
+  'sed', 'cut', 'nl', 'tac', 'tr', 'uniq', 'tree',
 ]);
 
 const POWERSHELL_READ_ONLY = new Set([
@@ -30,7 +31,15 @@ const POWERSHELL_READ_ONLY = new Set([
   'format-list', 'fl', 'format-table', 'ft', 'out-string', 'get-command', 'gcm', 'write-output', 'echo',
   'get-date', 'get-filehash', 'join-path', 'split-path', 'convertfrom-json', 'convertto-json',
   'set-location', 'cd', 'sl', 'push-location', 'pop-location', 'git', 'node', 'jerry',
+  'compare-object', 'compare', 'diff', 'group-object', 'group', 'get-member', 'gm', 'format-wide', 'fw',
 ]);
+
+/** sed options that change neither files nor what runs: quiet, extended regex, separate files, NUL lines, unbuffered. */
+const SED_SAFE_FLAGS = /^-[nErszu]+$|^--(quiet|silent|regexp-extended|separate|null-data|unbuffered|posix)$/;
+/** One sed address: a line number, $, first~step or /regex/ (optionally I). */
+const SED_ADDRESS = String.raw`(?:\d+(?:~\d+)?|\$|/(?:[^/\\]|\\.)*/I?)`;
+/** A sed script made only of print commands (p, =) on optional addresses or ranges, separated by ";". */
+const SED_PRINT_SCRIPT = new RegExp(String.raw`^\s*(?:${SED_ADDRESS}(?:\s*,\s*(?:${SED_ADDRESS}|\+\d+))?)?\s*!?\s*[p=]\s*(?:;\s*(?:${SED_ADDRESS}(?:\s*,\s*(?:${SED_ADDRESS}|\+\d+))?)?\s*!?\s*[p=]\s*)*;?\s*$`);
 
 const GIT_READ_ONLY_SUBCOMMANDS = new Set([
   'status', 'log', 'diff', 'show', 'rev-parse', 'ls-files', 'ls-tree', 'blame', 'describe', 'shortlog',
@@ -108,9 +117,52 @@ function assessSegment(words: string[], dialect: ShellDialect): ShellAssessment 
       return args.some((arg) => arg.startsWith('--pre'))
         ? writeCapable('rg preprocessor runs a command')
         : { readOnly: true, reason: 'ripgrep search' };
+    case 'sed':
+      return assessSed(args);
+    case 'uniq':
+      // "uniq IN OUT" writes OUT.
+      return args.filter((arg) => !arg.startsWith('-')).length > 1
+        ? writeCapable('uniq writes its second file argument')
+        : { readOnly: true, reason: 'uniq to stdout' };
+    case 'tree':
+      // -o writes a file; -R runs tree again with -o in every directory.
+      return args.some((arg) => arg.startsWith('--output') || /^-[A-Za-z]*[oR]/.test(arg))
+        ? writeCapable('tree writes an output file')
+        : { readOnly: true, reason: 'tree listing' };
     default:
       return { readOnly: true, reason: `"${name}" is read-only` };
   }
+}
+
+/**
+ * sed is read-only only when every script just prints (p, =). Anything else is write-capable:
+ * -i/--in-place, script files (-f), and the w/W/e commands or s///w|e flags, which write files or
+ * run commands.
+ */
+function assessSed(args: string[]): ShellAssessment {
+  const scripts: string[] = [];
+  let hasExpressionOption = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (arg === '-e' || arg === '--expression') {
+      const script = args[index + 1];
+      if (script === undefined) return writeCapable('sed -e without a script');
+      scripts.push(script);
+      hasExpressionOption = true;
+      index += 1;
+    } else if (arg.startsWith('--expression=')) {
+      scripts.push(arg.slice('--expression='.length));
+      hasExpressionOption = true;
+    } else if (arg.startsWith('-')) {
+      if (!SED_SAFE_FLAGS.test(arg)) return writeCapable(`sed option ${arg} may edit files or run a script file`);
+    } else if (!hasExpressionOption && scripts.length === 0) {
+      scripts.push(arg);
+    }
+    // Any other word is an input file.
+  }
+  if (scripts.length === 0) return writeCapable('sed without a script');
+  const unsafe = scripts.find((script) => !SED_PRINT_SCRIPT.test(script));
+  return unsafe === undefined ? { readOnly: true, reason: 'sed only prints' } : writeCapable(`sed script "${unsafe}" is not print-only`);
 }
 
 /** JERRY CLI commands that only read JERRY state. */

@@ -17,11 +17,18 @@ the user approves the plan are recorded as deviations.
 - Call `get_project_profile` for the stack, commands, instruction files and suspicious text.
 - Decide the focus: repo-relative globs of the area the change will likely touch (`src/auth/**`,
   `tests/auth/**`). Keep it narrow; it becomes the analysts' starting point, not the approved scope.
-- Call `start_task` with a short `title`, the `goal` and the `focus`. Note the task ID it returns.
+- Classify the change with the plan's classification values (`ui-ux`, `frontend`, `api-backend`, `database`,
+  `infrastructure`, `security`, `docs`, `tests`, `refactoring`, `tooling`).
+- Call `start_task` with a short `title`, the `goal`, the `focus` and the `classification`. Pass
+  `depth: "full"` only when the user asks for the full analysis. Note the task ID and the `analysts` it
+  returns.
 
-## 2. Run the analysts (at most three)
+## 2. Run the analysts JERRY suggests (at most three)
 
-Start them in parallel, in one message, each with the Task/Agent tool:
+JERRY sizes the analysis to the change: all three for security, database or infrastructure work, several
+repositories, or a focus on API schemas or migrations; fewer for smaller changes; none for docs only (then go
+straight to `/jerry:plan` with the task ID). Start exactly the analysts `start_task` returned, in parallel,
+in one message, each with the Task/Agent tool:
 
 | Subagent | Perspective |
 |---|---|
@@ -30,8 +37,8 @@ Start them in parallel, in one message, each with the Task/Agent tool:
 | `jerry:jerry-quality-analyst` | tests and QA, regression, UI/UX and accessibility |
 
 - Never more than three subagents at a time. JERRY warns on a fourth.
-- Choose the ones the change needs. A backend change without UI still gets the quality analyst for tests. A
-  docs-only change may need none (go straight to `/jerry:plan` with the task ID).
+- Run an analyst JERRY did not suggest only when the user asks for it. Their models and effort are the
+  user's choice (dashboard, on this skill's page); do not pass a model yourself.
 - Give each one the task ID, the goal, the focus globs and what in particular to look at. Tell it to submit
   its report with `submit_analysis_report` for that task ID.
 - Analysts only read. Do not ask them to edit, run commands or fix anything.
@@ -51,7 +58,9 @@ Start them in parallel, in one message, each with the Task/Agent tool:
 Use `/jerry:plan` with the same task ID (`submit_plan` with `taskId`):
 
 - Set `analysis.reports` to the IDs of the reports the plan uses, and `analysis.gaps` to every gap
-  (missing analyst, unverified citation, what an analyst could not check).
+  (a suggested analyst without a report, unverified citation, what an analyst could not check). If the plan
+  turns out to be a bigger kind of change than the intake said (for example it adds `security`), name the
+  analysts that did not run in `analysis.gaps`; JERRY's completeness check points this out.
 - Turn the analysts' risks into plan risks with mitigations, their recommendations into changes, steps or
   tests, and their gaps into open questions or `UNKNOWN`.
 - Where analysts disagree, say so in the plan and let the user decide (`openQuestions`).

@@ -47,6 +47,13 @@ describe('JERRY guard (bundled bridge + Core)', () => {
     expect(output.hookSpecificOutput.additionalContext).toContain(ruleId);
     expect(output.hookSpecificOutput).not.toHaveProperty('permissionDecision');
   }
+  /** A repeated warning: the user's line only; nothing goes into Claude's context. */
+  function expectWarnedQuietly(result: BridgeResult, ruleId: string): void {
+    expect(result.exitCode, result.stderr).toBe(0);
+    const output = JSON.parse(result.stdout);
+    expect(output.systemMessage).toContain(ruleId);
+    expect(output).not.toHaveProperty('hookSpecificOutput');
+  }
   function expectPassed(result: BridgeResult): void {
     expect(result, result.stderr).toMatchObject({ exitCode: 0, stdout: '' });
   }
@@ -62,11 +69,18 @@ describe('JERRY guard (bundled bridge + Core)', () => {
     expect(context).toContain('the user does all Git operations manually');
   });
 
-  it('lets edits through without a plan, but warns Claude and the user', () => {
+  it('lets edits through without a plan, warns Claude once per session and the user every time', async () => {
+    const deviations = async (): Promise<number> => ((await api(core, 'GET', '/api/v1/events?verdict=WARN&limit=100')).body as unknown[]).length;
     expectWarned(write('src/app.ts'), 'monitor.no-approved-plan');
-    expectWarned(bridge('Edit', { file_path: path.join(repo, 'src/app.ts'), old_string: 'a', new_string: 'b' }), 'monitor.no-approved-plan');
-    expectWarned(bridge('Bash', { command: 'npm install' }), 'monitor.no-approved-plan');
-    expectWarned(bridge('PowerShell', { command: 'Remove-Item -Recurse dist' }), 'monitor.no-approved-plan');
+    expectWarnedQuietly(bridge('Edit', { file_path: path.join(repo, 'src/app.ts'), old_string: 'a', new_string: 'b' }), 'monitor.no-approved-plan');
+    expectWarnedQuietly(bridge('Bash', { command: 'npm install' }), 'monitor.no-approved-plan');
+    expectWarnedQuietly(bridge('PowerShell', { command: 'Remove-Item -Recurse dist' }), 'monitor.no-approved-plan');
+    // Every one is still a recorded deviation.
+    expect(await deviations()).toBe(4);
+    // Another session, and a subagent of this one, each get the warning once more.
+    expectWarned(runBridge('pre-tool-use', { ...preToolUse(repo, 'Bash', { command: 'npm install' }), session_id: 'other-session' }, env), 'monitor.no-approved-plan');
+    expectWarned(runBridge('pre-tool-use', { ...preToolUse(repo, 'Bash', { command: 'npm install' }), agent_id: 'agent-1', agent_type: 'general-purpose' }, env), 'monitor.no-approved-plan');
+    expect(await deviations()).toBe(6);
   });
 
   it('passes read-only commands silently', () => {
@@ -94,10 +108,10 @@ describe('JERRY guard (bundled bridge + Core)', () => {
     const task = created.body as { taskId: string; repoRoot: string };
     taskId = task.taskId;
     expect(path.resolve(task.repoRoot)).toBe(path.resolve(repo));
-    expectWarned(write('src/app.ts'), 'monitor.no-approved-plan');
+    expectWarnedQuietly(write('src/app.ts'), 'monitor.no-approved-plan');
 
     expect((await api(core, 'POST', `/api/v1/tasks/${taskId}/approvals`, { stage: 'PLAN', version: 1, decision: 'REJECTED', comment: 'not yet' })).status).toBe(201);
-    expectWarned(write('src/app.ts'), 'monitor.no-approved-plan');
+    expectWarnedQuietly(write('src/app.ts'), 'monitor.no-approved-plan');
   });
 
   it('after approval, is silent inside the scope and warns outside it; hard rules still apply', async () => {
@@ -115,7 +129,9 @@ describe('JERRY guard (bundled bridge + Core)', () => {
   it('treats a revised plan as unapproved and refuses decisions on stale versions', async () => {
     const revised = await api(core, 'POST', `/api/v1/tasks/${taskId}/plan`, { scope: ['src/**', 'test/**'] });
     expect((revised.body as { plan: { version: number } }).plan.version).toBe(2);
+    // The session worked under the approved plan since its last warning: losing it is told again, once.
     expectWarned(write('src/app.ts'), 'monitor.no-approved-plan');
+    expectWarnedQuietly(write('src/app.ts'), 'monitor.no-approved-plan');
     expect((await api(core, 'POST', `/api/v1/tasks/${taskId}/approvals`, { stage: 'PLAN', version: 1, decision: 'APPROVED' })).status).toBe(409);
   });
 
@@ -129,12 +145,12 @@ describe('JERRY guard (bundled bridge + Core)', () => {
     expectBlocked(write('.git/HEAD'), 'hard.git-metadata');
 
     expect((await api(core, 'POST', '/api/v1/projects', { path: repo })).status).toBe(201);
-    expectWarned(write('README.md'), 'monitor.no-approved-plan');
+    expectWarnedQuietly(write('README.md'), 'monitor.no-approved-plan');
     // The former exclusion switch is a synonym: excluding removes the project, including adds it.
     expect((await api(core, 'POST', '/api/v1/repositories/exclusions', { repoPath: repo, excluded: true })).status).toBe(200);
     expectPassed(write('README.md'));
     expect((await api(core, 'POST', '/api/v1/repositories/exclusions', { repoPath: repo, excluded: false })).status).toBe(200);
-    expectWarned(write('README.md'), 'monitor.no-approved-plan');
+    expectWarnedQuietly(write('README.md'), 'monitor.no-approved-plan');
   });
 
   it('rejects API calls without the local token', async () => {

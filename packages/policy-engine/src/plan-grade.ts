@@ -1,4 +1,5 @@
 import type { AgentRun, AnalysisReportRecord, PlanDocument, PlanGrade, PlanGradeCheck } from '@jerry/contracts';
+import { analystsForClassification } from './analysts.js';
 import { matchesAnyGlob } from './paths.js';
 
 /**
@@ -123,6 +124,19 @@ export function gradePlan(input: PlanGradeInput): PlanGrade {
       expected === 0 || carried > 0,
       expected === 0 ? 'the analysis left no gaps' : `${carried} gap(s) carried into the plan`,
       `the analysis left gaps (${[failedRuns > 0 ? `${failedRuns} analyst(s) without a result` : '', unverified > 0 ? `${unverified} report(s) with unverified citations` : '', reportGaps > 0 ? `${reportGaps} report(s) naming what they could not check` : ''].filter(Boolean).join(', ')}) but the plan carries none`,
+    );
+
+    // The analysis was sized at intake; the final plan may turn out to be a bigger change.
+    const reported = new Set<string>([...input.analyses.map((record) => record.report.role), ...analystRuns.filter((run) => run.status !== 'no-report' && run.status !== 'timed-out').map((run) => (run.agentType ?? '').replace(/^jerry:/, ''))]);
+    const gapText = (plan.analysis?.gaps ?? []).join(' ').toLowerCase();
+    const short = (role: string): string => role.replace(/^jerry-/, '').replace(/-analyst$/, '');
+    const unanalysed = analystsForClassification(plan.classification, plan.repositories.length).filter((role) => !reported.has(role) && !gapText.includes(short(role)));
+    add(
+      'analysis.depth-fits-plan',
+      'minor',
+      unanalysed.length === 0,
+      'the analysts this kind of change needs reported, or their absence is a gap',
+      `the plan (${plan.classification.join(', ')}) needs analysts that did not report and are not named in the gaps: ${list(unanalysed)}`,
     );
 
     const serious = new Set(input.analyses.flatMap((record) => record.report.risks.filter((risk) => risk.severity === 'high' || risk.severity === 'critical').map((risk) => risk.risk.trim().toLowerCase())));

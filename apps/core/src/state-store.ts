@@ -1,6 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import {
+  agentModelChoiceSchema,
+  type AgentModelChoice,
+  type AgentModelsUpdateRequest,
+  MODEL_CHOICE_ROLES,
   coreStateSchema,
   storedEventSchema,
   type ApprovalRecord,
@@ -87,13 +91,15 @@ import { z } from 'zod';
 
 /** Sessions kept in the in-memory snapshot; older ones stay in the database. */
 const SNAPSHOT_SESSIONS = 200;
-/** A session's entrypoint is a short name (cli, claude-vscode, …); anything longer is cut. */
+/** A session's entrypoint is a short name (cli, claude-vscode, â€¦); anything longer is cut. */
 const MAX_ENTRYPOINT_LENGTH = 100;
 const NEXT_TASK_NUMBER = 'next_task_number';
 const REVIEW_MODE_SETTING = 'review_mode';
 const QA_LANGUAGE_SETTING = 'qa_language';
 const USAGE_SHOW_BAR_SETTING = 'usage_show_bar';
 const DECISION_CONFIRMATION_SETTING = 'decision_confirmation';
+/** The user's model and effort per read-only subagent (role id -> choice); absent roles use the plugin's defaults. */
+const AGENT_MODELS_SETTING = 'agent_models';
 
 /** Where a user decision came from; recorded in the audit log. */
 export type Channel = 'cli' | 'dashboard';
@@ -211,7 +217,7 @@ export class StateStore {
   private readonly userFileWarnings = new Set<string>();
   /** Active implementer assignments per task, for the synchronous gate. */
   private assignments = new Map<string, Assignment[]>();
-  /** The last subagent that edited a file of a task: (task|file) → writer. */
+  /** The last subagent that edited a file of a task: (task|file) â†’ writer. */
   private readonly recentWriters = new Map<string, { agentId: string; at: number }>();
   /** The projects the user added: the only repositories JERRY monitors. */
   private projectList: Project[] = [];
@@ -295,12 +301,12 @@ export class StateStore {
    * Task intake before a plan: the task starts in DISCOVERY with an intake plan v1 whose
    * scope is the area to analyse. Nothing is approved; edits stay deviations until a real plan is.
    */
-  async startTask(input: { repoRoot: string; title: string; goal: string; focus: string[]; submittedBy?: 'user' | 'claude'; sessionId?: string | null }, now: Date): Promise<Task> {
-    return this.openTask({ repoRoot: input.repoRoot, title: input.title, scope: input.focus, goal: input.goal, submittedBy: input.submittedBy, sessionId: input.sessionId }, 'task.started', now);
+  async startTask(input: { repoRoot: string; title: string; goal: string; focus: string[]; analysts?: NonNullable<Task['analysts']> | undefined; submittedBy?: 'user' | 'claude'; sessionId?: string | null }, now: Date): Promise<Task> {
+    return this.openTask({ repoRoot: input.repoRoot, title: input.title, scope: input.focus, goal: input.goal, analysts: input.analysts, submittedBy: input.submittedBy, sessionId: input.sessionId }, 'task.started', now);
   }
 
   private async openTask(
-    input: { repoRoot: string; title: string; scope: string[]; goal: string | null; document?: PlanDocument | undefined; repositories?: PlanRepository[] | undefined; submittedBy?: 'user' | 'claude' | undefined; sessionId?: string | null | undefined },
+    input: { repoRoot: string; title: string; scope: string[]; goal: string | null; analysts?: NonNullable<Task['analysts']> | undefined; document?: PlanDocument | undefined; repositories?: PlanRepository[] | undefined; submittedBy?: 'user' | 'claude' | undefined; sessionId?: string | null | undefined },
     event: 'plan.submitted' | 'task.started',
     now: Date,
   ): Promise<Task> {
@@ -312,7 +318,10 @@ export class StateStore {
       const id = `JRY-${String(number).padStart(4, '0')}`;
       const actor = input.submittedBy ?? 'user';
       const state = validTransition(id, null, event, actor);
-      await trx.insertInto('tasks').values({ task_id: id, title: input.title, repo_id: repoId, current_plan_version: 1, state, goal: input.goal, created_at: at, updated_at: at }).execute();
+      await trx
+        .insertInto('tasks')
+        .values({ task_id: id, title: input.title, repo_id: repoId, current_plan_version: 1, state, goal: input.goal, analysts_json: input.analysts === undefined ? null : JSON.stringify(input.analysts), created_at: at, updated_at: at })
+        .execute();
       await insertPlan(trx, { taskId: id, title: input.title, repoRoot: input.repoRoot, version: 1, scope: input.scope, document: input.document, repositories: input.repositories, at });
       await recordTransition(trx, { taskId: id, from: null, to: state, event, actor, reason: event === 'task.started' ? 'task intake: analysis first' : 'plan version 1', at });
       if (input.sessionId != null) await linkSession(trx, input.sessionId, id, event === 'task.started' ? 'analysis' : 'plan.submitted', at);
@@ -321,7 +330,7 @@ export class StateStore {
         .values({ key: NEXT_TASK_NUMBER, value_json: JSON.stringify(number + 1), created_at: at, updated_at: at })
         .onConflict((conflict) => conflict.column('key').doUpdateSet({ value_json: JSON.stringify(number + 1), updated_at: at }))
         .execute();
-      const details = event === 'task.started' ? { repoRoot: input.repoRoot, focus: input.scope, goal: input.goal } : { repoRoot: input.repoRoot, scope: input.scope, withDocument: input.document !== undefined, ...(input.repositories === undefined || input.repositories.length === 0 ? {} : { repositories: input.repositories.map((repository) => repository.repoRoot) }) };
+      const details = event === 'task.started' ? { repoRoot: input.repoRoot, focus: input.scope, goal: input.goal, ...(input.analysts === undefined ? {} : { analysts: input.analysts }) } : { repoRoot: input.repoRoot, scope: input.scope, withDocument: input.document !== undefined, ...(input.repositories === undefined || input.repositories.length === 0 ? {} : { repositories: input.repositories.map((repository) => repository.repoRoot) }) };
       await audit(trx, at, event === 'task.started' ? 'task.intake' : 'task.create', id, details, actorOf(input.submittedBy));
       return id;
     });
@@ -1362,7 +1371,7 @@ export class StateStore {
 
   /**
    * Ends a round: earlier review findings no reviewer reported again (in files this round covered)
-   * are FIXED; with no open P1–P3 review finding left the review passes and the final checks run.
+   * are FIXED; with no open P1â€“P3 review finding left the review passes and the final checks run.
    */
   private async completeRound(trx: Transaction<JerrySchema>, task: Task, round: number, actor: 'core' | 'claude', reason: string, at: string, gitNow: PreparedSnapshots | null): Promise<void> {
     const covered = new Set<string>();
@@ -1388,7 +1397,7 @@ export class StateStore {
     const blocking = await trx.selectFrom('findings').select('id').where('task_id', '=', task.taskId).where('source', '=', 'review').where('status', 'in', ['OPEN', 'ACCEPTED']).where('severity', 'in', ['P1', 'P2', 'P3']).execute();
     if (blocking.length === 0) {
       await trx.updateTable('review_rounds').set({ passed_at: at }).where('id', '=', roundRow.id).execute();
-      await this.transition(trx, task.taskId, 'review.passed', 'core', `review round ${round} left no open P1–P3 finding`, at);
+      await this.transition(trx, task.taskId, 'review.passed', 'core', `review round ${round} left no open P1â€“P3 finding`, at);
       await this.runFinalChecks(trx, task, at, gitNow);
     }
   }
@@ -1648,6 +1657,24 @@ export class StateStore {
     return Math.max(0, Number(row?.active ?? 0));
   }
 
+  /**
+   * Whether this session (and this subagent, or the main session) was already given this warning in
+   * this repository by a live gate check, since it last worked under an approved plan there: losing
+   * the plan is news again. Spooled events do not count: Claude never saw them.
+   */
+  warnedBefore(input: { sessionId: string; agentId: string | null; repoRoot: string | null; ruleId: string }): boolean {
+    const row = this.database.raw
+      .prepare(
+        `SELECT 1 AS found FROM hook_events
+         WHERE session_id = ? AND agent_id IS ? AND repo_root IS ? AND event_type = 'PreToolUse' AND verdict = 'WARN' AND rule_id = ? AND spooled = 0
+           AND occurred_at > COALESCE((SELECT MAX(occurred_at) FROM hook_events WHERE session_id = ? AND agent_id IS ? AND repo_root IS ? AND event_type = 'PreToolUse'
+             AND rule_id IN ('monitor.in-approved-scope', 'monitor.command-with-approved-plan', 'monitor.user-uncommitted-file')), '')
+         LIMIT 1`,
+      )
+      .get(input.sessionId, input.agentId, input.repoRoot, input.ruleId, input.sessionId, input.agentId, input.repoRoot) as { found: number } | undefined;
+    return row !== undefined;
+  }
+
   /** Claude's progress note; open tasks only. It changes no state. */
   async saveCheckpoint(taskId: string, note: { summary: string; nextSteps: string[] }, sessionId: string | null, now: Date): Promise<Checkpoint> {
     const task = this.requireTask(taskId);
@@ -1798,6 +1825,39 @@ export class StateStore {
     });
     await this.reload();
     return this.settings();
+  }
+
+  /** The model and effort of each read-only subagent: the user's choice, else the plugin's default. */
+  async agentModels(): Promise<Map<string, AgentModelChoice>> {
+    const row = await this.database.db.selectFrom('settings').select('value_json').where('key', '=', AGENT_MODELS_SETTING).executeTakeFirst();
+    let stored: Record<string, AgentModelChoice> = {};
+    if (row !== undefined) {
+      try {
+        const parsed = z.record(z.string(), agentModelChoiceSchema).safeParse(JSON.parse(row.value_json));
+        if (parsed.success) stored = parsed.data;
+      } catch {
+        // An unreadable row falls back to the defaults.
+      }
+    }
+    return new Map(MODEL_CHOICE_ROLES.map((role) => [role.id, stored[role.id] ?? role.defaults]));
+  }
+
+  /** Changes the model and effort of read-only subagents; only the user does this (dashboard or CLI with the Core token). */
+  async setAgentModels(update: AgentModelsUpdateRequest, now: Date, channel: Channel): Promise<Map<string, AgentModelChoice>> {
+    const at = now.toISOString();
+    const before = await this.agentModels();
+    const after = new Map(before);
+    for (const agent of update.agents) after.set(agent.role, { model: agent.model, effort: agent.effort });
+    const value = JSON.stringify(Object.fromEntries(after));
+    await this.database.db.transaction().execute(async (trx) => {
+      await trx
+        .insertInto('settings')
+        .values({ key: AGENT_MODELS_SETTING, value_json: value, created_at: at, updated_at: at })
+        .onConflict((conflict) => conflict.column('key').doUpdateSet({ value_json: value, updated_at: at }))
+        .execute();
+      await audit(trx, at, 'agents.models', null, { before: Object.fromEntries(before), update: update.agents, channel });
+    });
+    return after;
   }
 
   /** An audit row for a user decision made outside the database (e.g. Claude usage collection in Claude Code's settings). */
@@ -2073,7 +2133,7 @@ export class StateStore {
       .selectFrom('tasks')
       .innerJoin('repositories', 'repositories.repo_id', 'tasks.repo_id')
       .innerJoin('plans', (join) => join.onRef('plans.task_id', '=', 'tasks.task_id').onRef('plans.version', '=', 'tasks.current_plan_version'))
-      .select(['tasks.task_id', 'tasks.title', 'tasks.state', 'tasks.goal', 'tasks.created_at', 'repositories.root_path', 'plans.version', 'plans.content_hash', 'plans.scope_json', 'plans.document_json', 'plans.created_at as plan_created_at'])
+      .select(['tasks.task_id', 'tasks.title', 'tasks.state', 'tasks.goal', 'tasks.analysts_json', 'tasks.created_at', 'repositories.root_path', 'plans.version', 'plans.content_hash', 'plans.scope_json', 'plans.document_json', 'plans.created_at as plan_created_at'])
       .orderBy('tasks.task_id')
       .execute();
     const approvals = await db.selectFrom('approvals').selectAll().orderBy('approved_at').orderBy(sql`rowid`).execute();
@@ -2109,6 +2169,7 @@ export class StateStore {
         createdAt: row.created_at,
         state: row.state,
         ...(row.goal === null ? {} : { goal: row.goal }),
+        ...(row.analysts_json === null ? {} : { analysts: JSON.parse(row.analysts_json) }),
         plan: {
           version: row.version,
           contentHash: row.content_hash,
@@ -2725,10 +2786,10 @@ function repoRelative(task: Task, file: string): string {
   return (relative ?? file.trim()).replaceAll('\\', '/').replace(/^\.\//, '');
 }
 
-/** `FND-12` → 12; anything else is an unknown finding. */
+/** `FND-12` â†’ 12; anything else is an unknown finding. */
 function findingNumber(findingId: string): number {
   const match = /^FND-(\d+)$/i.exec(findingId.trim());
-  if (match === null) throw new StateError(400, `${findingId} is not a finding ID (FND-…)`);
+  if (match === null) throw new StateError(400, `${findingId} is not a finding ID (FND-â€¦)`);
   return Number(match[1]);
 }
 

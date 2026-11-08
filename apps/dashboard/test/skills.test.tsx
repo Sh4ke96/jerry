@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import type { AddedSkill, SkillChangeResult, SkillDetail, SkillPreview, SkillsList } from '@jerry/contracts';
+import type { AddedSkill, AgentModelEntry, AgentModelsResponse, SkillChangeResult, SkillDetail, SkillPreview, SkillsList } from '@jerry/contracts';
 import { DOMWrapper, flushPromises, mount } from '@vue/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../src/App';
@@ -55,9 +55,18 @@ type Call = { url: string; method: string; body: Record<string, unknown> | null;
 describe('Skills in the dashboard', () => {
   let calls: Call[];
   let list: SkillsList;
+  let agentModels: AgentModelEntry[];
+  let agentProblems: string[];
 
   beforeEach(() => {
     calls = [];
+    agentProblems = [];
+    agentModels = [
+      { role: 'jerry-architecture-analyst', phase: 'analysis', model: 'claude-opus-5-5', effort: 'high', defaults: { model: 'claude-opus-5-5', effort: 'high' } },
+      { role: 'jerry-risk-analyst', phase: 'analysis', model: 'claude-opus-5-5', effort: 'high', defaults: { model: 'claude-opus-5-5', effort: 'high' } },
+      { role: 'jerry-quality-analyst', phase: 'analysis', model: 'claude-sonnet-5-5', effort: 'medium', defaults: { model: 'claude-sonnet-5-5', effort: 'medium' } },
+      { role: 'jerry-correctness-reviewer', phase: 'review', model: 'claude-opus-5-5', effort: 'high', defaults: { model: 'claude-opus-5-5', effort: 'high' } },
+    ];
     list = {
       skillsDir: SKILLS_DIR,
       own: [{ kind: 'jerry', name: 'jerry:plan', description: 'Plan a task.', dir: 'C:\\J\\plugin\\skills\\plan' }],
@@ -120,6 +129,18 @@ describe('Skills in the dashboard', () => {
         const updated: AddedSkill = { ...pdf, states: (body?.['states'] ?? []) as AddedSkill['states'] };
         list = { ...list, added: [updated] };
         return change('pdf', 'states-set', updated);
+      }
+      if (url === '/api/v1/skills/jerry%3Aanalyze' || url === '/api/v1/skills/jerry%3Aplan') {
+        const name = decodeURIComponent(url.slice('/api/v1/skills/'.length));
+        return json({ skill: { kind: 'jerry', name, description: 'A JERRY skill.', dir: 'C:\\J\\plugin\\skills\\x' }, skillMd: '# x', files: [], scan: [], history: [], uses: [] } satisfies SkillDetail);
+      }
+      if (url === '/api/v1/agents/models') {
+        if (method === 'POST') {
+          const change = (body?.['agents'] as AgentModelEntry[])[0]!;
+          agentModels = agentModels.map((agent) => (agent.role === change.role ? { ...agent, model: change.model, effort: change.effort } : agent));
+          return json({ agents: agentModels, problems: agentProblems } satisfies AgentModelsResponse);
+        }
+        return json({ agents: agentModels, problems: [] } satisfies AgentModelsResponse);
       }
       if (url === '/api/v1/skills/pdf/update/preview') return json({ ...preview, purpose: 'update', name: 'pdf', upToDate: true, diff: { added: [], removed: [], changed: [] } });
       if (url === '/api/v1/skills/pdf/remove') {
@@ -308,6 +329,45 @@ describe('Skills in the dashboard', () => {
     await flushPromises();
     expect(posts('/api/v1/skills/pdf/states').map((call) => [call.body, call.csrf])).toEqual([[{ states: ['CODE_REVIEW', 'REVERIFICATION'], confirmation: 'pdf' }, CSRF]]);
     expect(state.notice).toContain('Started by JERRY in:');
+    wrapper.unmount();
+  });
+
+  it("picks the model and effort of the analysts on /jerry:analyze's page, saved at once", async () => {
+    const wrapper = await mountApp();
+    route.value = { section: 'skills', name: 'jerry:analyze' };
+    await flushPromises();
+    const card = wrapper.get('[data-skill-page="jerry:analyze"] .agent-models');
+    // Only the analysts: the reviewers belong to /jerry:review.
+    expect(card.findAll('[data-agent-model]').map((row) => row.attributes('data-agent-model'))).toEqual(['jerry-architecture-analyst', 'jerry-risk-analyst', 'jerry-quality-analyst']);
+    const quality = card.get('[data-agent-model="jerry-quality-analyst"]');
+    expect(quality.text()).toContain('default');
+    expect((quality.get('[data-agent-field="model"]').element as HTMLSelectElement).value).toBe('claude-sonnet-5-5');
+    // Every select has a label.
+    for (const select of card.findAll('select')) expect(card.find(`label[for="${select.attributes('id')}"]`).exists()).toBe(true);
+
+    await quality.get('[data-agent-field="model"]').setValue('claude-haiku-5-5');
+    await flushPromises();
+    expect(posts('/api/v1/agents/models').map((call) => [call.body, call.csrf])).toEqual([[{ agents: [{ role: 'jerry-quality-analyst', model: 'claude-haiku-5-5', effort: 'medium' }] }, CSRF]]);
+    const saved = wrapper.get('[data-agent-model="jerry-quality-analyst"]');
+    expect(saved.text()).toContain('your choice');
+    expect(wrapper.get('[data-agent-models-message]').text()).toContain('/reload-plugins');
+
+    // A problem writing the agent files is shown, not hidden.
+    agentProblems = ['JERRY\'s plugin is not installed at C:\\J; run "jerry install".'];
+    await wrapper.get('[data-agent-model="jerry-risk-analyst"] [data-agent-field="effort"]').setValue('low');
+    await flushPromises();
+    expect(wrapper.get('[data-agent-models-message]').text()).toContain('jerry install');
+    wrapper.unmount();
+  });
+
+  it('shows no model choice on other skill pages', async () => {
+    const wrapper = await mountApp();
+    route.value = { section: 'skills', name: 'jerry:plan' };
+    await flushPromises();
+    expect(wrapper.get('[data-skill-page="jerry:plan"]').find('.agent-models').exists()).toBe(false);
+    route.value = { section: 'skills', name: 'pdf' };
+    await flushPromises();
+    expect(wrapper.get('[data-skill-page="pdf"]').find('.agent-models').exists()).toBe(false);
     wrapper.unmount();
   });
 

@@ -735,4 +735,12 @@ export const MIGRATIONS: Readonly<Record<string, Migration>> = {
       await db.schema.createIndex('git_snapshots_task_repo').on('git_snapshots').columns(['task_id', 'repo_root', 'kind', 'id']).execute();
     },
   },
+
+  '0026_task_analysts': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // The analysts JERRY suggested at intake, sized to the kind of change ({ roles, reasons } as
+      // JSON); null for tasks taken in before sizing (they expect all three) and tasks without intake.
+      await db.schema.alterTable('tasks').addColumn('analysts_json', 'text').execute();
+    },
+  },
 };

@@ -31,6 +31,9 @@ import {
   workspaceGraphSchema,
   storedEventSchema,
   taskSchema,
+  ANALYST_ROLES,
+  analysisDepthSchema,
+  planClassificationSchema,
   taskSummarySchema,
   type CallOrigin,
   type PlanGrade,
@@ -440,6 +443,13 @@ export const TOOLS: readonly ToolDefinition[] = [
         title: { type: 'string', description: 'Short task title.' },
         goal: { type: 'string', description: 'What the change should achieve, in the terms the user used.' },
         focus: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 50, description: 'Repo-relative globs of the area to analyse (e.g. "src/auth/**").' },
+        classification: {
+          type: 'array',
+          items: { type: 'string', enum: [...planClassificationSchema.options] },
+          minItems: 1,
+          description: 'What kind of change it is (the plan classification). JERRY suggests the analysts it needs: all three for security, database, infrastructure, several repositories or API schemas and migrations; fewer for smaller changes; none for docs only.',
+        },
+        depth: { type: 'string', enum: ['sized', 'full'], description: 'full: all three analysts, only when the user asks for the full analysis. Default: sized to the classification.' },
         repoPath: { type: 'string', description: 'Repository (default: project directory).' },
       },
       required: ['title', 'goal', 'focus'],
@@ -448,18 +458,26 @@ export const TOOLS: readonly ToolDefinition[] = [
     readOnly: false,
     handler: (args, call) =>
       withCore(async () => {
-        const input = z.object({ title: z.string().trim().min(1), goal: z.string().trim().min(1), focus: z.array(z.string().trim().min(1)).min(1).max(50) }).safeParse(args);
-        if (!input.success) return failure(`A task intake needs a title, a goal and 1 to 50 focus globs:\n${z.prettifyError(input.error)}`);
+        const input = z
+          .object({ title: z.string().trim().min(1), goal: z.string().trim().min(1), focus: z.array(z.string().trim().min(1)).min(1).max(50), classification: z.array(planClassificationSchema).min(1).optional(), depth: analysisDepthSchema.optional() })
+          .safeParse(args);
+        if (!input.success) return failure(`A task intake needs a title, a goal and 1 to 50 focus globs (classification and depth are optional):\n${z.prettifyError(input.error)}`);
         const repoPath = typeof args['repoPath'] === 'string' && args['repoPath'] !== '' ? args['repoPath'] : projectDir();
         const where = await repositoryState(repoPath);
         if (notAdded(where)) return notAddedFailure(where);
         const task = taskSchema.parse(await core('POST', '/api/v1/tasks/intake', { repoPath, ...input.data, submittedBy: 'claude', origin: origin(call) }));
+        const roles = task.analysts?.roles ?? ANALYST_ROLES;
+        const why = task.analysts === undefined ? '' : ` (${task.analysts.reasons.join('; ')})`;
         return ok({
           taskId: task.taskId,
           state: task.state,
           focus: task.plan.scope,
-          nextStep: `Start at most three of JERRY's analysts in parallel (jerry-architecture-analyst, jerry-risk-analyst, jerry-quality-analyst), each with taskId ${task.taskId}, the goal and the focus. Then read their reports with get_analysis and build the plan from them with /jerry:plan (taskId ${task.taskId}). Do not change code before the user approves the plan.`,
-        }, `${EMOJI.analysis} ${task.taskId} started · analysis next, then the plan for your approval`);
+          analysts: roles,
+          nextStep:
+            roles.length === 0
+              ? `No analyst is needed for this change${why}. Plan it directly with /jerry:plan (taskId ${task.taskId}). Do not change code before the user approves the plan.`
+              : `Start ${roles.length === ANALYST_ROLES.length ? "all three of JERRY's analysts" : `only these JERRY analyst(s)`} in parallel: ${roles.join(', ')}${why}, each with taskId ${task.taskId}, the goal and the focus. Run others only if the user asks. Then read their reports with get_analysis and build the plan from them with /jerry:plan (taskId ${task.taskId}). Do not change code before the user approves the plan.`,
+        }, `${EMOJI.analysis} ${task.taskId} started · ${roles.length === 0 ? 'no analyst needed, plan next' : `${roles.length} analyst(s) next`}, then the plan for your approval`);
       }),
   },
   {
@@ -1081,7 +1099,9 @@ export function analysisDigest(task: TaskSummary): Record<string, unknown> {
     ...analystRuns.filter((run) => run.status === 'timed-out').map((run) => `${run.agentType ?? 'an analyst'} timed out (no stop after 30 minutes)`),
   ];
   const running = analystRuns.filter((run) => run.status === 'running').length;
-  const missingRoles = ['jerry-architecture-analyst', 'jerry-risk-analyst', 'jerry-quality-analyst'].filter((role) => !roles.has(role as never));
+  // Measured against the analysts JERRY suggested at intake; tasks taken in before sizing expect all three.
+  const expected: readonly string[] = task.analysts?.roles ?? ANALYST_ROLES;
+  const missingRoles = expected.filter((role) => !roles.has(role as never));
   return {
     taskId: task.taskId,
     title: task.title,
@@ -1096,7 +1116,9 @@ export function analysisDigest(task: TaskSummary): Record<string, unknown> {
       running > 0
         ? `${running} analyst(s) still running: wait for them before planning.`
         : reports.length === 0
-          ? 'No analysis report yet: start the analysts (at most three) with this taskId.'
+          ? expected.length === 0
+            ? `No analyst is needed for this change: plan it directly with /jerry:plan (taskId ${task.taskId}).`
+            : `No analysis report yet: start ${expected.join(', ')} with this taskId.`
           : `Build the plan from these reports with /jerry:plan (taskId ${task.taskId}): cite their IDs in plan.analysis.reports and carry every gap into plan.analysis.gaps and the plan's risks or open questions.`,
   };
 }
@@ -1218,7 +1240,7 @@ function stateAction(state: RepositoryState): { action: string; details: string 
     const tasks = analysing.map((task) => `${task.taskId} (${task.state === 'DISCOVERY' ? 'no analysis report yet' : `${task.analyses.length} analysis report(s)`})`).join(', ');
     return {
       action: 'analyse-then-plan',
-      details: `${EMOJI.analysis} ${tasks} is being analysed. Run at most three of JERRY's analysts on it (/jerry:analyze), read their reports with get_analysis, then submit the plan built on them with /jerry:plan and the same taskId. Do not change code before the user approves the plan; edits now are recorded as deviations.`,
+      details: `${EMOJI.analysis} ${tasks} is being analysed. Run the analysts JERRY suggested for it at intake (/jerry:analyze; get_analysis lists them under rolesWithoutReport), read their reports with get_analysis, then submit the plan built on them with /jerry:plan and the same taskId. Do not change code before the user approves the plan; edits now are recorded as deviations.`,
     };
   }
   if (open.length > 0) {

@@ -24,6 +24,8 @@ export interface TasksTable {
   state: string;
   /** What a task taken in before its plan should achieve; null otherwise. */
   goal: string | null;
+  /** The analysts suggested at intake ({ roles, reasons } as JSON); null when not sized. */
+  analysts_json: ColumnType<string | null, string | null | undefined, string | null>;
   created_at: string;
   updated_at: string;
 }

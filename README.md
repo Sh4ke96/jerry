@@ -15,7 +15,7 @@ local dashboard. It never changes your code and never touches Git: you do all Gi
 | 📋 **Plans you approve** | Claude drafts a plan for each change (goal, scope, steps, tests, risks). You approve the exact version. |
 | 👀 **Monitoring, not blocking** | Edits without an approved plan, or outside its scope, go through but are recorded as deviations, and Claude and you are warned. |
 | ⛔ **Hard rules, always enforced** | No Git command that changes anything, no writes inside `.git`, no tampering with JERRY's data or the settings that enable it, no approving its own work. These hold even when Core is down. |
-| 🔎 **Analysis before the plan** | Up to three read-only analysts (architecture, risk, quality) study the repository; the plan cites their evidence. |
+| 🔎 **Analysis before the plan** | Up to three read-only analysts (architecture, risk, quality) study the repository, as many as the kind of change needs, each on the model you pick; the plan cites their evidence. |
 | 🐞 **Continuous quality** | JERRY checks the lines Claude changed (naming, error handling, test quality, security) and tells Claude about new findings. |
 | 🔍 **Independent review, when you want it** | Three read-only reviewers check every changed file. It is optional by default: you ask for it when you accept a report, or make it required for all projects or one. Fixes need your approval, and the same reviewers check again. |
 | 📄 **Reports from facts** | Implementation and final reports are built from what JERRY recorded, not from what Claude says: real test results, deviations, risks, and QA scenarios in Polish or English (your setting). |
@@ -88,7 +88,7 @@ Open the dashboard with `jerry ui`.
 
 | Skill | What it does |
 |---|---|
-| `/jerry:analyze` | 🔎 Runs up to three read-only analysts on a task and collects their evidence. |
+| `/jerry:analyze` | 🔎 Runs the read-only analysts the change needs (up to three) and collects their evidence. |
 | `/jerry:plan` | 📋 Drafts the plan from the real repository and submits it for your approval. |
 | `/jerry:implement` | 🛠️ Implements the approved plan, alone or with up to three implementers on separate files. |
 | `/jerry:report` | 📄 Writes the implementation report with real check results for your acceptance. |
@@ -290,6 +290,25 @@ next to JERRY's. If you have your own OpenTelemetry setup, JERRY leaves it alone
 Turn it off in **⚙️ Settings → Usage**, with `jerry usage disable`, or by installing with `--no-usage`; your previous
 settings come back exactly. Only sessions in your projects are stored, apart from the account-wide limit
 percentages.
+
+### 🪙 Fewer tokens for the same work
+
+- 🤖 **A model per subagent.** Each read-only analyst and reviewer runs on its own model and reasoning effort.
+  Defaults: architecture and risk analysts, correctness and security reviewers on Opus 5.5 (high); quality
+  analyst and design reviewer on Sonnet 5.5 (medium). Change them on the page of `/jerry:analyze` or
+  `/jerry:review` in **Skills** (also in the Jerry app). Core writes the choice into the `model:`/`effort:` lines
+  of the installed plugin's agent files, again after every `jerry install`; new sessions, or `/reload-plugins`,
+  pick it up. *Session model* and *Session effort* follow the session. The implementer always uses the session's
+  model.
+- 🔎 **Analysis sized to the change.** `start_task` takes the kind of change, and JERRY suggests only the
+  analysts it needs: none for docs, the quality analyst for tests or tooling, architecture and quality for
+  backend work, all three for security, database, infrastructure, several repositories, or a focus on API
+  schemas or migrations. All three when you ask for the full analysis. If the plan turns out to be a bigger
+  change, the completeness check says which analysts did not run.
+- 🔕 **Warnings once.** "No approved plan" reaches Claude once per session, subagent and repository (again after
+  it worked under a plan). Every occurrence is still recorded as a deviation, and you still see the line each time.
+- 📖 **Reading is not editing.** `sed -n …p`, `cut`, `nl`, `tac`, `tr`, `uniq` (one file), `tree` (no `-o`/`-R`)
+  and PowerShell's `Compare-Object`, `Group-Object`, `Get-Member`, `Format-Wide` count as read-only commands.
 
 ---
 

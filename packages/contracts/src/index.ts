@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { CORE_TOKEN_PATTERN, EVENT_SCHEMA_VERSION, GATE_VERDICTS, HOOK_EVENT_TYPES, TASK_ID_PATTERN, WORKFLOW_ACTORS, WORKFLOW_EVENTS, WORKFLOW_STATES } from './constants.js';
+import { AGENT_EFFORTS, AGENT_MODELS, ANALYST_ROLES, MODEL_CHOICE_ROLES } from './agents.js';
 import { repositoryWorkspaceSchema } from './workspaces.js';
 
 /**
@@ -81,6 +82,11 @@ export const gateDecisionSchema = z.object({
   repoRoot: z.string().nullable(),
   /** New quality findings for Claude, delivered with the next guarded call; never a block. */
   feedback: z.string().optional(),
+  /**
+   * A repeated warning Claude was already given in this session: still recorded as a deviation,
+   * but the bridge does not put its text into Claude's context again.
+   */
+  quiet: z.boolean().optional(),
 });
 export type GateDecision = z.infer<typeof gateDecisionSchema>;
 
@@ -167,6 +173,10 @@ export const repositoryScopeSchema = z.object({
 });
 export type RepositoryScope = z.infer<typeof repositoryScopeSchema>;
 
+/** The kinds of change a plan (and a task intake) is classified as. */
+export const planClassificationSchema = z.enum(['ui-ux', 'frontend', 'api-backend', 'database', 'infrastructure', 'security', 'docs', 'tests', 'refactoring', 'tooling']);
+export type PlanClassification = z.infer<typeof planClassificationSchema>;
+
 /**
  * The plan document (18 sections). Claude drafts it with the /jerry:plan
  * skill and submits it through MCP; the user approves exactly this document (its hash). The
@@ -176,7 +186,7 @@ export const planDocumentSchema = z.object({
   /** 1. Goal of the task. */
   goal: text,
   /** 2. Classification. */
-  classification: z.array(z.enum(['ui-ux', 'frontend', 'api-backend', 'database', 'infrastructure', 'security', 'docs', 'tests', 'refactoring', 'tooling'])).min(1),
+  classification: z.array(planClassificationSchema).min(1),
   /** 3. Repositories the change touches (absolute paths). */
   repositories: z.array(text).min(1),
   /** 4. Current state and discovery findings; unknowns are written as UNKNOWN, never guessed. */
@@ -291,6 +301,39 @@ export const settingsUpdateRequestSchema = z
     message: 'name at least one setting to change (reviewMode, qaLanguage, usageShowBar or decisionConfirmation)',
   });
 export type SettingsUpdateRequest = z.infer<typeof settingsUpdateRequestSchema>;
+
+// ---------------------------------------------------------------------------
+// Models of JERRY's read-only subagents (chosen only by the user)
+// ---------------------------------------------------------------------------
+
+export const agentModelSchema = z.enum(AGENT_MODELS);
+export const agentEffortSchema = z.enum(AGENT_EFFORTS);
+export const agentModelChoiceSchema = z.strictObject({ model: agentModelSchema, effort: agentEffortSchema });
+/** The read-only roles whose model and effort the user picks. */
+export const modelChoiceRoleSchema = z.enum(MODEL_CHOICE_ROLES.map((role) => role.id) as [string, ...string[]]);
+
+/** One read-only subagent: its role, phase, the user's choice in effect and the plugin's default. */
+export const agentModelEntrySchema = z.object({
+  role: z.string(),
+  phase: z.enum(['analysis', 'review']),
+  model: agentModelSchema,
+  effort: agentEffortSchema,
+  defaults: agentModelChoiceSchema,
+});
+export type AgentModelEntry = z.infer<typeof agentModelEntrySchema>;
+
+/**
+ * GET and POST /api/v1/agents/models: every read-only subagent with its model and effort; problems
+ * lists what could not be written into the installed plugin's agent files.
+ */
+export const agentModelsResponseSchema = z.object({ agents: z.array(agentModelEntrySchema), problems: z.array(z.string()) });
+export type AgentModelsResponse = z.infer<typeof agentModelsResponseSchema>;
+
+/** POST /api/v1/agents/models: the subagents to change; a role left out keeps its choice. */
+export const agentModelsUpdateRequestSchema = z.strictObject({
+  agents: z.array(z.strictObject({ role: modelChoiceRoleSchema, model: agentModelSchema, effort: agentEffortSchema })).min(1).max(MODEL_CHOICE_ROLES.length),
+});
+export type AgentModelsUpdateRequest = z.infer<typeof agentModelsUpdateRequestSchema>;
 
 /** POST /api/v1/projects/settings: a project's own review mode; null follows the global setting. */
 export const projectSettingsRequestSchema = z.strictObject({ path: z.string().min(1), reviewMode: reviewModeSchema.nullable() });
@@ -474,6 +517,8 @@ export const taskSchema = z.object({
   plan: planSchema,
   /** The goal given at intake, for tasks that began with analysis instead of a plan. */
   goal: z.string().optional(),
+  /** The analysts JERRY suggested at intake for this kind of change; absent: all three are expected. */
+  analysts: z.object({ roles: z.array(z.enum(ANALYST_ROLES)), reasons: z.array(z.string()) }).optional(),
 });
 export type Task = z.infer<typeof taskSchema>;
 
@@ -529,6 +574,10 @@ export const planReviseRequestSchema = z.object({
   origin: callOriginSchema.optional(),
 });
 
+/** How deep the analysis of a task goes: the analysts its classification needs, or all three. */
+export const analysisDepthSchema = z.enum(['sized', 'full']);
+export type AnalysisDepth = z.infer<typeof analysisDepthSchema>;
+
 /** Task intake before a plan: a title, the goal and the area to analyse. */
 export const taskIntakeRequestSchema = z.object({
   repoPath: z.string().min(1),
@@ -536,6 +585,10 @@ export const taskIntakeRequestSchema = z.object({
   goal: z.string().trim().min(1),
   /** Repo-relative globs of the area to analyse; the intake plan's scope until the real plan replaces it. */
   focus: planScopeSchema,
+  /** What kind of change it is; JERRY suggests the analysts it needs from this. Absent: all three, as before. */
+  classification: z.array(planClassificationSchema).min(1).optional(),
+  /** sized (default): the analysts the classification needs; full: all three (when the user asks for it). */
+  depth: analysisDepthSchema.optional(),
   submittedBy: z.enum(['user', 'claude']).default('claude'),
   origin: callOriginSchema.optional(),
 });
@@ -772,7 +825,7 @@ const evidenceSchema = z.string().trim().regex(/^.+:\d+(-\d+)?$/, 'evidence is p
 
 /** An analyst's report: every observation carries file:line evidence. */
 export const analysisReportSchema = z.object({
-  role: z.enum(['jerry-architecture-analyst', 'jerry-risk-analyst', 'jerry-quality-analyst']),
+  role: z.enum(ANALYST_ROLES),
   /** What the analyst was asked to look at. */
   scope: text,
   filesRead: z.array(text).min(1),

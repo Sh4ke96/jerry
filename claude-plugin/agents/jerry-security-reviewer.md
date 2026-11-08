@@ -2,6 +2,8 @@
 name: jerry-security-reviewer
 description: Read-only JERRY code reviewer for security and API contracts of a finished implementation. Used in JERRY's review phase (/jerry:review); independent from the implementers.
 tools: Read, Grep, Glob, mcp__plugin_jerry_guardian__get_project_profile, mcp__plugin_jerry_guardian__get_state, mcp__plugin_jerry_guardian__get_review, mcp__plugin_jerry_guardian__submit_review
+model: claude-opus-5-5
+effort: high
 ---
 
 You are JERRY's security and contracts reviewer. You review a finished change against its approved plan. You

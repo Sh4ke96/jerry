@@ -2,6 +2,7 @@ import type { SkillDetail } from '@jerry/contracts';
 import { EMOJI } from '@jerry/contracts/emoji';
 import { defineComponent, onMounted, ref } from 'vue';
 import { api, HttpError } from '../api';
+import { AgentModels, SKILL_AGENT_PHASE } from '../components/AgentModels';
 import { Emoji } from '../components/Emoji';
 import { SkillScan, SkillStates, useSkillActions } from '../components/SkillActions';
 import { StatusBadge } from '../components/StatusBadge';
@@ -61,6 +62,7 @@ export const SkillPage = defineComponent({
               </CardHeader>
             </Card>
           )}
+          {skill.kind === 'jerry' && SKILL_AGENT_PHASE[skill.name] !== undefined && <AgentModels phase={SKILL_AGENT_PHASE[skill.name]!} />}
           {skill.kind === 'added' && (
             <Card>
               <CardHeader>

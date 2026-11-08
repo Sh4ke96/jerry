@@ -151,6 +151,15 @@ describe('monitoring: shell commands', () => {
     expect(evaluateGate(shell('npm test'), context(approvedState(task(['src/**']))))).toMatchObject({ verdict: 'PASS', ruleId: 'monitor.command-with-approved-plan' });
   });
 
+  it('passes read-only sed and the other new read-only commands, but hard rules still come first', () => {
+    expect(evaluateGate(shell('sed -n 1,80p src/a.ts'), context())).toMatchObject({ verdict: 'PASS', ruleId: 'monitor.read-only-command' });
+    expect(evaluateGate(shell('tree -L 2 src | nl'), context()).verdict).toBe('PASS');
+    expect(evaluateGate(shell('sed -i s/a/b/ src/a.ts'), context()).ruleId).toBe('monitor.no-approved-plan');
+    expect(evaluateGate(shell('sed -n 1p src/a.ts; git push'), context()).verdict).toBe('DENY');
+    expect(evaluateGate(shell(`sed -n 1p ${JERRY_HOME}/state.db`), context()).verdict).toBe('DENY');
+    expect(evaluateGate(shell('cut -f1 x | git commit -F -'), context()).verdict).toBe('DENY');
+  });
+
   it('never treats Monitor commands as read-only', () => {
     expect(evaluateGate(shell('ls', 'Monitor'), context()).verdict).toBe('WARN');
   });

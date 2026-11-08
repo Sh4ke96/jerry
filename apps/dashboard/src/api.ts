@@ -1,4 +1,4 @@
-import type { ApprovalRecord, ArtifactDecision, CoreStatus, FinalChecksRerun, FinalReport, EvalRunnerStatus, EvalRunDetail, EvalRunSummary, EvalStatus, Finding, Plan, PlanDrift, ReviewState, ProjectProfile, ProjectAddResult, ProjectRemoveResult, ProjectSummary, DataUsage, PruneOptions, PrunePreview, PruneResult, ForgetPreview, ForgetResult, RepositorySummary, SkillChangeResult, SkillDetail, SkillPreview, SkillsList, StoredEvent, Task, TaskSummary, WorkflowState, WorkflowTransition, Workspace, WorkspaceChangeResult, WorkspaceGraph, WorkspaceScan } from '@jerry/contracts';
+import type { AgentModelsResponse, AgentModelsUpdateRequest, ApprovalRecord, ArtifactDecision, CoreStatus, FinalChecksRerun, FinalReport, EvalRunnerStatus, EvalRunDetail, EvalRunSummary, EvalStatus, Finding, Plan, PlanDrift, ReviewState, ProjectProfile, ProjectAddResult, ProjectRemoveResult, ProjectSummary, DataUsage, PruneOptions, PrunePreview, PruneResult, ForgetPreview, ForgetResult, RepositorySummary, SkillChangeResult, SkillDetail, SkillPreview, SkillsList, StoredEvent, Task, TaskSummary, WorkflowState, WorkflowTransition, Workspace, WorkspaceChangeResult, WorkspaceGraph, WorkspaceScan } from '@jerry/contracts';
 
 import type { ProjectReviewMode, SettingsUpdate, WorkflowSettings } from './settings.js';
 
@@ -152,6 +152,9 @@ export const api = {
   /** The user's workflow settings: the review mode and the language of QA scenarios. */
   settings: () => request<WorkflowSettings>('GET', '/api/v1/settings'),
   saveSettings: (update: SettingsUpdate) => request<WorkflowSettings>('POST', '/api/v1/settings', update),
+  /** The model and effort of each read-only subagent (an older Core answers 404). */
+  agentModels: () => request<AgentModelsResponse>('GET', '/api/v1/agents/models'),
+  saveAgentModels: (agents: AgentModelsUpdateRequest['agents']) => request<AgentModelsResponse>('POST', '/api/v1/agents/models', { agents }),
   /** Claude Code usage as Core collected it; raw, read with readUsage (an older Core answers 404). */
   usage: () => request<unknown>('GET', '/api/v1/usage'),
   /** Turns collecting usage from Claude Code on or off; answers the new collection status (raw). */

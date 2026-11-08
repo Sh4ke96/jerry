@@ -25,6 +25,10 @@ import {
   pruneRequestSchema,
   projectSettingsRequestSchema,
   settingsUpdateRequestSchema,
+  agentModelsUpdateRequestSchema,
+  type AgentModelChoice,
+  type AgentModelsResponse,
+  MODEL_CHOICE_ROLES,
   jerryShareRequestSchema,
   usageCollectionRequestSchema,
   usageSnapshotsRequestSchema,
@@ -77,11 +81,11 @@ import {
   type TaskSummary,
 } from '@jerry/contracts';
 import { EMOJI, SEVERITY_EMOJI, decorate } from '@jerry/contracts/emoji';
-import { absolutePath, approvedPlansForRepo, comparablePath, evaluateGate, gradePlan, isComparableInside, relativeInside, taskTouchesRepo } from '@jerry/policy-engine';
+import { absolutePath, analystsFor, approvedPlansForRepo, comparablePath, evaluateGate, gradePlan, isComparableInside, relativeInside, taskTouchesRepo } from '@jerry/policy-engine';
 import { isTerminal, WORK_STATES } from '@jerry/workflow';
 import { buildEventEnvelope } from '@jerry/trace-engine';
 import type { z } from 'zod';
-import { disableUsageCollection, enableUsageCollection, jerryPaths, readTelemetryConfig, resolveClaudeConfigDir, resolveCorePort, TELEMETRY_KEY_HEADER, TELEMETRY_METRICS_PATH, usageCollectionStatus, writeTelemetryLast, type UsageCollectionChange } from '@jerry/platform';
+import { applyAgentModels, disableUsageCollection, enableUsageCollection, jerryPaths, readTelemetryConfig, resolveClaudeConfigDir, resolveCorePort, TELEMETRY_KEY_HEADER, TELEMETRY_METRICS_PATH, usageCollectionStatus, writeTelemetryLast, type UsageCollectionChange } from '@jerry/platform';
 import { BrowserSessions, clearedSessionCookie, CSRF_HEADER, loginNextFromBody, loginRedirectTarget, loginUrl, readCookie, safeEqual, SESSION_COOKIE, sessionCookie, type BrowserSession } from './auth.js';
 import { evaluatePending, isMonitoredEvent, withRepoRoot } from './events.js';
 import { dataUsage, forget, previewForget, previewPrune, prune, type DataContext } from './data-maintenance.js';
@@ -198,6 +202,11 @@ const TOKEN_ONLY = { clients: ['token'] } as const;
 const TOKEN_OR_SESSION = { clients: ['token', 'session'] } as const;
 const SESSION_ONLY = { clients: ['session'] } as const;
 const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+/**
+ * Warnings Claude needs once per session, agent and repository: they say the same thing every
+ * time. Out-of-scope and uncommitted-file warnings name a file, so each still reaches Claude.
+ */
+const WARN_ONCE_RULES: ReadonlySet<string> = new Set(['monitor.no-approved-plan', 'monitor.workspace-folder-command']);
 
 export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   const { store } = options;
@@ -412,7 +421,14 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
         extraPayload: { reason: decision.reason },
       },
     );
-    if (event !== null) await store.recordEvents([withRepoRoot(event)], now, false);
+    const recorded = event === null ? null : withRepoRoot(event);
+    // A warning Claude already got in this session, agent and repository is not repeated in its
+    // context; it is still recorded below as a deviation. Looked up before this event is stored.
+    const quiet =
+      decision.verdict === 'WARN' &&
+      WARN_ONCE_RULES.has(decision.ruleId) &&
+      store.warnedBefore({ sessionId: gateRequest.sessionId, agentId: gateRequest.agentId, repoRoot: recorded?.repoRoot ?? decision.repoRoot, ruleId: decision.ruleId });
+    if (recorded !== null) await store.recordEvents([recorded], now, false);
     // One warning per file and task about the user's uncommitted changes (previews do not count).
     const target = gateRequest.toolInput['file_path'] ?? gateRequest.toolInput['notebook_path'];
     const relative =
@@ -422,7 +438,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     if (decision.verdict !== 'DENY' && decision.taskId !== null && relative !== null) await store.noteWrite(decision.taskId, relative, gateRequest.agentId ?? null, now, decision.repoRoot ?? undefined);
     // New quality findings of the work this session does, each told once.
     const feedback = decision.verdict === 'DENY' ? null : await qualityFeedback(store, gateRequest.sessionId, now);
-    const answer: GateDecision = feedback === null ? decision : { ...decision, feedback };
+    const answer: GateDecision = { ...decision, ...(feedback === null ? {} : { feedback }), ...(quiet ? { quiet: true } : {}) };
     // JERRY's share of Claude's context: what the bridge prints for this answer.
     const injected = injectedChars(answer);
     const repoRoot = decision.repoRoot ?? store.projectOf(relevantPath(gateRequest.toolInput, gateRequest.cwd))?.repoRoot ?? null;
@@ -728,6 +744,30 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     return store.updateSettings(body, new Date(), request.client?.kind === 'session' ? 'dashboard' : 'cli');
   });
 
+  // --- Models of the read-only subagents: the user's choice, written into the installed plugin ------
+  // Claude Code reads the agents from the installed plugin folder; "jerry install" replaces that
+  // folder, so Core writes the choice again at every start.
+  const installedPluginDir = path.join(jerryPaths(options.jerryHome).marketplaceDir, 'plugins', 'jerry');
+  const agentModelsResponse = (choices: ReadonlyMap<string, AgentModelChoice>, problems: string[]): AgentModelsResponse => ({
+    agents: MODEL_CHOICE_ROLES.map((role) => ({ role: role.id, phase: role.phase as 'analysis' | 'review', ...(choices.get(role.id) ?? role.defaults), defaults: role.defaults })),
+    problems,
+  });
+  app.addHook('onReady', async () => {
+    // Nothing to do (and nothing to report) before JERRY's plugin is installed.
+    if (fs.existsSync(installedPluginDir)) applyAgentModels(installedPluginDir, await store.agentModels());
+  });
+
+  app.get('/api/v1/agents/models', { config: TOKEN_OR_SESSION }, async (): Promise<AgentModelsResponse> => agentModelsResponse(await store.agentModels(), []));
+
+  app.post('/api/v1/agents/models', { config: TOKEN_OR_SESSION }, async (request): Promise<AgentModelsResponse> => {
+    const body = parse(agentModelsUpdateRequestSchema, request.body);
+    const channel = request.client?.kind === 'session' ? 'dashboard' : 'cli';
+    const choices = await store.setAgentModels(body, new Date(), channel);
+    const problems = applyAgentModels(installedPluginDir, choices);
+    if (problems.length > 0) await store.recordAudit('agents.models.problems', { problems, channel }, new Date());
+    return agentModelsResponse(choices, problems);
+  });
+
   app.post('/api/v1/projects', { config: PROJECT_ROUTES }, async (request, reply) => {
     const body = parse(projectAddRequestSchema, request.body);
     const target = path.resolve(body.path);
@@ -895,7 +935,14 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     if (repoRoot === null) throw new HttpError(400, `${body.repoPath} is not inside a Git repository`);
     requireProject(store, repoRoot);
     const sessionId = await store.resolveOrigin(body.origin);
-    return reply.code(201).send(await store.startTask({ repoRoot, title: body.title, goal: body.goal, focus: body.focus, submittedBy: body.submittedBy, sessionId }, new Date()));
+    // The analysts this kind of change needs; without a classification all three, as before.
+    let analysts: ReturnType<typeof analystsFor> | undefined;
+    if (body.classification !== undefined || body.depth !== undefined) {
+      const profile = await profiles.get(repoRoot, 'cached').catch(() => null);
+      const sensitivePaths = profile === null ? [] : [...profile.apiSchemas.map((schema) => schema.path), ...profile.migrations.map((migration) => migration.path)];
+      analysts = analystsFor({ classification: body.classification, depth: body.depth, focus: body.focus, sensitivePaths, caseInsensitive: process.platform === 'win32' });
+    }
+    return reply.code(201).send(await store.startTask({ repoRoot, title: body.title, goal: body.goal, focus: body.focus, analysts, submittedBy: body.submittedBy, sessionId }, new Date()));
   });
 
   app.post('/api/v1/tasks/:taskId/plan', { config: TOKEN_ONLY }, async (request) => {
@@ -1230,6 +1277,8 @@ export function injectedChars(decision: GateDecision): number {
   const feedback = decision.feedback;
   if (decision.verdict === 'WARN') {
     const systemMessage = decorate(EMOJI.warning, `JERRY: ${decision.reason} [${decision.ruleId}]`);
+    // A quiet repeat: the user's line only, and the quality feedback if there is any.
+    if (decision.quiet === true) return systemMessage.length + (feedback?.length ?? 0);
     const additionalContext = `${decorate(EMOJI.warning, `JERRY warning: ${decision.reason} [${decision.ruleId}]`)}${feedback === undefined ? '' : `\n${feedback}`}`;
     return systemMessage.length + additionalContext.length;
   }

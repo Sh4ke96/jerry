@@ -8,6 +8,9 @@ description: Draft a JERRY plan for a code change (feature, bug fix, refactoring
 The plan is what the user approves and what JERRY checks your edits against. Base it on the repository as it
 is now, not on memory or assumptions.
 
+A docs-only or small, contained change can be planned directly. Larger, cross-cutting or security- or
+data-sensitive changes go through `/jerry:analyze` first, which runs only the analysts the change needs.
+
 ## 1. Understand the request and the repository
 
 - Restate the goal in one or two sentences. If something essential is missing, ask the user before planning.
