@@ -15,6 +15,7 @@ the user approves the plan are recorded as deviations.
 - Call `get_state`. If an open task already covers this change, continue with it instead of starting a
   new one.
 - Call `get_project_profile` for the stack, commands, instruction files and suspicious text.
+- Call `get_history` with the likely focus paths: earlier tasks there, their approach, the user's feedback.
 - Decide the focus: repo-relative globs of the area the change will likely touch (`src/auth/**`,
   `tests/auth/**`). Keep it narrow; it becomes the analysts' starting point, not the approved scope.
 - Classify the change with the plan's classification values (`ui-ux`, `frontend`, `api-backend`, `database`,
@@ -41,6 +42,9 @@ in one message, each with the Task/Agent tool:
   user's choice (dashboard, on this skill's page); do not pass a model yourself.
 - Give each one the task ID, the goal, the focus globs and what in particular to look at. Tell it to submit
   its report with `submit_analysis_report` for that task ID.
+- When `start_task` returned `priorAnalysis` (earlier reports of the same role whose files have not changed),
+  give each analyst its role's entries as starting evidence: it verifies and extends them instead of reading
+  everything again, and says in its report what it reused.
 - Analysts only read. Do not ask them to edit, run commands or fix anything.
 
 ## 3. Read the reports

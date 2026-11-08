@@ -31,6 +31,9 @@ import {
   workspaceGraphSchema,
   storedEventSchema,
   taskSchema,
+  HISTORY_MAX_TASKS,
+  historyResponseSchema,
+  type HistoryResponse,
   ANALYST_ROLES,
   analysisDepthSchema,
   planClassificationSchema,
@@ -100,6 +103,15 @@ function projectDir(): string {
 async function core(method: 'GET' | 'POST', path: string, body?: unknown, timeoutMs = 3000): Promise<unknown> {
   const info = readCoreRuntimeInfo(resolveJerryHome());
   return requestCore(info, { method, path, timeoutMs, ...(body === undefined ? {} : { body }) });
+}
+
+/** Earlier work in a repository from Core's history (paths repeated, so globs may hold commas). */
+async function historyOf(repoPath: string, paths: readonly string[], query: string, limit?: number): Promise<HistoryResponse> {
+  const params = new URLSearchParams({ repoPath });
+  for (const entry of paths) params.append('paths', entry);
+  if (query !== '') params.set('query', query);
+  if (limit !== undefined) params.set('limit', String(limit));
+  return historyResponseSchema.parse(await core('GET', `/api/v1/history?${params.toString()}`, undefined, 10_000));
 }
 
 /**
@@ -468,16 +480,21 @@ export const TOOLS: readonly ToolDefinition[] = [
         const task = taskSchema.parse(await core('POST', '/api/v1/tasks/intake', { repoPath, ...input.data, submittedBy: 'claude', origin: origin(call) }));
         const roles = task.analysts?.roles ?? ANALYST_ROLES;
         const why = task.analysts === undefined ? '' : ` (${task.analysts.reasons.join('; ')})`;
+        // Earlier reports of the same roles on the focus whose files have not changed: starting evidence.
+        const history = roles.length === 0 ? null : await historyOf(repoPath, task.plan.scope, '', HISTORY_MAX_TASKS).catch(() => null);
+        const priorAnalysis = (history?.analyses ?? []).filter((analysis) => analysis.fresh === 'unchanged' && analysis.taskId !== task.taskId && (roles as readonly string[]).includes(analysis.role)).slice(0, 3);
+        const reuse = priorAnalysis.length === 0 ? '' : ` Give each analyst the priorAnalysis of its role (reports ${priorAnalysis.map((analysis) => `#${analysis.reportId}`).join(', ')}, files unchanged since): it verifies and extends them instead of reading everything again.`;
         return ok({
           taskId: task.taskId,
           state: task.state,
           focus: task.plan.scope,
           analysts: roles,
+          ...(priorAnalysis.length === 0 ? {} : { priorAnalysis }),
           nextStep:
             roles.length === 0
               ? `No analyst is needed for this change${why}. Plan it directly with /jerry:plan (taskId ${task.taskId}). Do not change code before the user approves the plan.`
-              : `Start ${roles.length === ANALYST_ROLES.length ? "all three of JERRY's analysts" : `only these JERRY analyst(s)`} in parallel: ${roles.join(', ')}${why}, each with taskId ${task.taskId}, the goal and the focus. Run others only if the user asks. Then read their reports with get_analysis and build the plan from them with /jerry:plan (taskId ${task.taskId}). Do not change code before the user approves the plan.`,
-        }, `${EMOJI.analysis} ${task.taskId} started · ${roles.length === 0 ? 'no analyst needed, plan next' : `${roles.length} analyst(s) next`}, then the plan for your approval`);
+              : `Start ${roles.length === ANALYST_ROLES.length ? "all three of JERRY's analysts" : `only these JERRY analyst(s)`} in parallel: ${roles.join(', ')}${why}, each with taskId ${task.taskId}, the goal and the focus. Run others only if the user asks.${reuse} Then read their reports with get_analysis and build the plan from them with /jerry:plan (taskId ${task.taskId}). Do not change code before the user approves the plan.`,
+        }, `${EMOJI.analysis} ${task.taskId} started · ${roles.length === 0 ? 'no analyst needed, plan next' : `${roles.length} analyst(s) next`}${priorAnalysis.length === 0 ? '' : ` · ${priorAnalysis.length} earlier report(s) to reuse`}, then the plan for your approval`);
       }),
   },
   {
@@ -513,6 +530,44 @@ export const TOOLS: readonly ToolDefinition[] = [
         if (taskId === '') return failure('Which task? Pass its taskId (JRY-…).');
         const report = finalReportSchema.parse(await core('GET', `/api/v1/tasks/${encodeURIComponent(taskId)}/final-report`));
         return ok(report, `${EMOJI.report} ${report.taskId} final report · ${report.status === 'final' ? `${EMOJI.done} final` : `${EMOJI.waiting} draft until DONE`}`);
+      }),
+  },
+  {
+    name: 'get_history',
+    title: 'Project history',
+    description:
+      "What JERRY recorded about earlier work in this repository, found by the files or folders you will touch (paths) or by words (query): earlier tasks with what they changed in each file and why, the plan's approach (patterns), decisions and deviations, the user's own comments on plans and reports, findings the user dismissed or that keep coming back, and analysts' observations with path:line evidence. Every file is marked unchanged, changed or unknown since then. Call it before searching the code for a change. Read-only.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        paths: { type: 'array', items: { type: 'string' }, maxItems: 50, description: 'Repo-relative files, folders or globs you will touch (e.g. "src/auth/session.ts", "src/auth/**").' },
+        query: { type: 'string', description: 'Words that must occur in earlier plans or reports (e.g. "rate limit").' },
+        limit: { type: 'integer', minimum: 1, maximum: HISTORY_MAX_TASKS, description: 'Earlier tasks to return (default 5).' },
+        repoPath: { type: 'string', description: 'Repository (default: project directory).' },
+      },
+      additionalProperties: false,
+    },
+    readOnly: true,
+    handler: (args) =>
+      withCore(async () => {
+        const paths = Array.isArray(args['paths']) ? args['paths'].filter((entry): entry is string => typeof entry === 'string' && entry.trim() !== '') : [];
+        const query = typeof args['query'] === 'string' ? args['query'].trim() : '';
+        if (paths.length === 0 && query === '') return failure('Name the files or folders you will touch (paths) or words to look for (query).');
+        const repoPath = typeof args['repoPath'] === 'string' && args['repoPath'] !== '' ? args['repoPath'] : projectDir();
+        const where = await repositoryState(repoPath);
+        if (notAdded(where)) return notAddedFailure(where);
+        const history = await historyOf(repoPath, paths, query, typeof args['limit'] === 'number' ? args['limit'] : undefined);
+        const fresh = history.tasks.flatMap((task) => task.files).filter((file) => file.fresh === 'unchanged').length;
+        return ok(
+          {
+            ...history,
+            nextStep:
+              history.tasks.length === 0 && history.analyses.length === 0
+                ? 'JERRY has no earlier work on these paths: explore the code as usual.'
+                : 'Start from these entries: reuse the patterns of files marked unchanged, read the files marked changed or unknown before relying on them, follow the userFeedback, and do not raise dismissed findings again. Search the code only for what this does not answer.',
+          },
+          `${EMOJI.jerry} history · ${history.tasks.length} earlier task(s), ${history.analyses.length} analysis report(s)${fresh > 0 ? ` · ${fresh} file(s) unchanged since` : ''}${history.truncated ? ' · more exist (narrow the paths)' : ''}`,
+        );
       }),
   },
   {

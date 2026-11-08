@@ -42,6 +42,8 @@ import {
   sessionRegistrationSchema,
   taskCreateRequestSchema,
   taskIntakeRequestSchema,
+  historyQuerySchema,
+  type HistoryResponse,
   findingIdSchema,
   findingStatusRequestSchema,
   findingStatusSchema,
@@ -90,6 +92,7 @@ import { BrowserSessions, clearedSessionCookie, CSRF_HEADER, loginNextFromBody, 
 import { evaluatePending, isMonitoredEvent, withRepoRoot } from './events.js';
 import { dataUsage, forget, previewForget, previewPrune, prune, type DataContext } from './data-maintenance.js';
 import { checkCitations } from './citations.js';
+import { buildHistory } from './history.js';
 import { DecisionWaits } from './decision-wait.js';
 import { ProfileService } from './profiles.js';
 import { QualityScheduler } from './quality-scheduler.js';
@@ -538,6 +541,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
       approvedPlans: approvedPlans.map((plan) => ({ taskId: plan.taskId, planVersion: plan.planVersion, scope: [...plan.scope] })),
       openTasks: repoRoot === null ? [] : await openTasksFor(store, snapshot, repoRoot, registration.sessionId, new Set(approvedPlans.map((plan) => plan.taskId))),
       workspace: workspaces.workspaceOf(registration.cwd),
+      finishedTasks: repoRoot === null ? 0 : snapshot.tasks.filter((task) => task.state === 'DONE' && taskTouchesRepo(task, repoRoot, process.platform)).length,
     };
     // Refresh the project profile in the background, so it is ready when Claude asks for it.
     if (repoRoot !== null) setImmediate(() => void profiles.get(repoRoot, 'auto').catch(() => undefined));
@@ -926,6 +930,18 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
         new Date(),
       ),
     );
+  });
+
+  /** Earlier work in a project, by files or words: what JERRY recorded, for Claude (read-only). */
+  app.get('/api/v1/history', { config: TOKEN_ONLY }, async (request): Promise<HistoryResponse> => {
+    const raw = request.query as Record<string, unknown>;
+    // paths is repeated (?paths=a&paths=b): a glob may hold commas ({a,b}).
+    const list = (value: unknown): string[] => (Array.isArray(value) ? value.map(String) : typeof value === 'string' && value !== '' ? [value] : []);
+    const query = parse(historyQuerySchema, { repoPath: raw['repoPath'], paths: list(raw['paths']), query: raw['query'] ?? '', limit: raw['limit'] ?? undefined });
+    const repoRoot = findGitRoot(realPathOfNearestExisting(query.repoPath));
+    if (repoRoot === null) throw new HttpError(400, `${query.repoPath} is not inside a Git repository`);
+    requireProject(store, repoRoot);
+    return buildHistory(store, repoRoot, query);
   });
 
   /** Task intake before a plan: DISCOVERY with the area to analyse; nothing is approved. */

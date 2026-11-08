@@ -307,6 +307,14 @@ percentages.
   change, the completeness check says which analysts did not run.
 - 🔕 **Warnings once.** "No approved plan" reaches Claude once per session, subagent and repository (again after
   it worked under a plan). Every occurrence is still recorded as a deviation, and you still see the line each time.
+- 🧠 **Project history for Claude.** JERRY gives Claude what it recorded about earlier work through the
+  `get_history` tool: for the files, folders or words Claude names, the earlier tasks with what they changed in
+  each file and why, the approach of their plans, deviations, your comments on plans and reports, findings you
+  dismissed or that keep coming back, and analysts' observations with `path:line` evidence. Each file is marked
+  `unchanged`, `changed` or `unknown` since then (content hashes), so Claude reuses fresh patterns and checks the
+  rest. A new analysis reuses earlier analyst reports whose files have not changed. Claude asks for it on demand:
+  the session start adds only one line when the repository has finished tasks. It covers the time JERRY has
+  monitored the project; `jerry data prune` and `forget` clean it up with the rest.
 - 📖 **Reading is not editing.** `sed -n …p`, `cut`, `nl`, `tac`, `tr`, `uniq` (one file), `tree` (no `-o`/`-R`)
   and PowerShell's `Compare-Object`, `Group-Object`, `Get-Member`, `Format-Wide` count as read-only commands.
 

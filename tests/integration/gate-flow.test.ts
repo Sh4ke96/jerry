@@ -67,6 +67,8 @@ describe('JERRY guard (bundled bridge + Core)', () => {
     expect(context).toContain('it never blocks edits');
     expect(context).toContain('There is no approved JERRY plan');
     expect(context).toContain('the user does all Git operations manually');
+    // No finished task yet: no history line.
+    expect(context).not.toContain('get_history');
   });
 
   it('lets edits through without a plan, warns Claude once per session and the user every time', async () => {

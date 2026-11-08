@@ -328,6 +328,9 @@ function monitoredSessionContext(registration: SessionRegistrationResponse): str
     lines.push(decorate(EMOJI.plan, `Approved plan: ${plans}.`));
   }
   if (registration.repoRoot !== null) lines.push(...resumeContext(registration.openTasks ?? []));
+  // One line, only when there is history: Claude asks for it on demand instead of searching from scratch.
+  const finished = registration.finishedTasks ?? 0;
+  if (registration.repoRoot !== null && finished > 0) lines.push(`JERRY remembers ${finished} finished task(s) here: call get_history with the files or folders you will touch before searching the code.`);
   if (workspace !== null) lines.push(workspace);
   lines.push(
     'Mention JERRY warnings in your summary. If you need the current plan state (it can change mid-session), use the JERRY Guardian MCP tools (get_state).',

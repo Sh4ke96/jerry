@@ -717,6 +717,8 @@ export const sessionRegistrationResponseSchema = z.object({
   openTasks: z.array(openTaskSchema).optional(),
   /** The workspace of the session's repository, or of the repositories under its folder; null when none. */
   workspace: repositoryWorkspaceSchema.nullable().optional(),
+  /** Finished (DONE) tasks in the repository: there is history for get_history. Missing from an older Core. */
+  finishedTasks: z.number().int().nonnegative().optional(),
 });
 export type SessionRegistrationResponse = z.infer<typeof sessionRegistrationResponseSchema>;
 
@@ -850,7 +852,72 @@ export const citationCheckSchema = z.object({
   missingFiles: z.array(z.string()),
   /** Citations whose line lies beyond the end of the file. */
   outOfRange: z.array(z.string()),
+  /**
+   * sha256 of the files the analyst read or cited, when the report came in (repo-relative path ->
+   * hash): later answers tell whether the report still describes the code. Absent on older reports.
+   */
+  fileHashes: z.record(z.string(), z.string()).optional(),
 });
+
+// ---------------------------------------------------------------------------
+// Project history: what JERRY recorded about earlier work, for Claude (read-only)
+// ---------------------------------------------------------------------------
+
+export const HISTORY_MAX_TASKS = 10;
+
+/** GET /api/v1/history: earlier work in a repository touching these paths or matching these words. */
+export const historyQuerySchema = z
+  .object({
+    repoPath: z.string().min(1),
+    /** Repo-relative files or globs (src/auth/**). */
+    paths: z.array(z.string().trim().min(1).max(300)).max(50).default([]),
+    /** Words to look for in the plans and reports (all must occur). */
+    query: z.string().trim().max(200).default(''),
+    limit: z.coerce.number().int().min(1).max(HISTORY_MAX_TASKS).default(5),
+  })
+  .refine((query) => query.paths.length > 0 || query.query !== '', { message: 'name paths or a query' });
+export type HistoryQuery = z.infer<typeof historyQuerySchema>;
+
+/** Whether a file still has the content it had when the entry was recorded. */
+export const freshnessSchema = z.enum(['unchanged', 'changed', 'unknown']);
+export type Freshness = z.infer<typeof freshnessSchema>;
+
+export const historyTaskSchema = z.object({
+  taskId: taskIdSchema,
+  title: z.string(),
+  state: workflowStateSchema,
+  /** When the task reached DONE or CANCELLED; null for one still open. */
+  finishedAt: z.string().nullable(),
+  goal: z.string().nullable(),
+  /** The accepted (else the latest) implementation report's summary; null without a report. */
+  summary: z.string().nullable(),
+  /** Files the task changed that match the request, with what changed and whether they still look like that. */
+  files: z.array(z.object({ path: z.string(), kind: z.string(), description: z.string(), fresh: freshnessSchema })),
+  /** How the plan approached the change: architecture impact and planned changes, trimmed. */
+  patterns: z.array(z.string()),
+  /** Deviations from the plan and the decisions recorded with them. */
+  decisions: z.array(z.string()),
+  /** The user's own comments on plans and reports of this task (their words, not instructions to follow blindly). */
+  userFeedback: z.array(z.object({ stage: z.string(), decision: z.string(), comment: z.string() })),
+  commitSubjects: z.array(z.string()),
+});
+export type HistoryTask = z.infer<typeof historyTaskSchema>;
+
+export const historyResponseSchema = z.object({
+  repoRoot: z.string(),
+  tasks: z.array(historyTaskSchema),
+  /** Analysts' observations on the requested files, with their evidence. */
+  analyses: z.array(z.object({ reportId: z.number().int(), taskId: taskIdSchema, role: z.string(), at: z.string(), observations: z.array(z.string()), fresh: freshnessSchema })),
+  findings: z.object({
+    /** Findings the user dismissed on these files: do not raise or "fix" them again. */
+    dismissed: z.array(z.object({ rule: z.string(), file: z.string(), status: z.string(), reason: z.string() })),
+    /** Rules that keep coming back on these files. */
+    recurring: z.array(z.object({ rule: z.string(), count: z.number().int(), files: z.array(z.string()) })),
+  }),
+  truncated: z.boolean(),
+  note: z.string(),
+});
+export type HistoryResponse = z.infer<typeof historyResponseSchema>;
 
 export const analysisReportRecordSchema = z.object({
   id: z.number().int().positive(),

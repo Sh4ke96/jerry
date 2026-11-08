@@ -178,4 +178,28 @@ describe('analysis first: intake, analysts, plan from their reports (bundled bri
     expect(full.structured['analysts']).toHaveLength(3);
     expect((await client.call('start_task', { title: 'x', goal: 'y', focus: ['src/**'], classification: ['everything'] })).isError).toBe(true);
   });
+
+  it('gives Claude the earlier work through get_history, and earlier analyses of unchanged files to reuse', async () => {
+    const client = await connect();
+    const history = await client.call('get_history', { paths: ['src/app.ts'] });
+    expect(history.isError, history.text).toBe(false);
+    expect(history.text).toContain('analysis report(s)');
+    const analyses = history.structured['analyses'] as Array<{ role: string; fresh: string; observations: string[] }>;
+    expect(analyses.length).toBeGreaterThan(0);
+    expect(analyses[0]).toMatchObject({ fresh: 'unchanged', observations: ['The answer is a hard-coded constant [src/app.ts:1]'] });
+    expect(history.structured['nextStep']).toContain('reuse the patterns');
+    expect((await client.call('get_history', {})).isError).toBe(true);
+
+    // A new task on the same files: the quality analyst's earlier report comes back as starting evidence.
+    const started = await client.call('start_task', { title: 'Answer tests', goal: 'Test the answer', focus: ['src/**'], classification: ['tests'] });
+    expect(started.isError, started.text).toBe(false);
+    expect(started.structured['priorAnalysis']).toEqual([expect.objectContaining({ role: 'jerry-quality-analyst', fresh: 'unchanged' })]);
+    expect(started.text).toContain('earlier report(s) to reuse');
+    expect(started.structured['nextStep']).toContain('priorAnalysis');
+
+    // Once the cited file changed, it is no longer offered for reuse.
+    fs.appendFileSync(path.join(repo, 'src', 'app.ts'), '// changed\n');
+    const later = await client.call('start_task', { title: 'Answer tests again', goal: 'Test the answer', focus: ['src/**'], classification: ['tests'] });
+    expect(later.structured['priorAnalysis']).toBeUndefined();
+  });
 });

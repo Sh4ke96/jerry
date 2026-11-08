@@ -91,7 +91,8 @@ export function isSessionRegistrationResponse(value: unknown): value is SessionR
     (value['monitored'] === undefined || typeof value['monitored'] === 'boolean') &&
     Array.isArray(value['approvedPlans']) &&
     value['approvedPlans'].every((plan) => isObject(plan) && isTaskId(plan['taskId']) && isInteger(plan['planVersion'], 1) && isScope(plan['scope'])) &&
-    (value['openTasks'] === undefined || (Array.isArray(value['openTasks']) && value['openTasks'].every(isOpenTask)))
+    (value['openTasks'] === undefined || (Array.isArray(value['openTasks']) && value['openTasks'].every(isOpenTask))) &&
+    (value['finishedTasks'] === undefined || isInteger(value['finishedTasks'], 0))
   );
 }
 

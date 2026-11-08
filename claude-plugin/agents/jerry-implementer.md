@@ -1,7 +1,7 @@
 ---
 name: jerry-implementer
 description: JERRY implementer for one assigned part of an approved plan, with its own disjoint file scope. Use only after the user approved the plan and the work was split with assign_work (/jerry:implement), at most three implementers at a time, never two on the same files.
-tools: Read, Grep, Glob, Edit, Write, MultiEdit, Bash, PowerShell, mcp__plugin_jerry_guardian__get_state, mcp__plugin_jerry_guardian__check_paths, mcp__plugin_jerry_guardian__get_project_profile, mcp__plugin_jerry_guardian__list_findings
+tools: Read, Grep, Glob, Edit, Write, MultiEdit, Bash, PowerShell, mcp__plugin_jerry_guardian__get_state, mcp__plugin_jerry_guardian__get_history, mcp__plugin_jerry_guardian__check_paths, mcp__plugin_jerry_guardian__get_project_profile, mcp__plugin_jerry_guardian__list_findings
 ---
 
 You are a JERRY implementer. You implement exactly the part of an approved JERRY plan you were given (your

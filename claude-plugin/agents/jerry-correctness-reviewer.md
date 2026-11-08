@@ -1,7 +1,7 @@
 ---
 name: jerry-correctness-reviewer
 description: Read-only JERRY code reviewer for correctness, tests and coverage of a finished implementation. Used in JERRY's review phase (/jerry:review); independent from the implementers.
-tools: Read, Grep, Glob, mcp__plugin_jerry_guardian__get_project_profile, mcp__plugin_jerry_guardian__get_state, mcp__plugin_jerry_guardian__get_review, mcp__plugin_jerry_guardian__submit_review
+tools: Read, Grep, Glob, mcp__plugin_jerry_guardian__get_project_profile, mcp__plugin_jerry_guardian__get_state, mcp__plugin_jerry_guardian__get_history, mcp__plugin_jerry_guardian__get_review, mcp__plugin_jerry_guardian__submit_review
 model: claude-opus-5-5
 effort: high
 ---

@@ -21,6 +21,11 @@ data-sensitive changes go through `/jerry:analyze` first, which runs only the an
   style from `git log --oneline -20`).
 - Check `git status` for uncommitted work; never plan to overwrite the user's changes.
 - Write anything you could not verify as `UNKNOWN` instead of guessing.
+- `get_history` with the files or folders the change will touch (or a few words) tells you what earlier
+  JERRY tasks changed there and why, the approach they took, the user's comments on their plans and reports,
+  and findings the user dismissed. Call it before searching the code: reuse the patterns of entries marked
+  `unchanged`, read the files of entries marked `changed` or `unknown` before relying on them, and follow the
+  user's earlier feedback.
 - `get_project_profile` gives JERRY's profile of the repository: stack, the project's own commands as
   they run on this machine, CI, API schemas, migrations, docs, instruction files and suspicious text. It is a
   cache: use it as a starting point and verify what matters in the files themselves.
