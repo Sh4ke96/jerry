@@ -128,6 +128,17 @@ describe('JERRY guard (bundled bridge + Core)', () => {
     expectBlocked(bridge('Bash', { command: 'git commit -m "done"' }), 'hard.git-mutation');
   });
 
+  it('checks the files a shell command visibly writes against the approved scope', async () => {
+    expectPassed(bridge('Bash', { command: "printf 'a' > src/a.txt" }));
+    const outOfScope = bridge('Bash', { command: "mkdir -p notes && printf 'b' > notes/b.txt" });
+    expect(outOfScope.exitCode, outOfScope.stderr).toBe(0);
+    expect(JSON.parse(outOfScope.stdout).systemMessage).toContain('monitor.out-of-scope');
+    const powershell = bridge('PowerShell', { command: "Set-Content -Path notes\\c.txt -Value 'c'" });
+    expect(JSON.parse(powershell.stdout).systemMessage).toContain('monitor.out-of-scope');
+    const events = (await api(core, 'GET', '/api/v1/events?verdict=WARN&limit=100')).body as Array<{ toolName: string | null; ruleId: string | null }>;
+    expect(events.filter((event) => event.ruleId === 'monitor.out-of-scope').map((event) => event.toolName)).toEqual(expect.arrayContaining(['Bash', 'PowerShell']));
+  });
+
   it('treats a revised plan as unapproved and refuses decisions on stale versions', async () => {
     const revised = await api(core, 'POST', `/api/v1/tasks/${taskId}/plan`, { scope: ['src/**', 'test/**'] });
     expect((revised.body as { plan: { version: number } }).plan.version).toBe(2);

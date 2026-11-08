@@ -98,5 +98,15 @@ describe('variants of a case', () => {
     expect(without).not.toContain('--bare');
     // --model on the command line overrides every variant.
     expect(sessionArgs(evalCase, bare!, { pluginDir: '/plugin', model: 'haiku' })).toEqual(expect.arrayContaining(['--model', 'haiku']));
+    expect(withPlugin).not.toContain('--disallowedTools');
+  });
+
+  it('removes the case’s tools in every variant, together with the variant’s own', () => {
+    const evalCase = evalCaseSchema.parse({ ...base, session: { prompt: 'p', disallowedTools: ['Bash', 'PowerShell'] }, variants: [{ id: 'jerry' }, { id: 'bare', plugin: false, disallowedTools: ['mcp__x', 'Bash'] }], graders: [{ type: 'git-unchanged' }] });
+    const [jerry, bare] = variantsOf(evalCase, true);
+    const tail = (args: string[]): string[] => args.slice(args.indexOf('--disallowedTools') + 1);
+    expect(tail(sessionArgs(evalCase, jerry!, { pluginDir: '/plugin' }))).toEqual(['Bash', 'PowerShell']);
+    expect(tail(sessionArgs(evalCase, bare!, { pluginDir: '/plugin' }))).toEqual(['Bash', 'PowerShell', 'mcp__x']);
+    expect(evalCaseSchema.parse({ ...base, graders: [{ type: 'git-unchanged' }] }).session.disallowedTools).toEqual([]);
   });
 });

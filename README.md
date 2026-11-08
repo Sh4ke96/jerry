@@ -13,7 +13,7 @@ local dashboard. It never changes your code and never touches Git: you do all Gi
 | | |
 |---|---|
 | 📋 **Plans you approve** | Claude drafts a plan for each change (goal, scope, steps, tests, risks). You approve the exact version. |
-| 👀 **Monitoring, not blocking** | Edits without an approved plan, or outside its scope, go through but are recorded as deviations, and Claude and you are warned. |
+| 👀 **Monitoring, not blocking** | Edits without an approved plan, or outside its scope, go through but are recorded as deviations, and Claude and you are warned. Files a shell command visibly writes (`>`, `tee`, `touch`, `Set-Content`, `Out-File`…) are checked against the scope too. |
 | ⛔ **Hard rules, always enforced** | No Git command that changes anything, no writes inside `.git`, no tampering with JERRY's data or the settings that enable it, no approving its own work. These hold even when Core is down. |
 | 🔎 **Analysis before the plan** | Up to three read-only analysts (architecture, risk, quality) study the repository, as many as the kind of change needs, each on the model you pick; the plan cites their evidence. |
 | 🐞 **Continuous quality** | JERRY checks the lines Claude changed (naming, error handling, test quality, security) and tells Claude about new findings. |

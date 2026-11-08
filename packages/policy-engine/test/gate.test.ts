@@ -151,6 +151,30 @@ describe('monitoring: shell commands', () => {
     expect(evaluateGate(shell('npm test'), context(approvedState(task(['src/**']))))).toMatchObject({ verdict: 'PASS', ruleId: 'monitor.command-with-approved-plan' });
   });
 
+  it('checks the files a command visibly writes against the approved scope, like a Write', () => {
+    const state = approvedState(task(['src/**']));
+    // EVR-8: one Bash command wrote an in-scope and an out-of-scope file.
+    expect(evaluateGate(shell("mkdir -p src notes && printf 'a' > src/a.txt && printf 'b' > notes/b.txt"), context(state))).toMatchObject({
+      verdict: 'WARN',
+      ruleId: 'monitor.out-of-scope',
+      taskId: 'JRY-0001',
+      reason: expect.stringMatching(/^The command writes notes\/b\.txt: notes\/b\.txt is outside the approved scope of JRY-0001 v1/),
+    });
+    expect(evaluateGate(shell("printf 'a' > src/a.txt && echo x | tee -a src/log.txt"), context(state))).toMatchObject({ verdict: 'PASS', ruleId: 'monitor.command-with-approved-plan' });
+    expect(evaluateGate(shell('echo x | tee README.md'), context(state)).ruleId).toBe('monitor.out-of-scope');
+    expect(evaluateGate(shell('touch docs/new.md'), context(state)).ruleId).toBe('monitor.out-of-scope');
+    expect(evaluateGate(shell("Set-Content -Path notes/b.txt -Value 'b'", 'PowerShell'), context(state)).ruleId).toBe('monitor.out-of-scope');
+    expect(evaluateGate(shell("'b' | Out-File src/b.txt", 'PowerShell'), context(state)).verdict).toBe('PASS');
+    // A file with the user's uncommitted changes, written from the shell.
+    const userFiles = context(state, { isUserChangedFile: (_taskId, relative) => relative === 'src/app.ts' });
+    expect(evaluateGate(shell('echo x >> src/app.ts'), userFiles).ruleId).toBe('monitor.user-uncommitted-file');
+    // Discards and unresolved targets are not checked; without a plan the command warning stays as it was.
+    expect(evaluateGate(shell('npm test > /dev/null 2>&1 && echo $X > $OUT'), context(state)).ruleId).toBe('monitor.command-with-approved-plan');
+    expect(evaluateGate(shell("printf 'b' > notes/b.txt"), context()).ruleId).toBe('monitor.no-approved-plan');
+    // Outside the repository a write target is not JERRY's to check.
+    expect(evaluateGate(shell('echo x > C:/Temp/out.txt'), context(state)).ruleId).toBe('monitor.command-with-approved-plan');
+  });
+
   it('passes read-only sed and the other new read-only commands, but hard rules still come first', () => {
     expect(evaluateGate(shell('sed -n 1,80p src/a.ts'), context())).toMatchObject({ verdict: 'PASS', ruleId: 'monitor.read-only-command' });
     expect(evaluateGate(shell('tree -L 2 src | nl'), context()).verdict).toBe('PASS');

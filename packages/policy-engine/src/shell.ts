@@ -82,6 +82,70 @@ export function assessShellCommand(command: string, dialect: ShellDialect): Shel
   return { readOnly: true, reason: 'all command segments are on the read-only allowlist' };
 }
 
+/** A target JERRY cannot resolve from the text alone (variables, globs, home, substitutions): skipped, never guessed. */
+const UNRESOLVED_TARGET = /[$*?~%{}`[\]]|^-|^\/dev\//i;
+
+/** PowerShell cmdlets that write the file named by -Path/-FilePath/-LiteralPath or their first positional argument. */
+const POWERSHELL_FILE_WRITERS = new Set(['out-file', 'set-content', 'sc', 'add-content', 'ac', 'new-item', 'ni', 'tee-object', 'tee']);
+const POWERSHELL_PATH_PARAMETERS = new Set(['-path', '-filepath', '-literalpath', '-pspath', '-lp']);
+/** Parameters of those cmdlets that take a value (so the value is not the positional path). */
+const POWERSHELL_VALUE_PARAMETERS = new Set(['-value', '-encoding', '-itemtype', '-type', '-name', '-width', '-inputobject', '-stream', '-filter', '-include', '-exclude', '-credential', '-delimiter', '-variable']);
+/** touch options whose next word is a value, not a file. */
+const TOUCH_VALUE_OPTIONS = new Set(['-d', '-r', '-t', '--date', '--reference']);
+
+/**
+ * The files a shell command visibly writes: targets of ">" and ">>", tee, touch, and PowerShell's
+ * Out-File, Set-Content, Add-Content, New-Item and Tee-Object. Best effort for the scope check: a
+ * target with variables, globs or substitutions is left out, and other writers (cp, mv, sed -i,
+ * scripts) are not seen at all. Paths come back as written (relative to the working directory).
+ */
+export function shellWriteTargets(command: string, dialect: ShellDialect): string[] {
+  const text = DISCARD_REDIRECTIONS.reduce((current, pattern) => current.replace(pattern, ' '), command.trim().replace(/[\r\n]+/g, ';'));
+  const segments = splitTopLevel(text);
+  if (segments === null) return [];
+  const targets: string[] = [];
+  for (const segment of segments) {
+    targets.push(...segment.redirectTargets);
+    const [first, ...args] = segment.words;
+    if (first === undefined) continue;
+    const name = first.toLowerCase().replace(/\.exe$/, '');
+    if (dialect === 'bash' && name === 'tee') targets.push(...args.filter((arg) => !arg.startsWith('-')));
+    else if (dialect === 'bash' && name === 'touch') {
+      for (let index = 0; index < args.length; index += 1) {
+        const arg = args[index]!;
+        if (TOUCH_VALUE_OPTIONS.has(arg)) index += 1;
+        else if (!arg.startsWith('-')) targets.push(arg);
+      }
+    } else if (dialect === 'powershell' && POWERSHELL_FILE_WRITERS.has(name)) targets.push(...powershellWriteTarget(name, args));
+  }
+  return [...new Set(targets.filter((target) => target !== '' && !UNRESOLVED_TARGET.test(target)))];
+}
+
+function powershellWriteTarget(name: string, args: readonly string[]): string[] {
+  let target: string | null = null;
+  let childName: string | null = null;
+  let directory = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    const option = arg.toLowerCase().replace(/:$/, '');
+    if (POWERSHELL_PATH_PARAMETERS.has(option)) {
+      target = args[index + 1] ?? null;
+      index += 1;
+    } else if (POWERSHELL_VALUE_PARAMETERS.has(option)) {
+      const value = args[index + 1] ?? '';
+      if (option === '-name') childName = value;
+      if ((option === '-itemtype' || option === '-type') && /^(directory|d)$/i.test(value)) directory = true;
+      index += 1;
+    } else if (!arg.startsWith('-') && target === null) {
+      target = arg;
+    }
+  }
+  // New-Item -ItemType Directory creates no file.
+  if ((name === 'new-item' || name === 'ni') && directory) return [];
+  if (target === null) return childName === null ? [] : [childName];
+  return [childName === null ? target : `${target.replace(/[\\/]+$/, '')}/${childName}`];
+}
+
 function writeCapable(reason: string): ShellAssessment {
   return { readOnly: false, reason };
 }
@@ -221,11 +285,14 @@ function assessGit(args: string[]): ShellAssessment {
 interface Segment {
   words: string[];
   redirectsOutput: boolean;
+  /** The words right after each ">" or ">>" (the files written), when one follows. */
+  redirectTargets: string[];
 }
 
 /**
  * Splits on ; & && || | outside quotes and collects words. Returns null on unbalanced quotes.
- * Any ">" outside quotes marks the segment as redirecting output.
+ * Any ">" outside quotes marks the segment as redirecting output; the word after it is its target
+ * (">&2" duplicates a stream and has none).
  */
 function splitTopLevel(command: string): Segment[] | null {
   const segments: Segment[] = [];
@@ -233,18 +300,23 @@ function splitTopLevel(command: string): Segment[] | null {
   let word = '';
   let wordStarted = false;
   let redirectsOutput = false;
+  let redirectTargets: string[] = [];
+  let targetNext = false;
   let quote: '"' | "'" | null = null;
 
   const endWord = (): void => {
-    if (wordStarted) words.push(word);
+    if (wordStarted) (targetNext ? redirectTargets : words).push(word);
+    if (wordStarted) targetNext = false;
     word = '';
     wordStarted = false;
   };
   const endSegment = (): void => {
     endWord();
-    segments.push({ words, redirectsOutput });
+    segments.push({ words, redirectsOutput, redirectTargets });
     words = [];
     redirectsOutput = false;
+    redirectTargets = [];
+    targetNext = false;
   };
 
   for (let i = 0; i < command.length; i += 1) {
@@ -267,7 +339,20 @@ function splitTopLevel(command: string): Segment[] | null {
       if ((char === '|' || char === '&') && command[i + 1] === char) i += 1;
     } else if (char === '>') {
       redirectsOutput = true;
+      // "2>" and PowerShell "*>": the stream number is not a word of the command.
+      if (wordStarted && /^(\d|\*)$/.test(word)) {
+        word = '';
+        wordStarted = false;
+      }
       endWord();
+      if (command[i + 1] === '>') i += 1;
+      if (command[i + 1] === '&') {
+        // ">&2", ">&1", ">&-": a stream duplicated or closed, no file.
+        i += 1;
+        while (/[\d-]/.test(command[i + 1] ?? '')) i += 1;
+      } else {
+        targetNext = true;
+      }
     } else if (/\s/.test(char)) {
       endWord();
     } else {

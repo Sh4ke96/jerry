@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assessGitUsage, assessShellCommand } from '../src/shell.js';
+import { assessGitUsage, assessShellCommand, shellWriteTargets } from '../src/shell.js';
 
 describe('assessGitUsage', () => {
   it.each([
@@ -190,5 +190,52 @@ describe('assessShellCommand (powershell)', () => {
 
   it('does not accept bash-only commands in PowerShell', () => {
     expect(assessShellCommand('head -5 a.txt', 'powershell').readOnly).toBe(false);
+  });
+});
+
+describe('shellWriteTargets', () => {
+  it.each([
+    ["mkdir -p src notes && printf 'a' > src/a.txt && printf 'b' > notes/b.txt", ['src/a.txt', 'notes/b.txt']],
+    ['echo x >> log.txt', ['log.txt']],
+    ['echo x>out.txt', ['out.txt']],
+    ['cmd 2> err.log', ['err.log']],
+    ['echo "a > b" > "my file.txt"', ['my file.txt']],
+    ['echo x | tee -a a.txt b.txt', ['a.txt', 'b.txt']],
+    ['touch -d 2026-01-01 x.txt y.txt', ['x.txt', 'y.txt']],
+    ['cat a > b; cat c > b', ['b']],
+    ["printf 'a'\n> multi.txt", ['multi.txt']],
+    // Not files, or not resolvable from the text: left out.
+    ['npm test > /dev/null 2>&1', []],
+    ['echo x >&2', []],
+    ['echo x 1>&2 && echo y > y.txt', ['y.txt']],
+    ['echo $X > $OUT', []],
+    ['echo x > ~/out.txt', []],
+    ['echo x > logs/*.txt', []],
+    ['echo x > /dev/stderr', []],
+    ['cp a b', []],
+    ['echo "unbalanced > x', []],
+  ] as const)('bash: %s writes %j', (command, expected) => {
+    expect(shellWriteTargets(command, 'bash')).toEqual(expected);
+  });
+
+  it.each([
+    ["Set-Content -Path notes/b.txt -Value 'b'", ['notes/b.txt']],
+    ['Set-Content x.txt hi', ['x.txt']],
+    ["'b' | Out-File -FilePath out.txt -Encoding utf8", ['out.txt']],
+    ["Add-Content -Value 'x' -LiteralPath 'C:\\Repo\\log.txt'", ['C:\\Repo\\log.txt']],
+    ['New-Item -ItemType File -Path src -Name a.ts', ['src/a.ts']],
+    ['New-Item -ItemType Directory -Path notes', []],
+    ['Get-Process | Tee-Object procs.txt', ['procs.txt']],
+    ['Get-Content a *> all.txt', ['all.txt']],
+    ['Get-Content a > $null', []],
+    ['Set-Content -Path $env:TEMP/x.txt -Value 1', []],
+    ['tee a.txt', ['a.txt']],
+  ] as const)('PowerShell: %s writes %j', (command, expected) => {
+    expect(shellWriteTargets(command, 'powershell')).toEqual(expected);
+  });
+
+  it('keeps the read-only verdicts of redirecting commands', () => {
+    expect(assessShellCommand('echo x >&2', 'bash')).toMatchObject({ readOnly: false, reason: 'output redirection' });
+    expect(assessShellCommand('cat a 2>&1 | head -5', 'bash').readOnly).toBe(true);
   });
 });

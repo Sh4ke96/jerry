@@ -267,7 +267,8 @@ export function sessionArgs(evalCase: EvalCase, variant: EvalVariant, options: P
   if (budget !== undefined) args.push('--max-budget-usd', String(budget.maxCostUsd));
   if (evalCase.session.maxTurns !== undefined) args.push('--max-turns', String(evalCase.session.maxTurns));
   if (evalCase.session.allowedTools.length > 0) args.push('--allowedTools', ...evalCase.session.allowedTools);
-  if (variant.disallowedTools.length > 0) args.push('--disallowedTools', ...variant.disallowedTools);
+  const disallowed = [...new Set([...evalCase.session.disallowedTools, ...variant.disallowedTools])];
+  if (disallowed.length > 0) args.push('--disallowedTools', ...disallowed);
   return args;
 }
 

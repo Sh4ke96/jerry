@@ -123,7 +123,10 @@ export const evalCaseSchema = z.object({
     .default({ history: [] }),
   session: z.object({
     prompt: z.string().min(1),
+    /** Tools allowed without asking (--allowedTools); the others stay available. */
     allowedTools: z.array(z.string().min(1)).default([]),
+    /** Tools removed in every variant (--disallowedTools), e.g. the shell when a case measures Write. */
+    disallowedTools: z.array(z.string().min(1)).default([]),
     model: z.string().default('haiku'),
     timeoutMs: z.number().int().positive().max(1_800_000).default(300_000),
     /** Caps the agentic turns (--max-turns). */

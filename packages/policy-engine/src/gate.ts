@@ -3,7 +3,7 @@ import { skillApplies } from '@jerry/contracts/constants';
 import type { ApprovedPlan } from './approvals.js';
 import { absolutePath, comparablePath, isComparableInside, matchesAnyGlob, relativeInside } from './paths.js';
 import { assessMcpGitUsage } from './mcp.js';
-import { assessGitUsage, assessShellCommand } from './shell.js';
+import { assessGitUsage, assessShellCommand, shellWriteTargets } from './shell.js';
 import { classifyToolCall, type ToolAction } from './tool-call.js';
 import { MAX_SUBAGENTS } from '@jerry/contracts/agents';
 
@@ -189,7 +189,7 @@ function evaluateMonitoring(action: ToolAction, request: GateCheckRequest, conte
     case 'file-write':
       return worstOf(action.paths.map((target) => monitorWrite(target, request.cwd, context, request.agentId ?? null)));
     case 'shell':
-      return monitorShell(request.cwd, context, assessShellCommand(action.command, action.dialect));
+      return monitorShell(request.cwd, context, assessShellCommand(action.command, action.dialect), shellWriteTargets(action.command, action.dialect), request.agentId ?? null);
     case 'shell-opaque':
       return monitorShell(request.cwd, context, { readOnly: false, reason: `${request.toolName} runs commands JERRY does not classify` });
   }
@@ -258,7 +258,12 @@ function monitorWrite(target: string, cwd: string, context: GateContext, agentId
   return decision('PASS', 'monitor.in-approved-scope', `${relative} is within the approved scope of ${covering.taskId} v${covering.planVersion}`, covering.taskId, repoRoot);
 }
 
-function monitorShell(cwd: string, context: GateContext, assessment: { readOnly: boolean; reason: string }): GateDecision {
+/**
+ * A command that may modify files. With an approved plan, the files it visibly writes (">", tee,
+ * Set-Content…) get the same scope check as a Write: one outside the scope is warned about and
+ * recorded. The rest of the command cannot be verified, so a command without such a warning passes.
+ */
+function monitorShell(cwd: string, context: GateContext, assessment: { readOnly: boolean; reason: string }, writeTargets: readonly string[] = [], agentId: string | null = null): GateDecision {
   const { platform } = context;
   if (assessment.readOnly) {
     return decision('PASS', 'monitor.read-only-command', `Read-only command: ${assessment.reason}`);
@@ -276,6 +281,11 @@ function monitorShell(cwd: string, context: GateContext, assessment: { readOnly:
   const plans = context.approvedPlans(repoRoot);
   if (plans.length === 0) {
     return decision('WARN', 'monitor.no-approved-plan', `No approved JERRY plan for ${repoRoot}, and this command may modify files (${assessment.reason}). It proceeds and is recorded as a deviation.`, null, repoRoot);
+  }
+  const warned = writeTargets.map((target) => ({ target, verdict: monitorWrite(target, cwd, context, agentId) })).find((entry) => entry.verdict.verdict === 'WARN');
+  if (warned !== undefined) {
+    const { verdict } = warned;
+    return decision('WARN', verdict.ruleId, `The command writes ${warned.target}: ${verdict.reason}`, verdict.taskId, verdict.repoRoot);
   }
   return decision('PASS', 'monitor.command-with-approved-plan', `Approved plan exists; JERRY cannot verify the command's file scope (${assessment.reason})`, plans[0]?.taskId ?? null, repoRoot);
 }
