@@ -9,7 +9,7 @@ import { Card, CardAction, CardContent, CardDescription, CardFooter, CardHeader,
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { eventReason, eventTarget, formatDuration, formatTime, inImplementation, shortPath, startOfToday, waitsForUser } from '../format';
 import { ATTENTION } from '../lib/classes';
-import { projectName, versionsText } from '../lib/tasks';
+import { taskRepositories, versionsText } from '../lib/tasks';
 import { linkTo, navigate, taskHref, type Route } from '../router';
 import { state } from '../state';
 import { taskFilters } from './Tasks';
@@ -122,7 +122,7 @@ export const Overview = defineComponent({
                         </span>
                         <span class="font-medium">{task.title}</span>
                         <span class="text-muted-foreground text-xs">
-                          {projectName(task.repoRoot)} · {versionsText(task)}
+                          {taskRepositories(task).map((repository) => repository.name).join(', ')} · {versionsText(task)}
                         </span>
                       </a>
                     </li>

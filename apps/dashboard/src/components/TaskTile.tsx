@@ -6,7 +6,7 @@ import { defineComponent, ref, watch, type PropType } from 'vue';
 import { api } from '../api';
 import { formatTime, stateTone, waitsForUser } from '../format';
 import { ATTENTION, CHIP } from '../lib/classes';
-import { lastActivity, nextStepText, projectName, REVIEW_STATES, versionsText } from '../lib/tasks';
+import { lastActivity, nextStepText, REVIEW_STATES, taskRepositories, versionsText } from '../lib/tasks';
 import { cn } from '../lib/utils';
 import { linkTo, navigate, taskHref } from '../router';
 import { taskReviewRequested } from '../settings';
@@ -94,6 +94,39 @@ export function findingsSummary(task: TaskSummary) {
   );
 }
 
+/** Repository names shown on a task bar; the rest are counted (named for screen readers and on hover). */
+const NAMED_REPOSITORIES = 3;
+
+/**
+ * Every repository of a task by name, its own first: a task across several repositories of a
+ * workspace reads "admin, api" rather than one name and a count.
+ */
+export const TaskRepositories = defineComponent({
+  name: 'TaskRepositories',
+  props: { task: { type: Object as PropType<TaskSummary>, required: true } },
+  setup(props) {
+    return () => {
+      const repositories = taskRepositories(props.task);
+      const shown = repositories.slice(0, NAMED_REPOSITORIES);
+      const rest = repositories.slice(NAMED_REPOSITORIES);
+      const others = repositories.length - 1;
+      return (
+        <span class="task-tile__repos flex min-w-0 items-center md:max-w-80" title={repositories.map((repository) => repository.repoRoot).join('\n')} data-task-repos={others > 0 ? others : undefined}>
+          <Emoji symbol={EMOJI.repository} class="mr-1" />
+          <span class="truncate" data-task-repo-names>
+            {shown.map((repository) => repository.name).join(', ')}
+          </span>
+          {rest.length > 0 && (
+            <span class="bg-muted ml-1 rounded px-1 font-medium" role="img" aria-label={`and ${rest.map((repository) => repository.name).join(', ')}`}>
+              +{rest.length}
+            </span>
+          )}
+        </span>
+      );
+    };
+  },
+});
+
 /** Clicks on these do their own thing; elsewhere in the tile header a click opens the task page. */
 const INTERACTIVE = 'a, button, input, [role="menuitem"], [role="switch"], [data-slot="collapsible-content"]';
 
@@ -154,22 +187,7 @@ export const TaskTile = defineComponent({
               </a>
               <p class="task-tile__meta text-muted-foreground col-span-2 row-start-3 flex flex-wrap gap-x-1.5 text-xs md:col-span-1 md:col-start-3 md:row-start-1 md:flex-nowrap md:whitespace-nowrap">
                 {!props.hideProject && (
-                  <span class="flex items-center" title={task.repoRoot}>
-                    <Emoji symbol={EMOJI.repository} class="mr-1" />
-                    {projectName(task.repoRoot)}
-                    {/* A task across several repositories of a workspace: the others, named for screen readers and on hover. */}
-                    {(task.plan.repositories ?? []).length > 0 && (
-                      <span
-                        class="task-tile__repos bg-muted ml-1 rounded px-1 font-medium"
-                        data-task-repos={(task.plan.repositories ?? []).length}
-                        role="img"
-                        aria-label={`also in ${(task.plan.repositories ?? []).map((repository) => projectName(repository.repoRoot)).join(', ')}`}
-                        title={(task.plan.repositories ?? []).map((repository) => repository.repoRoot).join('\n')}
-                      >
-                        +{(task.plan.repositories ?? []).length}
-                      </span>
-                    )}
-                  </span>
+                  <TaskRepositories task={task} />
                 )}
                 {!props.hideProject && <span aria-hidden="true">·</span>}
                 <span>{versionsText(task)}</span>

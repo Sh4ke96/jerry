@@ -23,7 +23,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../co
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { formatTime, isIntake, stateTone, waitsForUser } from '../format';
 import { CHIP, LIST } from '../lib/classes';
-import { lastActivity, nextStepText, projectName, REVIEW_STATES, REVIEWER_STATES, versionsText } from '../lib/tasks';
+import { lastActivity, nextStepText, projectName, REVIEW_STATES, REVIEWER_STATES, taskRepositories, versionsText } from '../lib/tasks';
 import { cn } from '../lib/utils';
 import { linkTo, projectHref, taskHref } from '../router';
 import { taskReviewRequested } from '../settings';
@@ -211,10 +211,18 @@ export const TaskPage = defineComponent({
           </div>
           <CardTitle class="text-xl leading-tight">{current.title}</CardTitle>
           <CardDescription class="flex flex-wrap items-center gap-x-1.5 text-xs">
-            <a class="text-foreground flex items-center font-medium hover:underline" title={current.repoRoot} {...linkTo(projectHref(current.repoRoot))}>
+            {/* Every repository of the task, its own first: a task across a workspace names each one. */}
+            <span class="task-repositories flex flex-wrap items-center">
               <Emoji symbol={EMOJI.repository} class="mr-1" />
-              {projectName(current.repoRoot)}
-            </a>
+              {taskRepositories(current).map((repository, index) => (
+                <span key={repository.repoRoot} class="flex items-center">
+                  {index > 0 && <span class="mr-1">,</span>}
+                  <a class="text-foreground font-medium hover:underline" title={repository.repoRoot} data-task-page-repo={repository.repoRoot} {...linkTo(projectHref(repository.repoRoot))}>
+                    {repository.name}
+                  </a>
+                </span>
+              ))}
+            </span>
             <span aria-hidden="true">·</span>
             <code class="font-mono break-all">{current.repoRoot}</code>
             <span aria-hidden="true">·</span>

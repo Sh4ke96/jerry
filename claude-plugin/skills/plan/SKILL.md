@@ -6,7 +6,8 @@ description: Draft a JERRY plan for a code change (feature, bug fix, refactoring
 # Plan a change with JERRY
 
 The plan is what the user approves and what JERRY checks your edits against. Base it on the repository as it
-is now, not on memory or assumptions.
+is now, not on memory or assumptions. It goes to JERRY with `submit_plan`, never only into the chat, also when
+the session runs in another repository of the workspace than the one the change touches.
 
 A docs-only or small, contained change can be planned directly. Larger, cross-cutting or security- or
 data-sensitive changes go through `/jerry:analyze` first, which runs only the analysts the change needs.

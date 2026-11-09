@@ -327,6 +327,8 @@ function monitoredSessionContext(registration: SessionRegistrationResponse): str
     const plans = registration.approvedPlans.map((plan) => `${plan.taskId} v${plan.planVersion} (scope: ${plan.scope.join(', ')})`).join('; ');
     lines.push(decorate(EMOJI.plan, `Approved plan: ${plans}.`));
   }
+  // Without a plan that covers edits: an analysis or a plan written only into the chat never reached the user's approval.
+  if ((registration.repoRoot === null && workspace !== null) || (registration.repoRoot !== null && registration.approvedPlans.length === 0)) lines.push(planThroughJerry(workspace !== null));
   if (registration.repoRoot !== null) lines.push(...resumeContext(registration.openTasks ?? []));
   // One line, only when there is history: Claude asks for it on demand instead of searching from scratch.
   const finished = registration.finishedTasks ?? 0;
@@ -338,6 +340,19 @@ function monitoredSessionContext(registration: SessionRegistrationResponse): str
     'If JERRY blocks an action, report the reason to the user instead of working around it.',
   );
   return lines.join(' ');
+}
+
+/**
+ * Where an analysis and a plan go: to JERRY, before any edit, for the user to read and approve there.
+ * Said to sessions without a plan that covers edits, in a project or a workspace.
+ */
+function planThroughJerry(inWorkspace: boolean): string {
+  const where = inWorkspace ? 'here or in another repository of the workspace' : 'here';
+  const multi = inWorkspace ? " A change across the workspace's repositories is one task." : '';
+  return decorate(
+    EMOJI.plan,
+    `Every change the user asks for ${where} goes through JERRY before you edit code: take it in with /jerry:analyze (start_task) for a non-trivial change, or plan it with /jerry:plan (submit_plan). The analysis and the plan belong in JERRY, where the user reads and approves them, never only in the chat.${multi}`,
+  );
 }
 
 /**

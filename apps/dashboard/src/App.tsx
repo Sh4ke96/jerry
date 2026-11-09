@@ -309,7 +309,7 @@ export const App = defineComponent({
                 </div>
               </div>
             </header>
-            <div class="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-4 p-4 md:gap-6 md:p-6" data-view={view.value}>
+            <div class="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-4 p-4 md:gap-6 md:p-6" data-view={view.value}>
               {state.notice !== null && (
                 <Alert role="status" class="flex items-center justify-between gap-3">
                   <AlertDescription class="text-foreground col-start-1">{state.notice}</AlertDescription>

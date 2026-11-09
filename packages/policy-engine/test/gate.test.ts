@@ -67,6 +67,7 @@ function shell(command: string, toolName = 'Bash', cwd = REPO): GateCheckRequest
 describe('monitoring: file writes are never blocked, deviations are warned', () => {
   it('warns about a write in a repository without an approved plan', () => {
     expect(evaluateGate(write('src/a.ts'), context())).toMatchObject({ verdict: 'WARN', ruleId: 'monitor.no-approved-plan' });
+    expect(evaluateGate(write('src/a.ts'), context()).reason).toContain('/jerry:plan (submit_plan)');
   });
 
   it('warns when the plan exists but was not approved', () => {
@@ -144,6 +145,7 @@ describe('monitoring: shell commands', () => {
 
   it('warns about write-capable commands in a repository without a plan', () => {
     expect(evaluateGate(shell('npm install'), context()).ruleId).toBe('monitor.no-approved-plan');
+    expect(evaluateGate(shell('npm install'), context()).reason).toContain('a plan only in the chat is not one');
     expect(evaluateGate(shell('Remove-Item src', 'PowerShell'), context()).verdict).toBe('WARN');
   });
 

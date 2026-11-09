@@ -50,6 +50,8 @@ describe('session ↔ task correlation and session recovery (bundled bridge + MC
   it('starts a session with nothing to resume', () => {
     const context = sessionStart('session-a', 'startup');
     expect(context).toContain('There is no approved JERRY plan');
+    expect(context).toContain('Every change the user asks for here goes through JERRY before you edit code');
+    expect(context).not.toContain('another repository of the workspace');
     expect(context).not.toContain('Open JERRY tasks');
   });
 
@@ -92,6 +94,8 @@ describe('session ↔ task correlation and session recovery (bundled bridge + MC
 
     const context = sessionStart('session-b', 'startup');
     expect(context).toContain(`Approved plan: ${taskId} v1`);
+    // A plan covers edits: no reminder to plan through JERRY.
+    expect(context).not.toContain('goes through JERRY before you edit code');
     expect(context).toContain(`Open JERRY tasks: 🛠️ ${taskId} "Greeting helper": in implementation, last worked on`);
     expect(context).toContain('last checkpoint: Added greet() in src/greeting/greet.ts. 💡 Next: Write the unit test; Update the README');
     expect(context).toContain('check them against the current code (git status, git diff)');

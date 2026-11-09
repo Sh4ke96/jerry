@@ -7,7 +7,8 @@ description: Analyse a planned change with JERRY's read-only analysts (architect
 
 Read-only analysts look at the repository from separate perspectives and report with `path:line` evidence.
 The plan you then write rests on what they found, not on assumptions. Nothing here changes code: edits before
-the user approves the plan are recorded as deviations.
+the user approves the plan are recorded as deviations. The analysis starts in JERRY (`start_task`) and ends in a
+plan submitted to JERRY, never only in the chat, also for another repository of the workspace than the session's.
 
 ## 1. Take in the task
 

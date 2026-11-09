@@ -7,7 +7,7 @@ import { ImplementationReportView } from '../src/components/ImplementationReport
 import { PlanDocumentView } from '../src/components/PlanDocument';
 import { TaskTile } from '../src/components/TaskTile';
 import { distinctCount, workspaceSummary } from '../src/components/WorkspacesCard';
-import { repositoryNames, taskRoots, taskTouches } from '../src/lib/tasks';
+import { repositoryNames, taskRepositories, taskRoots, taskTouches } from '../src/lib/tasks';
 
 const NOW = new Date().toISOString();
 const API = 'D:\\Work\\api';
@@ -58,12 +58,32 @@ describe('a task across several repositories in the dashboard', () => {
     expect([...names.values()]).toEqual(['Work/api', 'Other/api', 'shop']);
   });
 
-  it('shows "+N" with an accessible name on the task bar, and nothing for one repository', () => {
+  it('names every repository of a task on its bar, its own first, and counts beyond three', () => {
     const multi = mount(TaskTile, { props: { task: task([SHOP, ADMIN]) } });
-    const badge = multi.get('[data-task-repos]');
-    expect(badge.text()).toBe('+2');
-    expect(badge.attributes('aria-label')).toBe('also in shop, admin');
-    expect(mount(TaskTile, { props: { task: task() } }).find('[data-task-repos]').exists()).toBe(false);
+    const repos = multi.get('[data-task-repos]');
+    expect(repos.attributes('data-task-repos')).toBe('2');
+    expect(repos.get('[data-task-repo-names]').text()).toBe('api, shop, admin');
+    expect(repos.attributes('title')).toBe([API, SHOP, ADMIN].join('\n'));
+    expect(repos.find('[role="img"]').exists()).toBe(false);
+
+    const OPS = 'D:\\Work\\ops';
+    const many = mount(TaskTile, { props: { task: task([SHOP, ADMIN, OPS]) } }).get('[data-task-repos]');
+    expect(many.get('[data-task-repo-names]').text()).toBe('api, shop, admin');
+    const more = many.get('[role="img"]');
+    expect(more.text()).toBe('+1');
+    expect(more.attributes('aria-label')).toBe('and ops');
+
+    const single = mount(TaskTile, { props: { task: task() } });
+    expect(single.find('[data-task-repos]').exists()).toBe(false);
+    expect(single.get('[data-task-repo-names]').text()).toBe('api');
+  });
+
+  it('lists every repository with its name, telling equal folder names apart', () => {
+    expect(taskRepositories(task([SHOP]))).toEqual([
+      { repoRoot: API, name: 'api' },
+      { repoRoot: SHOP, name: 'shop' },
+    ]);
+    expect(taskRepositories(task(['D:\\Other\\api'])).map((repository) => repository.name)).toEqual(['Work/api', 'Other/api']);
   });
 
   it('counts a task across repositories of a workspace once, and sums for an older Core', () => {

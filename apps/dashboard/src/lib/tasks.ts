@@ -79,6 +79,13 @@ export function repositoryNames(roots: readonly string[]): Map<string, string> {
   );
 }
 
+/** Every repository of a task with the name it is shown under, its own first. */
+export function taskRepositories(task: Pick<TaskSummary, 'repoRoot' | 'plan'>): { repoRoot: string; name: string }[] {
+  const roots = taskRoots(task);
+  const names = repositoryNames(roots);
+  return roots.map((repoRoot) => ({ repoRoot, name: names.get(repoRoot) ?? projectName(repoRoot) }));
+}
+
 export function tasksOf(repoRoot: string, tasks: TaskSummary[]): TaskSummary[] {
   return tasks.filter((task) => taskTouches(task, repoRoot));
 }

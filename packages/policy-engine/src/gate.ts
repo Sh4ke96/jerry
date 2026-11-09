@@ -223,6 +223,9 @@ function monitorSkill(name: string | null, cwd: string, context: GateContext): G
   return decision('WARN', 'monitor.skill-out-of-state', `${name} is a skill JERRY starts only while a task is in ${assigned}${forKinds}, and ${now}. It proceeds and is recorded as a deviation; use it only when JERRY's next action names it.`, open[0]?.taskId ?? null, repoRoot);
 }
 
+/** The way out of a no-plan warning: the change goes to JERRY as a plan, not only into the chat. */
+const PLAN_FIRST = "Plan the change in JERRY first with /jerry:plan (submit_plan) and wait for the user's approval; a plan only in the chat is not one.";
+
 function monitorWrite(target: string, cwd: string, context: GateContext, agentId: string | null = null): GateDecision {
   const { platform } = context;
   const requested = absolutePath(target, cwd, platform);
@@ -237,7 +240,7 @@ function monitorWrite(target: string, cwd: string, context: GateContext, agentId
   const relative = relativeInside(real, repoRoot, platform) ?? requested;
   const plans = context.approvedPlans(repoRoot);
   if (plans.length === 0) {
-    return decision('WARN', 'monitor.no-approved-plan', `No approved JERRY plan covers ${relative} in ${repoRoot}. The edit proceeds and is recorded as a deviation.`, null, repoRoot);
+    return decision('WARN', 'monitor.no-approved-plan', `No approved JERRY plan covers ${relative} in ${repoRoot}. The edit proceeds and is recorded as a deviation. ${PLAN_FIRST}`, null, repoRoot);
   }
   const covering = plans.find((plan) => matchesAnyGlob(relative, plan.scope, platform === 'win32'));
   if (covering === undefined) {
@@ -280,7 +283,7 @@ function monitorShell(cwd: string, context: GateContext, assessment: { readOnly:
   }
   const plans = context.approvedPlans(repoRoot);
   if (plans.length === 0) {
-    return decision('WARN', 'monitor.no-approved-plan', `No approved JERRY plan for ${repoRoot}, and this command may modify files (${assessment.reason}). It proceeds and is recorded as a deviation.`, null, repoRoot);
+    return decision('WARN', 'monitor.no-approved-plan', `No approved JERRY plan for ${repoRoot}, and this command may modify files (${assessment.reason}). It proceeds and is recorded as a deviation. ${PLAN_FIRST}`, null, repoRoot);
   }
   const warned = writeTargets.map((target) => ({ target, verdict: monitorWrite(target, cwd, context, agentId) })).find((entry) => entry.verdict.verdict === 'WARN');
   if (warned !== undefined) {

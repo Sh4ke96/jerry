@@ -41,12 +41,17 @@ describe('workspace sessions (Core + bridge)', () => {
     expect(context).toContain('Workspace "Sklep"');
     expect(context).toContain(`${shopRepo} (this session): no open task`);
     expect(context).toContain(`${apiRepo}: no open task`);
+    // No plan covers edits: the analysis and the plan go to JERRY, for every repository of the workspace.
+    expect(context).toContain('goes through JERRY before you edit code');
+    expect(context).toContain('here or in another repository of the workspace');
+    expect(context).toContain('never only in the chat');
   });
 
   it('treats a session in their common parent folder as a workspace session', () => {
     const context = contextAt(work, 'ws-parent');
     expect(context).not.toContain('this project is not added');
     expect(context).toContain('This folder holds the repositories of a JERRY workspace');
+    expect(context).toContain('/jerry:plan (submit_plan)');
     expect(context).toContain('Workspace "Sklep"');
   });
 
