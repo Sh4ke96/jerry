@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import http from 'node:http';
-import type { CoreRuntimeInfo } from '@jerry/contracts';
+import type { CoreRuntimeInfo, CoreUserInfo } from '@jerry/contracts';
 import { isCoreRuntimeInfo } from '@jerry/contracts/guards';
+import { isCoreUserInfo } from './guards.js';
 import { jerryPaths } from './jerry-home.js';
 
 export class CoreUnavailableError extends Error {
@@ -21,7 +22,11 @@ export class CoreHttpError extends Error {
   }
 }
 
-/** Reads and validates JERRY_HOME/run/core.json. Throws CoreUnavailableError when missing or malformed. */
+/**
+ * Reads and validates JERRY_HOME/run/core.json. Throws CoreUnavailableError when missing or malformed.
+ * Its token is the agent token (hooks, MCP server, status line); the jerry CLI uses
+ * readCoreRuntimeInfoForUser instead.
+ */
 export function readCoreRuntimeInfo(jerryHome: string): CoreRuntimeInfo {
   const { coreInfoFile } = jerryPaths(jerryHome);
   let raw: string;
@@ -42,6 +47,40 @@ export function readCoreRuntimeInfo(jerryHome: string): CoreRuntimeInfo {
     throw new CoreUnavailableError(`Core runtime file ${coreInfoFile} has an invalid shape`);
   }
   return parsed;
+}
+
+/**
+ * Reads and validates JERRY_HOME/run/core-user.json, the user's token. Null when the file is missing,
+ * unreadable or malformed, or stale: written by another process than the Core that core.json names
+ * (`runtime`, read from core.json when not given). Never throws.
+ */
+export function readCoreUserInfo(jerryHome: string, runtime?: CoreRuntimeInfo): CoreUserInfo | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(jerryPaths(jerryHome).coreUserFile, 'utf8'));
+  } catch {
+    return null;
+  }
+  if (!isCoreUserInfo(parsed)) return null;
+  let current: CoreRuntimeInfo;
+  try {
+    current = runtime ?? readCoreRuntimeInfo(jerryHome);
+  } catch {
+    return null;
+  }
+  return parsed.pid === current.pid ? parsed : null;
+}
+
+/**
+ * Core's runtime info for the user's clients (the jerry CLI): core.json with the user's token from
+ * core-user.json, so requestCore sends it. Without a valid core-user.json (an older Core that does not
+ * write one) the core.json token is kept; such a Core accepts it for everything. Throws
+ * CoreUnavailableError like readCoreRuntimeInfo when core.json is missing or malformed.
+ */
+export function readCoreRuntimeInfoForUser(jerryHome: string): CoreRuntimeInfo {
+  const runtime = readCoreRuntimeInfo(jerryHome);
+  const user = readCoreUserInfo(jerryHome, runtime);
+  return user === null ? runtime : { ...runtime, token: user.token };
 }
 
 export interface CoreRequestOptions {

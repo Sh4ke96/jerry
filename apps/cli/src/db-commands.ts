@@ -2,12 +2,12 @@ import path from 'node:path';
 import readline from 'node:readline/promises';
 import { databaseBackupResultSchema } from '@jerry/contracts';
 import { listBackups, restoreDatabase } from '@jerry/database';
-import { CoreUnavailableError, jerryPaths, readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
+import { CoreUnavailableError, jerryPaths, readCoreRuntimeInfoForUser, requestCore, resolveJerryHome } from '@jerry/platform';
 import { mark } from './emoji.js';
 
 /** Online backup taken by the running Core. */
 export async function backupNow(): Promise<void> {
-  const info = readCoreRuntimeInfo(resolveJerryHome());
+  const info = readCoreRuntimeInfoForUser(resolveJerryHome());
   const result = databaseBackupResultSchema.parse(await requestCore(info, { method: 'POST', path: '/api/v1/database/backups', body: {}, timeoutMs: 30_000 }));
   console.log(mark('pass', `Backup written to ${result.file}`));
 }
@@ -31,7 +31,7 @@ export async function restoreFromBackup(backupFile: string): Promise<void> {
   const home = resolveJerryHome();
   const paths = jerryPaths(home);
   try {
-    const info = readCoreRuntimeInfo(home);
+    const info = readCoreRuntimeInfoForUser(home);
     await requestCore(info, { method: 'GET', path: '/api/v1/status', timeoutMs: 1500 });
     throw new Error('JERRY Core is running. Stop it first with "jerry core stop".');
   } catch (error) {

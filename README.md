@@ -14,7 +14,7 @@ local dashboard. It never changes your code and never touches Git: you do all Gi
 |---|---|
 | 📋 **Plans you approve** | Claude drafts a plan for each change (goal, scope, steps, tests, risks). You approve the exact version. |
 | 👀 **Monitoring, not blocking** | Edits without an approved plan, or outside its scope, go through but are recorded as deviations, and Claude and you are warned. Files a shell command visibly writes (`>`, `tee`, `touch`, `Set-Content`, `Out-File`…) are checked against the scope too. |
-| ⛔ **Hard rules, always enforced** | No Git command that changes anything, no writes inside `.git`, no tampering with JERRY's data or the settings that enable it, no approving its own work. These hold even when Core is down. |
+| ⛔ **Hard rules, always enforced** | No Git command that changes anything, no writes inside `.git`, no tampering with JERRY's data or the settings that enable it, no reading JERRY's tokens, settings, database or logs, no approving its own work. These hold even when Core is down. |
 | 🔎 **Analysis before the plan** | Up to three read-only analysts (architecture, risk, quality) study the repository, as many as the kind of change needs, each on the model you pick; the plan cites their evidence. |
 | 🐞 **Continuous quality** | JERRY checks the lines Claude changed (naming, error handling, test quality, security) and tells Claude about new findings. |
 | 🔍 **Independent review, when you want it** | Three read-only reviewers check every changed file. It is optional by default: you ask for it when you accept a report, or make it required for all projects or one. Fixes need your approval, and the same reviewers check again. |
@@ -456,6 +456,19 @@ scripts/                🛠️ build, release, live Claude Code check, hook ben
 Everything lives in `JERRY_HOME` (on Windows `%LOCALAPPDATA%\JERRY`): the database, logs, backups, project
 profiles and the list of your projects. Nothing is written into your repositories, `.git` included. `jerry data`
 shows what is there.
+
+🔑 **Two tokens.** While Core runs it writes two credentials into `JERRY_HOME\run`:
+
+- `core.json` holds the **agent token**. Claude Code's hooks, JERRY's MCP server and the status line use it. It
+  only reaches what agents need (gate checks, events, plans and reports Claude submits, read-only views).
+- `core-user.json` holds the **user token**. The `jerry` CLI and the desktop app use it. It is required for every
+  decision (approvals, review skip, completing a task anyway, finding decisions, settings, projects, data), for
+  dashboard login links and for stopping Core. The dashboard uses its own session.
+
+Agents are blocked from reading JERRY's data folders and from running the user-only `jerry` commands, and such
+attempts are recorded. A program running under your Windows account could still read these files, so treat this as
+raising the bar, not as a sandbox. After updating JERRY, run `jerry install` (and rebuild the desktop app):
+an older CLI or desktop app cannot make decisions with a newer Core.
 
 ---
 

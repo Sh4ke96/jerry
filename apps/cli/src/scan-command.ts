@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { projectProfileSchema, workspaceGraphSchema, type ProjectProfile } from '@jerry/contracts';
 import { scanRepository } from '@jerry/discovery';
-import { readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
+import { readCoreRuntimeInfoForUser, requestCore, resolveJerryHome } from '@jerry/platform';
 import { mark } from './emoji.js';
 
 /** Nearest ancestor containing ".git" (directory or file), like Core's resolver. */
@@ -21,7 +21,7 @@ function gitRootOf(target: string): string | null {
  * (or always with --refresh). Commands are shown as they run on this machine.
  */
 export async function profileCommand(target: string, options: { refresh: boolean; json: boolean }): Promise<void> {
-  const info = readCoreRuntimeInfo(resolveJerryHome());
+  const info = readCoreRuntimeInfoForUser(resolveJerryHome());
   const params = new URLSearchParams({ path: path.resolve(target), refresh: options.refresh ? 'force' : 'auto' });
   const profile = projectProfileSchema.parse(await requestCore(info, { method: 'GET', path: `/api/v1/repositories/profile?${params.toString()}`, timeoutMs: 60_000 }));
   if (options.json) {
@@ -38,7 +38,7 @@ export async function profileCommand(target: string, options: { refresh: boolean
 
 /** `jerry repo graph`: links between the repositories JERRY has profiles for. */
 export async function graphCommand(options: { json: boolean }): Promise<void> {
-  const info = readCoreRuntimeInfo(resolveJerryHome());
+  const info = readCoreRuntimeInfoForUser(resolveJerryHome());
   const graph = workspaceGraphSchema.parse(await requestCore(info, { method: 'GET', path: '/api/v1/workspace/graph', timeoutMs: 10_000 }));
   if (options.json) {
     console.log(JSON.stringify(graph, null, 2));

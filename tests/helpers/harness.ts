@@ -5,7 +5,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { coreRuntimeInfoSchema, type CoreRuntimeInfo } from '@jerry/contracts';
+import { coreRuntimeInfoSchema, coreUserInfoSchema, type CoreRuntimeInfo } from '@jerry/contracts';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const BRIDGE = path.join(ROOT, 'dist', 'plugin', 'hooks', 'bridge.mjs');
@@ -17,9 +17,24 @@ export function tempDir(prefix: string): string {
 
 export interface RunningCore {
   home: string;
+  /** run/core.json; its token is the agent token. */
   info: CoreRuntimeInfo;
+  /** The agent token (run/core.json): what the hooks, the MCP server and the status line send. */
+  agentToken: string;
+  /** The user's token (run/core-user.json): what the jerry CLI and the desktop app send; api()'s default. */
+  userToken: string;
   process: ChildProcess;
   stop(): Promise<void>;
+}
+
+/** run/core-user.json of the Core with this pid, or null while it is missing or another Core's. */
+export function readUserToken(home: string, pid: number): string | null {
+  try {
+    const user = coreUserInfoSchema.parse(JSON.parse(fs.readFileSync(path.join(home, 'run', 'core-user.json'), 'utf8')));
+    return user.pid === pid ? user.token : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Port 0 keeps test Cores away from the default port, which the user's real Core may hold. */
@@ -55,7 +70,9 @@ export async function addProject(core: RunningCore, repo: string): Promise<void>
 /** Adds a project through the Core that runs for `home` (started by the CLI, not by the harness). */
 export async function addProjectAt(home: string, repo: string): Promise<void> {
   const info = coreRuntimeInfoSchema.parse(JSON.parse(fs.readFileSync(path.join(home, 'run', 'core.json'), 'utf8')));
-  await addProject({ home, info } as RunningCore, repo);
+  const userToken = readUserToken(home, info.pid);
+  if (userToken === null) throw new Error(`No core-user.json of the Core with pid ${info.pid} in ${home}`);
+  await addProject({ home, info, agentToken: info.token, userToken } as RunningCore, repo);
 }
 
 async function launchCore(home: string, extraEnv: Record<string, string>): Promise<RunningCore> {
@@ -72,10 +89,14 @@ async function launchCore(home: string, extraEnv: Record<string, string>): Promi
   while (Date.now() < deadline) {
     if (fs.existsSync(coreFile)) {
       const info = coreRuntimeInfoSchema.parse(JSON.parse(fs.readFileSync(coreFile, 'utf8')));
-      if (info.pid === child.pid) {
+      // core-user.json follows core.json at once; wait for both.
+      const userToken = info.pid === child.pid ? readUserToken(home, info.pid) : null;
+      if (userToken !== null) {
         return {
           home,
           info,
+          agentToken: info.token,
+          userToken,
           process: child,
           stop: () =>
             new Promise<void>((resolve) => {
@@ -94,7 +115,8 @@ async function launchCore(home: string, extraEnv: Record<string, string>): Promi
   throw new Error(`Core did not start: ${output}`);
 }
 
-export async function api(core: RunningCore, method: 'GET' | 'POST', apiPath: string, body?: unknown, token = core.info.token): Promise<{ status: number; body: unknown }> {
+/** A Core API call; the user's token unless a test acts as an agent (pass core.agentToken). */
+export async function api(core: RunningCore, method: 'GET' | 'POST', apiPath: string, body?: unknown, token = core.userToken): Promise<{ status: number; body: unknown }> {
   const payload = body === undefined ? undefined : JSON.stringify(body);
   return new Promise((resolve, reject) => {
     const request = http.request(

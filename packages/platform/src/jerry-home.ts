@@ -25,7 +25,10 @@ export function resolveJerryHome(env: Env = process.env, platform: NodeJS.Platfo
 export interface JerryPaths {
   home: string;
   runDir: string;
+  /** Core's address and the agent token (hooks, MCP server, status line). */
   coreInfoFile: string;
+  /** The user's token (jerry CLI, desktop app): user decisions, login codes, shutdown. */
+  coreUserFile: string;
   coreLockFile: string;
   /** Core's heartbeat (pid, start, last alive); left behind only when Core ended without a clean stop. */
   coreAliveFile: string;
@@ -75,6 +78,7 @@ export function jerryPaths(home: string): JerryPaths {
     home,
     runDir,
     coreInfoFile: path.join(runDir, 'core.json'),
+    coreUserFile: path.join(runDir, 'core-user.json'),
     coreLockFile: path.join(runDir, 'core.lock'),
     coreAliveFile: path.join(runDir, 'core-alive.json'),
     autostartStampFile: path.join(runDir, 'autostart.stamp'),

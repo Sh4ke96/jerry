@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { loginCodeResponseSchema } from '@jerry/contracts';
-import { readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
+import { readCoreRuntimeInfoForUser, requestCore, resolveJerryHome } from '@jerry/platform';
 import { mark } from './emoji.js';
 
 /**
@@ -9,7 +9,7 @@ import { mark } from './emoji.js';
  * the browser.
  */
 export async function openDashboard(options: { printOnly: boolean }): Promise<void> {
-  const info = readCoreRuntimeInfo(resolveJerryHome());
+  const info = readCoreRuntimeInfoForUser(resolveJerryHome());
   const login = loginCodeResponseSchema.parse(await requestCore(info, { method: 'POST', path: '/api/v1/ui/login-codes', body: {}, timeoutMs: 5000 }));
   if (options.printOnly) {
     console.log(login.url);

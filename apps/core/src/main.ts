@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { JERRY_VERSION, type CoreRuntimeInfo, type CoreShutdownRequest } from '@jerry/contracts';
+import { JERRY_VERSION, type CoreRuntimeInfo, type CoreShutdownRequest, type CoreUserInfo } from '@jerry/contracts';
 import type { FastifyInstance } from 'fastify';
 import {
   acquireSingleInstanceLock,
@@ -15,6 +15,7 @@ import {
   resolveJerryHome,
   writeFileAtomic,
 } from '@jerry/platform';
+import { protectedReadRoots } from '@jerry/policy-engine';
 import { buildCoreApp, gateEvaluator } from './app.js';
 import { BrowserSessions } from './auth.js';
 import { describeError, log, logError } from './core-log.js';
@@ -70,7 +71,11 @@ async function main(): Promise<void> {
     releaseLock();
     throw error;
   }
-  const token = randomBytes(32).toString('hex');
+  // Two credentials, new at every start. The agent token goes to core.json (hooks, MCP server, status
+  // line); the user's token to core-user.json (jerry CLI, desktop app). Only the user's token, or a
+  // dashboard session, makes user decisions, mints login codes and stops Core.
+  const agentToken = randomBytes(32).toString('hex');
+  const userToken = randomBytes(32).toString('hex');
   const startedAt = new Date();
   const configuredPort = resolveCorePort();
 
@@ -90,7 +95,8 @@ async function main(): Promise<void> {
       usage,
       // Claude Code's telemetry goes to the configured port; with any free port (0), to the one bound.
       telemetryPort: () => (configuredPort === 0 ? boundPort : configuredPort),
-      token,
+      token: userToken,
+      agentToken,
       store,
       jerryHome: home,
       protectedRoots: guardedRoots,
@@ -104,7 +110,7 @@ async function main(): Promise<void> {
   let app = createApp();
 
   // Background upkeep: events spooled while Core was down, the pre-database gate log, retention.
-  const evaluate = gateEvaluator(store, guardedRoots);
+  const evaluate = gateEvaluator(store, guardedRoots, undefined, undefined, undefined, protectedReadRoots(home));
   const upkeep = async (): Promise<void> => {
     try {
       const imported = await importLegacyGateLog(paths.gateLogFile, store, new Date());
@@ -150,11 +156,13 @@ async function main(): Promise<void> {
     pid: process.pid,
     port,
     configuredPort,
-    token,
+    token: agentToken,
     startedAt: startedAt.toISOString(),
     version: JERRY_VERSION,
   };
   writeFileAtomic(paths.coreInfoFile, `${JSON.stringify(info, null, 2)}\n`);
+  const userInfo: CoreUserInfo = { pid: process.pid, token: userToken };
+  writeFileAtomic(paths.coreUserFile, `${JSON.stringify(userInfo, null, 2)}\n`);
   log(`JERRY Core ${JERRY_VERSION} listening on 127.0.0.1:${port} (pid ${process.pid}, home ${home})`);
 
   // The heartbeat: a clean stop removes it, so one found at the next start marks an unclean end.
@@ -174,6 +182,7 @@ async function main(): Promise<void> {
     if (cleanedUp) return;
     cleanedUp = true;
     removeRuntimeInfoIfOwned(paths.coreInfoFile);
+    removeRuntimeInfoIfOwned(paths.coreUserFile);
     removeHeartbeatIfOwned(paths.coreAliveFile);
     releaseLock();
   }
@@ -223,7 +232,10 @@ async function listen(app: FastifyInstance, port: number): Promise<number> {
   return address.port;
 }
 
-/** Only the owning process removes core.json, so a second Core never deletes the first one's file. */
+/**
+ * Only the owning process removes core.json and core-user.json, so a second Core never deletes the
+ * first one's files.
+ */
 function removeRuntimeInfoIfOwned(coreInfoFile: string): void {
   try {
     const current = JSON.parse(fs.readFileSync(coreInfoFile, 'utf8')) as { pid?: unknown };

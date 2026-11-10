@@ -3,8 +3,14 @@
 //! and which URLs the main window may show.
 //!
 //! It mirrors packages/platform (jerry-home.ts, core-client.ts, core-runtime.ts) and
-//! apps/cli/src/core-commands.ts. The Core token never leaves this module: it is not serialised,
+//! apps/cli/src/core-commands.ts. The Core tokens never leave this module: they are not serialised,
 //! not printed by Debug and not handed to any webview.
+//!
+//! Core has two tokens. run/core.json carries the agent token (hooks, MCP server, status line);
+//! it cannot make the user's decisions, mint dashboard login codes or stop Core. run/core-user.json
+//! carries the user token, and this app acts as the user, so it sends that token whenever the file
+//! belongs to the running Core. An older Core writes no core-user.json and still accepts the
+//! core.json token for everything; the app then falls back to it.
 
 use std::ffi::OsStr;
 use std::fmt;
@@ -65,6 +71,8 @@ pub struct JerryPaths {
     pub home: PathBuf,
     pub run_dir: PathBuf,
     pub core_info_file: PathBuf,
+    /// The user token of the running Core: `{"pid": <number>, "token": "<64 hex>"}`.
+    pub core_user_file: PathBuf,
     /// Present after "jerry core stop" (or Stop Core here): hooks do not restart Core.
     pub autostart_disabled_file: PathBuf,
     pub runtime_core_file: PathBuf,
@@ -79,6 +87,7 @@ impl JerryPaths {
         Self {
             home: home.to_path_buf(),
             core_info_file: run_dir.join("core.json"),
+            core_user_file: run_dir.join("core-user.json"),
             autostart_disabled_file: run_dir.join("autostart.disabled"),
             run_dir,
             runtime_core_file: home.join("runtime").join("core").join("core.mjs"),
@@ -109,13 +118,17 @@ pub fn assert_home_outside_repositories(home: &Path) -> Result<(), String> {
 // ---------------------------------------------------------------------------------------------
 // run/core.json
 
-/// JERRY_HOME/run/core.json, validated like `isCoreRuntimeInfo` in packages/contracts.
+/// JERRY_HOME/run/core.json, validated like `isCoreRuntimeInfo` in packages/contracts, together
+/// with the user token from run/core-user.json when that file belongs to the same Core.
 #[derive(Clone, PartialEq, Eq)]
 pub struct CoreInfo {
     pub pid: u64,
     pub port: u16,
     pub configured_port: Option<u16>,
+    /// The agent token from core.json.
     token: String,
+    /// The user token from core-user.json; `None` for an older Core that writes no such file.
+    user_token: Option<String>,
     pub started_at: String,
     pub version: String,
 }
@@ -127,6 +140,7 @@ impl fmt::Debug for CoreInfo {
             .field("port", &self.port)
             .field("configured_port", &self.configured_port)
             .field("token", &"<redacted>")
+            .field("user_token", &self.user_token.as_ref().map(|_| "<redacted>"))
             .field("started_at", &self.started_at)
             .field("version", &self.version)
             .finish()
@@ -203,23 +217,87 @@ impl CoreInfo {
         let token = object.get("token")?.as_str().filter(|token| is_token(token))?.to_owned();
         let started_at = object.get("startedAt")?.as_str().filter(|value| is_iso_date_time(value))?.to_owned();
         let version = object.get("version")?.as_str().filter(|value| !value.is_empty())?.to_owned();
-        Some(Self { pid, port, configured_port, token, started_at, version })
+        Some(Self { pid, port, configured_port, token, user_token: None, started_at, version })
     }
 
     /// The base URL of Core: always loopback, never anything else.
     pub fn origin(&self) -> String {
         format!("http://127.0.0.1:{}", self.port)
     }
+
+    /// Whether the user token of this Core is known (core-user.json was read and belongs to it).
+    pub fn has_user_token(&self) -> bool {
+        self.user_token.is_some()
+    }
+
+    /// Attaches the user token from a validated core-user.json; ignored when the file names another
+    /// Core process (a stale file left behind by a Core that did not stop cleanly).
+    fn with_user_file(mut self, user: &CoreUserFile) -> Self {
+        if user.pid == self.pid {
+            self.user_token = Some(user.token.clone());
+        }
+        self
+    }
+
+    /// The token requests carry: the user token when known, else core.json's token (older Cores).
+    fn request_token(&self) -> &str {
+        self.user_token.as_deref().unwrap_or(&self.token)
+    }
 }
 
-/// Reads and validates JERRY_HOME/run/core.json (`readCoreRuntimeInfo` in packages/platform).
+/// JERRY_HOME/run/core-user.json: the pid of the Core that wrote it and its user token.
+#[derive(Clone, PartialEq, Eq)]
+struct CoreUserFile {
+    pid: u64,
+    token: String,
+}
+
+impl CoreUserFile {
+    /// Validates a parsed core-user.json like core.json's fields: pid an integer > 0, token 64
+    /// lowercase hex characters. `None` when its shape is invalid.
+    fn from_json(value: &Value) -> Option<Self> {
+        let object = value.as_object()?;
+        let pid = integer_in(object.get("pid"), 1, 9_007_199_254_740_991)?;
+        let token = object.get("token")?.as_str().filter(|token| is_token(token))?.to_owned();
+        Some(Self { pid, token })
+    }
+}
+
+/// Reads JERRY_HOME/run/core-user.json. `None` when it is missing (an older Core), unreadable or
+/// invalid: the app then uses core.json's token, which an older Core accepts and a newer one
+/// refuses for user actions with HTTP 403.
+fn read_core_user_file(paths: &JerryPaths) -> Option<CoreUserFile> {
+    let raw = fs::read_to_string(&paths.core_user_file).ok()?;
+    CoreUserFile::from_json(&serde_json::from_str(&raw).ok()?)
+}
+
+/// Reads and validates JERRY_HOME/run/core.json (`readCoreRuntimeInfo` in packages/platform), and
+/// the user token from run/core-user.json when it belongs to the same Core process.
 pub fn read_core_info(home: &Path) -> Result<CoreInfo, CoreError> {
-    let file = JerryPaths::new(home).core_info_file;
-    let raw = fs::read_to_string(&file)
+    let paths = JerryPaths::new(home);
+    let file = &paths.core_info_file;
+    let raw = fs::read_to_string(file)
         .map_err(|_| CoreError::Unavailable(format!("Core runtime file not found at {} (is Core running?)", file.display())))?;
     let parsed: Value = serde_json::from_str(&raw)
         .map_err(|_| CoreError::Unavailable(format!("Core runtime file {} is not valid JSON", file.display())))?;
-    CoreInfo::from_json(&parsed).ok_or_else(|| CoreError::Unavailable(format!("Core runtime file {} has an invalid shape", file.display())))
+    let info = CoreInfo::from_json(&parsed)
+        .ok_or_else(|| CoreError::Unavailable(format!("Core runtime file {} has an invalid shape", file.display())))?;
+    Ok(match read_core_user_file(&paths) {
+        Some(user) => info.with_user_file(&user),
+        None => info,
+    })
+}
+
+/// What the app says when Core refuses a user action (login link, shutdown) with HTTP 403: it
+/// holds only the agent token, so core-user.json is missing, stale or from another Core.
+pub const USER_TOKEN_REQUIRED: &str = "JERRY Core refused this action: the desktop app needs Core's user token (run/core-user.json), which it could not read for the running Core. Restart Core, or update JERRY with \"jerry install\" and restart Core.";
+
+/// A 403 on a user action becomes [`USER_TOKEN_REQUIRED`]; every other result stays as it is.
+fn explain_user_action(result: Result<Value, CoreError>) -> Result<Value, CoreError> {
+    match result {
+        Err(CoreError::Http(403, _)) => Err(CoreError::Http(403, USER_TOKEN_REQUIRED.to_owned())),
+        other => other,
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -271,7 +349,8 @@ impl UsageBrief {
 }
 
 /// JSON over loopback with the bearer token. No proxy (the token would reach it), no redirects,
-/// short timeouts, and the host is always 127.0.0.1.
+/// short timeouts, and the host is always 127.0.0.1. Every request carries the user token when
+/// it is known (the app acts as the user), else core.json's token for an older Core.
 pub struct CoreClient {
     agent: ureq::Agent,
     origin: String,
@@ -289,7 +368,7 @@ impl CoreClient {
         Self {
             agent: ureq::Agent::new_with_config(config),
             origin: info.origin(),
-            authorization: format!("Bearer {}", info.token),
+            authorization: format!("Bearer {}", info.request_token()),
         }
     }
 
@@ -386,13 +465,14 @@ impl CoreClient {
 
     /// A one-time login link that lands on `route` ("#/tasks/JRY-0001") after signing in. Core
     /// validates the route again; one it does not accept, or a Core without landing routes, lands
-    /// on the dashboard's root. An invalid route is not sent at all.
+    /// on the dashboard's root. An invalid route is not sent at all. A user action: Core refuses it
+    /// with 403 without the user token.
     pub fn login_url_to(&self, route: Option<&str>) -> Result<String, CoreError> {
         let body = match route.filter(|route| is_dashboard_route(route)) {
             Some(route) => serde_json::json!({ "next": route }).to_string(),
             None => "{}".to_owned(),
         };
-        let body = self.post_json("/api/v1/ui/login-codes", &body)?;
+        let body = explain_user_action(self.post_json("/api/v1/ui/login-codes", &body))?;
         let url = body.get("url").and_then(Value::as_str).unwrap_or("");
         if !url.starts_with(&format!("{}/", self.origin)) {
             return Err(CoreError::Unavailable("JERRY Core returned a login link to another address".to_owned()));
@@ -401,8 +481,9 @@ impl CoreClient {
     }
 
     /// POST /api/v1/shutdown, naming the desktop app as the requester so core.log says who stopped Core.
+    /// A user action like the login link: Core refuses it with 403 without the user token.
     pub fn shutdown(&self) -> Result<(), CoreError> {
-        self.post_json("/api/v1/shutdown", SHUTDOWN_BODY).map(|_| ())
+        explain_user_action(self.post_json("/api/v1/shutdown", SHUTDOWN_BODY)).map(|_| ())
     }
 }
 
@@ -712,6 +793,83 @@ mod tests {
         fs::write(home.join("run").join("core.json"), value.to_string()).unwrap();
     }
 
+    /// A user token other than core.json's, so the tests can tell which one a request carried.
+    fn fake_user_token() -> String {
+        "cd".repeat(32)
+    }
+
+    fn core_user_json(pid: u64) -> Value {
+        serde_json::json!({ "pid": pid, "token": fake_user_token() })
+    }
+
+    fn write_core_user_json(home: &Path, content: &str) {
+        fs::create_dir_all(home.join("run")).unwrap();
+        fs::write(home.join("run").join("core-user.json"), content).unwrap();
+    }
+
+    #[test]
+    fn the_user_token_is_read_from_core_user_json_of_the_same_core() {
+        let dir = tempfile::tempdir().unwrap();
+        write_core_json(dir.path(), &core_json(51000));
+        assert!(!read_core_info(dir.path()).unwrap().has_user_token(), "an older Core writes no core-user.json");
+
+        write_core_user_json(dir.path(), &core_user_json(4242).to_string());
+        let info = read_core_info(dir.path()).unwrap();
+        assert!(info.has_user_token());
+        assert_eq!(info.request_token(), fake_user_token());
+        let debug = format!("{info:?}");
+        assert!(!debug.contains(&fake_user_token()) && !debug.contains(&fake_token()), "{debug}");
+    }
+
+    #[test]
+    fn a_stale_core_user_json_of_another_core_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        write_core_json(dir.path(), &core_json(51000));
+        write_core_user_json(dir.path(), &core_user_json(4243).to_string());
+        let info = read_core_info(dir.path()).unwrap();
+        assert!(!info.has_user_token());
+        assert_eq!(info.request_token(), fake_token(), "core.json's token is the fallback");
+    }
+
+    #[test]
+    fn invalid_core_user_json_files_are_rejected() {
+        let mutations: Vec<(&str, Value)> = vec![
+            ("token", Value::from("CD".repeat(32))),
+            ("token", Value::from("cd".repeat(31))),
+            ("token", Value::from("cd".repeat(33))),
+            ("token", Value::from("zz".repeat(32))),
+            ("token", Value::from(42)),
+            ("token", Value::Null),
+            ("pid", Value::from(0)),
+            ("pid", Value::from(-1)),
+            ("pid", Value::from(4242.5)),
+            ("pid", Value::from("4242")),
+            ("pid", Value::Null),
+        ];
+        for (field, value) in mutations {
+            let mut json = core_user_json(4242);
+            json[field] = value.clone();
+            assert!(CoreUserFile::from_json(&json).is_none(), "{field} = {value} should be rejected");
+        }
+        for field in ["pid", "token"] {
+            let mut missing = core_user_json(4242);
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(CoreUserFile::from_json(&missing).is_none(), "missing {field} should be rejected");
+        }
+        assert!(CoreUserFile::from_json(&Value::from("not an object")).is_none());
+        assert!(CoreUserFile::from_json(&serde_json::json!({ "pid": 4242.0, "token": fake_user_token() })).is_some());
+
+        // An unreadable file leaves core.json usable with its own token.
+        let dir = tempfile::tempdir().unwrap();
+        write_core_json(dir.path(), &core_json(51000));
+        for content in ["{not json", "", "[]", &serde_json::json!({ "pid": 4242, "token": "AB".repeat(32) }).to_string()] {
+            write_core_user_json(dir.path(), content);
+            let info = read_core_info(dir.path()).unwrap();
+            assert!(!info.has_user_token(), "{content:?} should be rejected");
+            assert_eq!(info.request_token(), fake_token());
+        }
+    }
+
     #[cfg(windows)]
     #[test]
     fn jerry_home_honours_a_non_blank_override() {
@@ -853,8 +1011,66 @@ mod tests {
     }
 
     fn assert_authorized(seen: &Seen, port: u16) {
-        assert_eq!(seen.headers.get("authorization"), Some(&format!("Bearer {}", fake_token())));
+        assert_authorized_with(seen, port, &fake_token());
+    }
+
+    fn assert_authorized_with(seen: &Seen, port: u16, token: &str) {
+        assert_eq!(seen.headers.get("authorization"), Some(&format!("Bearer {token}")));
         assert_eq!(seen.headers.get("host"), Some(&format!("127.0.0.1:{port}")));
+    }
+
+    /// The CoreInfo the app builds from a home with core.json and, optionally, core-user.json.
+    fn info_from_home(home: &Path, port: u16, user_pid: Option<u64>) -> CoreInfo {
+        write_core_json(home, &core_json(port));
+        if let Some(pid) = user_pid {
+            write_core_user_json(home, &core_user_json(pid).to_string());
+        }
+        read_core_info(home).unwrap()
+    }
+
+    #[test]
+    fn login_codes_and_shutdown_send_the_user_token_when_core_user_json_exists() {
+        let login = |port: u16| (200, serde_json::json!({ "url": format!("http://127.0.0.1:{port}/ui/login?code=x"), "expiresAt": "2026-11-06T22:14:15.083Z" }).to_string());
+        let (port, seen) = mock_core(|port| vec![login(port), (202, r#"{"stopping":true}"#.to_owned()), (200, "[]".to_owned())]);
+        let home = tempfile::tempdir().unwrap();
+        let client = CoreClient::new(&info_from_home(home.path(), port, Some(4242)), REQUEST_TIMEOUT);
+        client.login_url().unwrap();
+        assert_authorized_with(&seen.recv().unwrap(), port, &fake_user_token());
+        client.shutdown().unwrap();
+        assert_authorized_with(&seen.recv().unwrap(), port, &fake_user_token());
+        // Read-only calls prefer the user token too.
+        client.tasks().unwrap();
+        assert_authorized_with(&seen.recv().unwrap(), port, &fake_user_token());
+    }
+
+    #[test]
+    fn without_a_valid_core_user_json_the_core_json_token_is_sent() {
+        let login = |port: u16| (200, serde_json::json!({ "url": format!("http://127.0.0.1:{port}/ui/login?code=x"), "expiresAt": "2026-11-06T22:14:15.083Z" }).to_string());
+        let (port, seen) = mock_core(|port| vec![login(port), (202, r#"{"stopping":true}"#.to_owned()), login(port)]);
+        // An older Core: no core-user.json at all.
+        let old = tempfile::tempdir().unwrap();
+        let client = CoreClient::new(&info_from_home(old.path(), port, None), REQUEST_TIMEOUT);
+        client.login_url().unwrap();
+        assert_authorized(&seen.recv().unwrap(), port);
+        client.shutdown().unwrap();
+        assert_authorized(&seen.recv().unwrap(), port);
+        // A stale core-user.json of another Core process is not used.
+        let stale = tempfile::tempdir().unwrap();
+        CoreClient::new(&info_from_home(stale.path(), port, Some(4243)), REQUEST_TIMEOUT).login_url().unwrap();
+        assert_authorized(&seen.recv().unwrap(), port);
+    }
+
+    #[test]
+    fn a_refused_user_action_says_the_app_needs_the_user_token() {
+        let refused = || (403, serde_json::json!({ "error": "This action needs the user token" }).to_string());
+        let (port, _seen) = mock_core(|_| vec![refused(), refused(), refused()]);
+        let client = CoreClient::new(&info_for(port), REQUEST_TIMEOUT);
+        let expected = Err(CoreError::Http(403, USER_TOKEN_REQUIRED.to_owned()));
+        assert_eq!(client.login_url(), expected.clone().map(|_: Value| String::new()));
+        assert_eq!(client.shutdown(), expected.map(|_: Value| ()));
+        assert!(USER_TOKEN_REQUIRED.contains("restart Core") && USER_TOKEN_REQUIRED.contains("jerry install"));
+        // Read-only calls keep Core's own message.
+        assert_eq!(client.status(), Err(CoreError::Http(403, "This action needs the user token".into())));
     }
 
     /// A port nothing listens on.
@@ -1108,6 +1324,21 @@ mod tests {
         assert_eq!((request.method.as_str(), request.path.as_str()), ("POST", "/api/v1/shutdown"));
         assert_authorized(&request, port);
         assert!(JerryPaths::new(home.path()).autostart_disabled_file.exists());
+    }
+
+    #[test]
+    fn stop_core_sends_the_user_token_and_explains_a_refusal() {
+        let home = temp_home();
+        let (port, seen) = mock_core(|_| vec![(202, r#"{"stopping":true}"#.to_owned()), (403, r#"{"error":"Forbidden"}"#.to_owned())]);
+        write_core_json(home.path(), &core_json(port));
+        write_core_user_json(home.path(), &core_user_json(4242).to_string());
+        assert_eq!(stop_core(home.path(), "2026-11-06T22:13:15.083Z", Duration::ZERO).unwrap(), StopOutcome::Stopped);
+        assert_authorized_with(&seen.recv().unwrap(), port, &fake_user_token());
+
+        fs::remove_file(JerryPaths::new(home.path()).core_user_file).unwrap();
+        let error = stop_core(home.path(), "2026-11-06T22:13:15.083Z", Duration::ZERO).unwrap_err();
+        assert!(error.contains(USER_TOKEN_REQUIRED), "{error}");
+        assert_authorized(&seen.recv().unwrap(), port);
     }
 
     #[test]

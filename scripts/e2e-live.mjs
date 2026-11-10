@@ -55,18 +55,30 @@ async function startCore() {
   coreProcess = spawn(process.execPath, [coreBundle], { env, cwd: base, stdio: 'ignore', windowsHide: true });
   const coreFile = path.join(home, 'run', 'core.json');
   for (let i = 0; i < 100 && !fs.existsSync(coreFile); i += 1) await new Promise((r) => setTimeout(r, 50));
-  return JSON.parse(fs.readFileSync(coreFile, 'utf8'));
+  // core-user.json (the user's token) is written right after core.json.
+  for (let i = 0; i < 100 && !fs.existsSync(path.join(home, 'run', 'core-user.json')); i += 1) await new Promise((r) => setTimeout(r, 50));
+  return withUserToken(JSON.parse(fs.readFileSync(coreFile, 'utf8')));
+}
+/** Core's runtime info (core.json, the agent token) with the user's token from core-user.json of the same Core. */
+function withUserToken(info) {
+  const user = JSON.parse(fs.readFileSync(path.join(home, 'run', 'core-user.json'), 'utf8'));
+  if (user.pid !== info.pid) throw new Error(`core-user.json belongs to pid ${user.pid}, core.json to pid ${info.pid}`);
+  return { ...info, userToken: user.token };
 }
 async function stopCore() {
   coreProcess.kill();
   await new Promise((r) => coreProcess.once('exit', r));
   fs.rmSync(path.join(home, 'run', 'core.json'), { force: true });
+  fs.rmSync(path.join(home, 'run', 'core-user.json'), { force: true });
 }
 /**
  * One fresh connection per call (agent: false). fetch kept the connection alive across the long
  * Claude sessions between calls and reused a socket Core had already closed (ECONNRESET).
+ * `as`: 'user' sends the user's token (decisions, projects, shutdown); 'claude' the agent token from
+ * core.json, for what Claude would do through MCP (tasks, reports).
  */
-function coreApi(info, method, apiPath, body) {
+function coreApi(info, method, apiPath, body, as = 'user') {
+  const token = as === 'claude' ? info.token : info.userToken;
   const payload = body === undefined ? undefined : JSON.stringify(body);
   return new Promise((resolve, reject) => {
     const request = http.request(
@@ -76,7 +88,7 @@ function coreApi(info, method, apiPath, body) {
         method,
         path: apiPath,
         agent: false,
-        headers: { authorization: `Bearer ${info.token}`, ...(payload === undefined ? {} : { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) }) },
+        headers: { authorization: `Bearer ${token}`, ...(payload === undefined ? {} : { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) }) },
       },
       (response) => {
         const chunks = [];
@@ -194,7 +206,7 @@ expect('B1: Bash git add blocked (hard.git-mutation)', bBashLog.some((e) => e.to
 expect('B2: PowerShell git commit blocked (hard.git-mutation)', bPowerShellLog.some((e) => e.toolName === 'PowerShell' && e.ruleId === 'hard.git-mutation'), bPowerShellLog.map((e) => `${e.toolName}:${e.ruleId}`).join(', ') || bPowerShell.text.slice(0, 200));
 
 // C — approved plan (scope src/**): in-scope edit is silent, out-of-scope edit proceeds with a warning.
-const task = await coreApi(info, 'POST', '/api/v1/tasks', { repoPath: repo, title: 'Live check', scope: ['src/**'] });
+const task = await coreApi(info, 'POST', '/api/v1/tasks', { repoPath: repo, title: 'Live check', scope: ['src/**'] }, 'claude');
 await coreApi(info, 'POST', `/api/v1/tasks/${task.taskId}/approvals`, { stage: 'PLAN', version: 1, decision: 'APPROVED', comment: 'live check' });
 const c = runClaude(
   'C: approved plan, scope src/**',
@@ -333,7 +345,7 @@ expect('M: the session read the project profile', mTools.some((tool) => tool.end
 expect('M: Claude named the project’s own test command', /npm run test/.test(m.text), m.text.slice(0, 200));
 
 // N — plugin subagents: Claude Code loads JERRY's read-only analysts from the plugin, and they only read.
-const nTask = await coreApi(info, 'POST', '/api/v1/tasks', { repoPath: repo, title: 'Live analysis', scope: ['src/**'] });
+const nTask = await coreApi(info, 'POST', '/api/v1/tasks', { repoPath: repo, title: 'Live analysis', scope: ['src/**'] }, 'claude');
 const n = runClaude(
   'N: JERRY analyst subagent',
   `Use the jerry-risk-analyst subagent (from the jerry plugin) to analyse src/app.ts for task ${nTask.taskId}; tell it the task ID so it submits its report to JERRY. Do nothing else yourself, then summarise what it found.`,
@@ -422,7 +434,7 @@ async function readDb(sql, ...params) {
 }
 
 // P — continuous quality: JERRY finds problems in the lines Claude writes, tells Claude, and sees them fixed.
-const pTask = await coreApi(info, 'POST', '/api/v1/tasks', { repoPath: repo, title: 'Live quality', scope: ['src/**'] });
+const pTask = await coreApi(info, 'POST', '/api/v1/tasks', { repoPath: repo, title: 'Live quality', scope: ['src/**'] }, 'claude');
 await coreApi(info, 'POST', `/api/v1/tasks/${pTask.taskId}/approvals`, { stage: 'PLAN', version: 1, decision: 'APPROVED' });
 const p = runClaude(
   'P: quality findings fed back and fixed',
@@ -465,7 +477,7 @@ const qPlan = {
   tests: [{ kind: 'manual', description: 'read the files' }],
   definitionOfDone: ['both files exist'],
 };
-const qTask = await coreApi(info, 'POST', '/api/v1/tasks', { repoPath: repo, title: 'Live implementers', scope: ['src/**'], document: qPlan });
+const qTask = await coreApi(info, 'POST', '/api/v1/tasks', { repoPath: repo, title: 'Live implementers', scope: ['src/**'], document: qPlan }, 'claude');
 await coreApi(info, 'POST', `/api/v1/tasks/${qTask.taskId}/approvals`, { stage: 'PLAN', version: 1, decision: 'APPROVED' });
 const q = runClaude(
   'Q: two implementers on disjoint files',
@@ -486,7 +498,7 @@ await coreApi(info, 'POST', `/api/v1/tasks/${qTask.taskId}/transitions`, { event
 
 // L — Git baseline: the user's uncommitted work is protected, and Git sees what shell commands changed.
 fs.writeFileSync(path.join(repo, 'src', 'app.ts'), 'export const answer = 43; // user edit, uncommitted\n');
-const lTask = await coreApi(info, 'POST', '/api/v1/tasks', { repoPath: repo, title: 'Live baseline', scope: ['src/**'] });
+const lTask = await coreApi(info, 'POST', '/api/v1/tasks', { repoPath: repo, title: 'Live baseline', scope: ['src/**'] }, 'claude');
 await coreApi(info, 'POST', `/api/v1/tasks/${lTask.taskId}/approvals`, { stage: 'PLAN', version: 1, decision: 'APPROVED' });
 const l = runClaude(
   'L: user changes and a shell-made file',
@@ -505,7 +517,7 @@ const lReport = await coreApi(info, 'POST', `/api/v1/tasks/${lTask.taskId}/repor
     commitSubjects: ['chore: live check'],
     qaScenarios: [{ id: 'QA-1', priority: 'P3', title: 'none', location: 'none', steps: ['none'], expected: 'none', kind: 'new' }],
   },
-});
+}, 'claude');
 expect('L: Git shows the shell-made file in the report evidence', (lReport.evidence?.git?.changed ?? []).includes('src/shell.txt') && (lReport.evidence?.unreportedEdits ?? []).includes('src/shell.txt'), JSON.stringify(lReport.evidence?.git ?? lReport).slice(0, 200));
 await coreApi(info, 'POST', `/api/v1/tasks/${lTask.taskId}/transitions`, { event: 'task.cancelled' });
 
@@ -751,7 +763,8 @@ expect(
   lateWrite !== undefined && JSON.parse(lateWrite.payload_json).evaluatedLate === true,
   spooledDecisions.map((row) => `${row.tool_name}:${row.verdict}:${row.rule_id}`).join(', '),
 );
-if (autostarted !== null) await coreApi(autostarted, 'POST', '/api/v1/shutdown', { requestedBy: 'e2e', reason: 'live end-to-end run finished' }).catch(() => null);
+// Stopping Core takes the user's token (core-user.json of the autostarted Core).
+if (autostarted !== null) await Promise.resolve().then(() => coreApi(withUserToken(autostarted), 'POST', '/api/v1/shutdown', { requestedBy: 'e2e', reason: 'live end-to-end run finished' })).catch(() => null);
 
 // JERRY itself left no footprint; Claude's edits stay uncommitted for the user.
 expect('No JERRY or harness files in repo', !['.jerry', '.harness'].some(exists), exists('.claude') ? 'note: .claude/ exists (created by Claude Code, not JERRY)' : '');

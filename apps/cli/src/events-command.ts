@@ -1,5 +1,5 @@
 import { storedEventSchema, type StoredEvent } from '@jerry/contracts';
-import { readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
+import { readCoreRuntimeInfoForUser, requestCore, resolveJerryHome } from '@jerry/platform';
 import { z } from 'zod';
 import { mark, resultMark } from './emoji.js';
 
@@ -8,7 +8,7 @@ export async function showEvents(options: { sessionId?: string; verdict?: string
   const params = new URLSearchParams({ limit: String(options.limit) });
   if (options.sessionId !== undefined) params.set('sessionId', options.sessionId);
   if (options.verdict !== undefined) params.set('verdict', options.verdict.toUpperCase());
-  const info = readCoreRuntimeInfo(resolveJerryHome());
+  const info = readCoreRuntimeInfoForUser(resolveJerryHome());
   const events = z.array(storedEventSchema).parse(await requestCore(info, { method: 'GET', path: `/api/v1/events?${params.toString()}`, timeoutMs: 5000 }));
   if (events.length === 0) {
     console.log(mark('info', 'No events.'));

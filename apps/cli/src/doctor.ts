@@ -15,7 +15,7 @@ import {
   countSpooled,
   findClaudeBinary,
   jerryPaths,
-  readCoreRuntimeInfo,
+  readCoreRuntimeInfoForUser,
   requestCore,
   resolveClaudeConfigDir,
   resolveCorePort,
@@ -134,7 +134,7 @@ export async function doctor(): Promise<void> {
   section = 'Data';
   if (coreHealthy) {
     try {
-      const health = (await requestCore(readCoreRuntimeInfo(home), { method: 'GET', path: '/api/v1/database/health', timeoutMs: 15_000 })) as { integrity: string; migration: string | null; file: string };
+      const health = (await requestCore(readCoreRuntimeInfoForUser(home), { method: 'GET', path: '/api/v1/database/health', timeoutMs: 15_000 })) as { integrity: string; migration: string | null; file: string };
       add('database', health.integrity === 'ok' && health.migration !== null ? 'PASS' : 'FAIL', `${health.file}, schema ${health.migration ?? 'not migrated'}, integrity ${health.integrity}`);
     } catch (error) {
       if (error instanceof CoreHttpError && error.statusCode === 404) {

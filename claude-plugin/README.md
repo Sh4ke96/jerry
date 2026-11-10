@@ -9,8 +9,10 @@ JERRY monitors; it does not stop Claude's work. An edit without an approved plan
 its scope, proceeds, is recorded as a deviation, and both Claude and the user are warned.
 JERRY blocks only its hard rules: any Git command that changes repository state (the user runs
 all Git operations), writes inside `.git`, and attempts to modify JERRY data or the Claude Code
-settings that keep JERRY enabled. The hard rules are checked locally, so they hold even when
-JERRY Core is not running.
+settings that keep JERRY enabled. Agents may not read JERRY's own data either (its run, config,
+state, database, backups, spool and logs folders; the plugin files stay readable), nor run the
+user-only `jerry` commands. The hard rules are checked locally, so they hold even when JERRY Core
+is not running.
 
 The plugin stores nothing in your projects and JERRY never modifies a repository. All JERRY
 data lives in `%LOCALAPPDATA%\JERRY` (or `JERRY_HOME`). Install, update and remove it with the

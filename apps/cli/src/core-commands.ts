@@ -5,7 +5,7 @@ import {
   assertJerryHomeOutsideRepositories,
   CoreUnavailableError,
   jerryPaths,
-  readCoreRuntimeInfo,
+  readCoreRuntimeInfoForUser,
   requestCore,
   resolveJerryHome,
   spawnDetachedCore,
@@ -16,7 +16,7 @@ import { mark } from './emoji.js';
 const SIBLING_CORE = fileURLToPath(new URL('../core/core.mjs', import.meta.url));
 
 export async function getCoreStatus(home: string = resolveJerryHome()): Promise<{ info: CoreRuntimeInfo; status: CoreStatus }> {
-  const info = readCoreRuntimeInfo(home);
+  const info = readCoreRuntimeInfoForUser(home);
   const status = coreStatusSchema.parse(await requestCore(info, { method: 'GET', path: '/api/v1/status', timeoutMs: 2000 }));
   return { info, status };
 }
@@ -66,7 +66,7 @@ export async function stopCore(reason = 'jerry core stop'): Promise<void> {
 
   let info: CoreRuntimeInfo;
   try {
-    info = readCoreRuntimeInfo(home);
+    info = readCoreRuntimeInfoForUser(home);
   } catch (error) {
     if (error instanceof CoreUnavailableError) {
       console.log(mark('paused', 'JERRY Core is not running. Automatic start is disabled until "jerry core start".'));

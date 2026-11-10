@@ -31,6 +31,12 @@ const input = JSON.stringify({
   tool_use_id: 'toolu_bench',
 });
 
+// Read tools are judged by the bridge alone: a permitted read never reaches Core.
+const readInput = (filePath) =>
+  JSON.stringify({ session_id: 'bench', cwd: repo, hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path: filePath }, tool_use_id: 'toolu_bench_read' });
+const readPass = readInput(path.join(repo, 'src', 'a.ts'));
+const readDeny = readInput(path.join(home, 'run', 'core.json'));
+
 const statusInput = JSON.stringify({
   session_id: 'bench',
   cwd: repo,
@@ -44,6 +50,8 @@ const variants = {
   'statusline: outside projects': () => spawnSync(process.execPath, [statusline], { input: statusInput, env, encoding: 'utf8', windowsHide: true }),
   'statusline: monitored, posts to Core': () => spawnSync(process.execPath, [statusline], { input: statusInput, env: monitoredEnv, encoding: 'utf8', windowsHide: true }),
   'exec form: node bridge.mjs': () => spawnSync(process.execPath, [bridge, 'pre-tool-use'], { input, env, encoding: 'utf8', windowsHide: true }),
+  'exec form: Read, passes': () => spawnSync(process.execPath, [bridge, 'pre-tool-use'], { input: readPass, env, encoding: 'utf8', windowsHide: true }),
+  'exec form: Read of run/core.json, blocked': () => spawnSync(process.execPath, [bridge, 'pre-tool-use'], { input: readDeny, env, encoding: 'utf8', windowsHide: true }),
   'shell powershell 5.1: node bridge.mjs': () =>
     spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', `$input | & node '${bridge}' pre-tool-use; exit $LASTEXITCODE`], {
       input,

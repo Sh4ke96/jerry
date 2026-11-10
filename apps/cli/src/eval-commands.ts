@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { JERRY_VERSION, evalCalibrationSchema, evalRunDetailSchema, evalRunSummarySchema, evalStatusSchema, skillsListSchema, type EvalRunDetail } from '@jerry/contracts';
 import { jerryFingerprint, loadCases, repeatsOf, runSuite, totalTokens, variantsOf, type AttemptResult, type CaseResult, type EvalCase } from '@jerry/evals';
-import { findClaudeBinary, readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
+import { findClaudeBinary, readCoreRuntimeInfoForUser, requestCore, resolveJerryHome } from '@jerry/platform';
 import { z } from 'zod';
 import { EMOJI, flag, mark, resultMark, type EmojiName } from './emoji.js';
 
@@ -23,7 +23,7 @@ const PLUGIN_DIR = path.resolve(HERE, '..', 'plugin');
 const BUNDLED_CASES = path.resolve(HERE, '..', 'evals', 'cases');
 
 async function callCore(method: 'GET' | 'POST', apiPath: string, body?: unknown): Promise<unknown> {
-  const info = readCoreRuntimeInfo(resolveJerryHome());
+  const info = readCoreRuntimeInfoForUser(resolveJerryHome());
   return requestCore(info, { method, path: apiPath, timeoutMs: 30_000, ...(body === undefined ? {} : { body }) });
 }
 

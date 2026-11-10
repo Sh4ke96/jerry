@@ -102,6 +102,42 @@ describe('JERRY guard (bundled bridge + Core)', () => {
     expectPassed(bridge('mcp__github__get_file_contents', { owner: 'o', repo: 'r', path: 'README.md' }));
   });
 
+  it('sends the read tools to the bridge, which blocks if it fails', () => {
+    const hooks = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..', '..', 'claude-plugin', 'hooks', 'hooks.json'), 'utf8')) as {
+      hooks: { PreToolUse: Array<{ matcher: string; hooks: Array<{ args: string[]; onFailure?: string }> }> };
+    };
+    for (const tool of ['Read', 'Grep', 'Glob', 'NotebookRead', 'LS']) {
+      const entry = hooks.hooks.PreToolUse.find((candidate) => new RegExp(`^(?:${candidate.matcher})$`).test(tool));
+      expect(entry, tool).toBeDefined();
+      expect(entry?.hooks[0]).toMatchObject({ args: expect.arrayContaining(['pre-tool-use']), onFailure: 'block' });
+    }
+  });
+
+  it("blocks reads of JERRY's data and records them; ordinary reads and the plugin's files pass unrecorded", async () => {
+    const readEvents = async (): Promise<Array<{ toolName: string | null; verdict: string | null; ruleId: string | null }>> =>
+      ((await api(core, 'GET', '/api/v1/events?limit=500')).body as Array<{ toolName: string | null; verdict: string | null; ruleId: string | null }>).filter((event) =>
+        ['Read', 'Grep', 'Glob', 'LS', 'NotebookRead'].includes(event.toolName ?? ''),
+      );
+    expectBlocked(bridge('Read', { file_path: path.join(home, 'run', 'core.json') }), 'hard.protected-read');
+    expectBlocked(bridge('Read', { file_path: path.join(home, 'run', 'core-user.json') }), 'hard.protected-read');
+    expectBlocked(bridge('Read', { file_path: path.join(home, 'marketplace', '..', 'logs', 'core.log') }), 'hard.protected-read');
+    expectBlocked(bridge('Grep', { pattern: 'token', path: home }), 'hard.protected-read');
+    expectBlocked(bridge('Glob', { pattern: `${home.replaceAll('\\', '/')}/run/*.json` }), 'hard.protected-read');
+    expectBlocked(bridge('LS', { path: path.join(home, 'state') }), 'hard.protected-read');
+    expect((await readEvents()).filter((event) => event.verdict === 'DENY' && event.ruleId === 'hard.protected-read')).toHaveLength(6);
+
+    const skillFile = path.join(home, 'marketplace', 'plugins', 'jerry', 'skills', 'report', 'qa-scenarios.md');
+    fs.mkdirSync(path.dirname(skillFile), { recursive: true });
+    fs.writeFileSync(skillFile, '# QA\n');
+    expectPassed(bridge('Read', { file_path: skillFile }));
+    expectPassed(bridge('Grep', { pattern: 'QA', path: path.join(home, 'marketplace') }));
+    expectPassed(bridge('Read', { file_path: path.join(repo, 'src', 'app.ts') }));
+    expectPassed(bridge('Grep', { pattern: 'answer', glob: '*.ts' }));
+    expectPassed(bridge('Glob', { pattern: 'src/**/*.ts' }));
+    // A permitted read never reaches Core: nothing more is recorded.
+    expect(await readEvents()).toHaveLength(6);
+  });
+
   let taskId: string;
 
   it('keeps warning while the plan is waiting for approval or rejected', async () => {
@@ -201,6 +237,20 @@ describe('JERRY guard (bundled bridge + Core)', () => {
     expectBlocked(bridge('Bash', { command: 'git push' }), 'hard.git-mutation');
     expectBlocked(write('.git/config'), 'hard.git-metadata');
     expectBlocked(bridge('mcp__gitlab__create_merge_request', {}), 'hard.git-mutation');
+    // Reading Core's token needs no Core to be refused, in a project and outside the added ones.
+    expectBlocked(bridge('Read', { file_path: path.join(home, 'run', 'core.json') }), 'hard.protected-read');
+    expectBlocked(bridge('Read', { file_path: path.join(home, 'run', 'core.json') }, outside), 'hard.protected-read');
+    expectBlocked(bridge('Grep', { pattern: 'token' }, home), 'hard.protected-read');
+    expectPassed(bridge('Read', { file_path: path.join(home, 'marketplace', 'plugins', 'jerry', 'skills', 'report', 'qa-scenarios.md') }, outside));
+    // Through a junction (a symbolic link elsewhere): judged by where the file really is.
+    const link = path.join(outside, 'link-to-run');
+    fs.symlinkSync(path.join(home, 'run'), link, 'junction');
+    try {
+      expectBlocked(bridge('Read', { file_path: path.join(link, 'core.json') }, outside), 'hard.protected-read');
+      expectBlocked(bridge('Grep', { pattern: 'token', path: link }, outside), 'hard.protected-read');
+    } finally {
+      fs.unlinkSync(link);
+    }
     const context = sessionContext();
     expect(context).toContain('Core unavailable');
     expect(context).toContain('the user does all Git operations manually');

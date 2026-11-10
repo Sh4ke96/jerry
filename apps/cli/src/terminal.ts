@@ -1,6 +1,6 @@
 import path from 'node:path';
 import readline from 'node:readline/promises';
-import { readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
+import { readCoreRuntimeInfoForUser, requestCore, resolveJerryHome } from '@jerry/platform';
 
 /**
  * Terminal helpers for the user's decisions about projects and data. Like approvals they need an
@@ -33,7 +33,7 @@ export function samePath(typed: string, expected: string): boolean {
 }
 
 export async function callCore(method: 'GET' | 'POST', apiPath: string, body?: unknown, timeoutMs = 5000): Promise<unknown> {
-  const info = readCoreRuntimeInfo(resolveJerryHome());
+  const info = readCoreRuntimeInfoForUser(resolveJerryHome());
   return requestCore(info, { method, path: apiPath, timeoutMs, ...(body === undefined ? {} : { body }) });
 }
 

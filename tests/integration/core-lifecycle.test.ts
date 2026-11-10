@@ -1,8 +1,20 @@
 import { spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
-import { autostartCore, isProcessAlive, jerryPaths, readCoreHeartbeat, readCoreRuntimeInfo, requestCore, spawnDetachedCore } from '@jerry/platform';
+import {
+  autostartCore,
+  CoreHttpError,
+  isProcessAlive,
+  jerryPaths,
+  readCoreHeartbeat,
+  readCoreRuntimeInfo,
+  readCoreRuntimeInfoForUser,
+  readCoreUserInfo,
+  requestCore,
+  spawnDetachedCore,
+} from '@jerry/platform';
 import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { CORE, ROOT, createFixtureRepo, preToolUse, runBridge, startCore, tempDir, type RunningCore } from '../helpers/harness.js';
 
@@ -24,10 +36,10 @@ async function waitFor<T>(probe: () => T | null, timeoutMs = 8000): Promise<T> {
   }
 }
 
-/** Stops a Core that the test did not spawn itself (an autostarted one) through its API. */
+/** Stops a Core that the test did not spawn itself (an autostarted one) through its API, with the user's token. */
 async function shutdownCoreOf(home: string): Promise<void> {
   try {
-    const info = readCoreRuntimeInfo(home);
+    const info = readCoreRuntimeInfoForUser(home);
     await requestCore(info, { method: 'POST', path: '/api/v1/shutdown', body: { requestedBy: 'tests', reason: 'test cleanup' }, timeoutMs: 2000 });
     await waitFor(() => (isProcessAlive(info.pid) ? null : true));
   } catch {
@@ -87,6 +99,8 @@ describe('Core lifecycle: port, single instance, autostart', () => {
     expect(second.status).toBe(0);
     expect(second.stdout).toContain('already running');
     expect(readCoreRuntimeInfo(home).pid).toBe(first.info.pid);
+    // The second start leaves the first Core's user token in place.
+    expect(readCoreUserInfo(home)).toEqual({ pid: first.info.pid, token: first.userToken });
   });
 
   it('takes over a stale lock left by a crashed Core', async () => {
@@ -157,13 +171,16 @@ describe('Core diagnostics in core.log', () => {
     return home;
   };
   const coreLog = (home: string): string => fs.readFileSync(jerryPaths(home).coreLogFile, 'utf8');
-  /** Starts Core the way hooks and the CLI do: detached, output appended to core.log. */
+  /**
+   * Starts Core the way hooks and the CLI do: detached, output appended to core.log. Answers with
+   * Core's runtime info as the CLI reads it (the user's token).
+   */
   const spawnLogged = async (home: string, startedBy: string) => {
     spawnDetachedCore(home, CORE, { ...process.env, JERRY_CORE_PORT: '0' }, startedBy);
-    return waitFor(() => (fs.existsSync(jerryPaths(home).coreInfoFile) ? readCoreRuntimeInfo(home) : null));
+    return waitFor(() => (fs.existsSync(jerryPaths(home).coreInfoFile) && readCoreUserInfo(home) !== null ? readCoreRuntimeInfoForUser(home) : null));
   };
   const stopWith = async (home: string, body: unknown) => {
-    const info = readCoreRuntimeInfo(home);
+    const info = readCoreRuntimeInfoForUser(home);
     const answer = await requestCore(info, { method: 'POST', path: '/api/v1/shutdown', body, timeoutMs: 2000 });
     await waitFor(() => (isProcessAlive(info.pid) ? null : true));
     return { info, answer };
@@ -212,5 +229,85 @@ describe('Core diagnostics in core.log', () => {
     await stopWith(home, { requestedBy: 'tests' });
     await spawnLogged(home, 'integration test');
     expect(coreLog(home).split('ended without a clean stop')).toHaveLength(2);
+  });
+
+  it("writes the user's token to core-user.json at start, refuses a stop with the agent token, and removes both files on a clean stop", async () => {
+    const home = newHome();
+    const info = await spawnLogged(home, 'integration test');
+    const paths = jerryPaths(home);
+    const agent = readCoreRuntimeInfo(home);
+    const user = JSON.parse(fs.readFileSync(paths.coreUserFile, 'utf8')) as Record<string, unknown>;
+    // Exactly { pid, token }: the pid of the Core in core.json, its own 64-hex token, not core.json's.
+    expect(Object.keys(user).sort()).toEqual(['pid', 'token']);
+    expect(user['pid']).toBe(agent.pid);
+    expect(user['token']).toMatch(/^[0-9a-f]{64}$/);
+    expect(user['token']).not.toBe(agent.token);
+    expect(info.token).toBe(user['token']);
+    // The agent token (core.json) cannot stop Core.
+    const refused = await requestCore(agent, { method: 'POST', path: '/api/v1/shutdown', body: { requestedBy: 'agent' }, timeoutMs: 2000 }).catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(CoreHttpError);
+    expect((refused as CoreHttpError).statusCode).toBe(403);
+    expect(JSON.stringify((refused as CoreHttpError).body)).toContain('core-user.json');
+    expect(isProcessAlive(agent.pid)).toBe(true);
+    await stopWith(home, { requestedBy: 'tests', reason: 'core-user.json test' });
+    expect(fs.existsSync(paths.coreInfoFile)).toBe(false);
+    expect(fs.existsSync(paths.coreUserFile)).toBe(false);
+  });
+
+  it('a new start replaces the user token of a Core that ended without a clean stop', async () => {
+    const home = newHome();
+    const paths = jerryPaths(home);
+    fs.mkdirSync(paths.runDir, { recursive: true });
+    const stale = { pid: 999_999, token: randomBytes(32).toString('hex') };
+    fs.writeFileSync(paths.coreUserFile, JSON.stringify(stale));
+    const info = await spawnLogged(home, 'integration test');
+    expect(readCoreUserInfo(home)?.pid).toBe(info.pid);
+    expect(info.token).not.toBe(stale.token);
+  });
+});
+
+describe("Reading the user's token (run/core-user.json)", () => {
+  const base = tempDir('core-user');
+  afterAll(() => fs.rmSync(base, { recursive: true, force: true }));
+  let count = 0;
+  /** A home with a core.json of pid 4242 (no Core runs; nothing is contacted). */
+  const homeWithCore = (): { home: string; agentToken: string } => {
+    const home = path.join(base, `home-${count++}`);
+    const agentToken = randomBytes(32).toString('hex');
+    fs.mkdirSync(jerryPaths(home).runDir, { recursive: true });
+    fs.writeFileSync(jerryPaths(home).coreInfoFile, JSON.stringify({ pid: 4242, port: 47000, configuredPort: 0, token: agentToken, startedAt: new Date().toISOString(), version: '0.1.0' }));
+    return { home, agentToken };
+  };
+  const writeUser = (home: string, value: unknown): void => fs.writeFileSync(jerryPaths(home).coreUserFile, typeof value === 'string' ? value : JSON.stringify(value));
+
+  it("gives the CLI the user's token when core-user.json belongs to the running Core", () => {
+    const { home } = homeWithCore();
+    const userToken = randomBytes(32).toString('hex');
+    writeUser(home, { pid: 4242, token: userToken });
+    expect(readCoreUserInfo(home)).toEqual({ pid: 4242, token: userToken });
+    expect(readCoreRuntimeInfoForUser(home)).toMatchObject({ pid: 4242, port: 47000, token: userToken });
+  });
+
+  it('falls back to the core.json token for an older Core without core-user.json', () => {
+    const { home, agentToken } = homeWithCore();
+    expect(readCoreUserInfo(home)).toBeNull();
+    expect(readCoreRuntimeInfoForUser(home).token).toBe(agentToken);
+  });
+
+  it('ignores a stale or malformed core-user.json', () => {
+    const { home, agentToken } = homeWithCore();
+    for (const value of [{ pid: 4243, token: randomBytes(32).toString('hex') }, { pid: 4242, token: 'NOT-HEX' }, { pid: 4242 }, { pid: '4242', token: randomBytes(32).toString('hex') }, 'not json', '[]']) {
+      writeUser(home, value);
+      expect(readCoreUserInfo(home), JSON.stringify(value)).toBeNull();
+      expect(readCoreRuntimeInfoForUser(home).token).toBe(agentToken);
+    }
+  });
+
+  it('reads nothing without core.json', () => {
+    const home = path.join(base, 'no-core');
+    fs.mkdirSync(jerryPaths(home).runDir, { recursive: true });
+    writeUser(home, { pid: 4242, token: randomBytes(32).toString('hex') });
+    expect(readCoreUserInfo(home)).toBeNull();
+    expect(() => readCoreRuntimeInfoForUser(home)).toThrow(/not found/);
   });
 });

@@ -14,6 +14,7 @@ import { MAX_SUBAGENTS } from '@jerry/contracts/agents';
  *   - any command or Git-server MCP tool that changes Git state; only the user runs Git operations
  *   - any write into a .git directory
  *   - any write to, or command touching, JERRY data or Claude Code guard configuration
+ *   - any read of JERRY's own data (tokens, settings, database, backups, spool, logs) by a read tool
  *   - an agent running JERRY's user-only commands (approve, reject, project add, data prune, ...) or its API
  * Everything else is monitoring, only inside projects the user added: PASS, or WARN when Claude acts
  * outside an approved plan.
@@ -24,6 +25,11 @@ export interface GateContext {
   platform: NodeJS.Platform;
   /** Absolute paths that agents must never write to (JERRY_HOME, Claude settings/plugins). */
   protectedRoots: readonly string[];
+  /**
+   * JERRY's data folders agents must not read either (protectedReadRoots(JERRY_HOME)). Absent where
+   * unknown: then reads are not checked here (the hook bridge always checks them).
+   */
+  protectedReadRoots?: readonly string[];
   /** Resolves symlinks/junctions of the nearest existing ancestor; returns an absolute path. */
   realPath(absolutePath: string): string;
   /** Git working tree root containing the path, or null when it is not inside a repository. */
@@ -72,9 +78,22 @@ const READ_ONLY_AGENT = /jerry-[\w-]*-(?:analyst|reviewer)$/;
  * usage, core status, settings, statusline status, usage status) stay available. Pausing, resuming,
  * cancelling a task and re-running its final checks are user decisions, and so are adding or removing a project, deleting JERRY's data,
  * changing a setting and turning JERRY's status line or usage collection on or off (they edit the
- * Claude Code settings).
+ * Claude Code settings). Skipping a review, deciding on a finding and setting an eval baseline or
+ * label are the user's decisions too; showing and listing them stays available.
  */
-const USER_ONLY_JERRY_COMMAND = /\bjerry(?:\.mjs|\.cmd|\.ps1)?\s+(?:approve|reject|install|uninstall|ui|repo\s+(?:exclude|include)|project\s+(?:add|remove)|data\s+(?:prune|forget)|task\s+(?:pause|resume|cancel|recheck|complete)|core\s+(?:start|stop)|db\s+restore|settings\s+set|statusline\s+(?:enable|disable)|usage\s+(?:enable|disable)|skills?\s+(?:add|enable|disable|update|remove|states)|workspaces?\s+(?:create|add|remove|rename|delete))\b/i;
+const USER_ONLY_JERRY_COMMAND = /\bjerry(?:\.mjs|\.cmd|\.ps1)?\s+(?:approve|reject|install|uninstall|ui|repo\s+(?:exclude|include)|project\s+(?:add|remove)|data\s+(?:prune|forget)|task\s+(?:pause|resume|cancel|recheck|complete)|core\s+(?:start|stop)|db\s+restore|settings\s+set|statusline\s+(?:enable|disable)|usage\s+(?:enable|disable)|skills?\s+(?:add|enable|disable|update|remove|states)|workspaces?\s+(?:create|add|remove|rename|delete)|review\s+skip|findings\s+set|evals?\s+(?:baseline|label))\b/i;
+/**
+ * JERRY_HOME folders that hold JERRY's own data: Core's tokens (run), settings (config), state,
+ * the database, its backups, spooled events and logs. Not marketplace and runtime: the installed
+ * plugin's skills read their sibling files there.
+ */
+export const PROTECTED_READ_FOLDERS: readonly string[] = ['run', 'config', 'state', 'database', 'backups', 'spool', 'logs'];
+
+/** The folders of JERRY_HOME agents may not read (GateContext.protectedReadRoots). */
+export function protectedReadRoots(jerryHome: string): string[] {
+  const home = jerryHome.replace(/[\\/]+$/, '');
+  return PROTECTED_READ_FOLDERS.map((folder) => `${home}/${folder}`);
+}
 /** Tools that start a Claude Code subagent. */
 const SUBAGENT_TOOLS: ReadonlySet<string> = new Set(['Task', 'Agent']);
 /** The Core API and the dashboard login: an agent holding a session could approve its own plan. */
@@ -92,7 +111,7 @@ export function evaluateGate(request: GateCheckRequest, context: GateContext): G
 }
 
 /** Hard rules only. The bridge runs this locally before contacting Core, so it holds while Core is down. */
-export function evaluateHardRules(action: ToolAction, cwd: string, context: Pick<GateContext, 'platform' | 'protectedRoots' | 'realPath'>): GateDecision | null {
+export function evaluateHardRules(action: ToolAction, cwd: string, context: Pick<GateContext, 'platform' | 'protectedRoots' | 'protectedReadRoots' | 'realPath'>): GateDecision | null {
   switch (action.kind) {
     case 'file-write':
       for (const target of action.paths) {
@@ -100,6 +119,8 @@ export function evaluateHardRules(action: ToolAction, cwd: string, context: Pick
         if (verdict !== null) return verdict;
       }
       return null;
+    case 'file-read':
+      return hardRulesForRead(action, cwd, context);
     case 'shell':
     case 'shell-opaque':
       return hardRulesForShell(action.command, action.kind === 'shell' ? action.dialect : 'bash', cwd, context);
@@ -128,6 +149,27 @@ function hardRulesForWrite(target: string, cwd: string, context: Pick<GateContex
     }
     if (/(^|\/)\.git(\/|$)/i.test(candidate)) {
       return decision('DENY', 'hard.git-metadata', `${requested} is Git metadata. Only the user changes Git state; do not write inside .git.`);
+    }
+  }
+  return null;
+}
+
+/**
+ * A read inside one of JERRY's data folders, or a search (Grep, Glob, LS) whose folder is one of
+ * them, JERRY_HOME or any folder above them. Judged by the path as given and by where it really is.
+ */
+function hardRulesForRead(action: Extract<ToolAction, { kind: 'file-read' }>, cwd: string, context: Pick<GateContext, 'platform' | 'protectedReadRoots' | 'realPath'>): GateDecision | null {
+  const { platform } = context;
+  const folders = (context.protectedReadRoots ?? []).map((root) => comparablePath(root, cwd, platform));
+  if (folders.length === 0) return null;
+  for (const target of action.paths) {
+    const requested = absolutePath(target, cwd, platform);
+    const real = absolutePath(context.realPath(requested), cwd, platform);
+    for (const candidate of new Set([requested, real])) {
+      const key = comparablePath(candidate, cwd, platform);
+      if (folders.some((folder) => isComparableInside(key, folder) || (action.search && isComparableInside(folder, key)))) {
+        return decision('DENY', 'hard.protected-read', `${requested} is or holds JERRY's own data (its tokens, settings, database, backups and logs), which is not readable by agents; only JERRY and the user use it.${action.search ? ' Search a folder that does not contain it.' : ''}`);
+      }
     }
   }
   return null;
@@ -180,6 +222,8 @@ function evaluateMonitoring(action: ToolAction, request: GateCheckRequest, conte
       }
       return decision('PASS', 'tool.not-guarded', `${request.toolName} is not a write or shell tool`);
     }
+    case 'file-read':
+      return decision('PASS', 'tool.not-guarded', `${request.toolName} only reads files`);
     case 'mcp':
       return decision('PASS', 'monitor.mcp-tool', `${action.server}/${action.tool} does not change Git state`);
     case 'skill':

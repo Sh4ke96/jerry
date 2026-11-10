@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import { storedEventSchema, taskWithDecisionSchema } from '@jerry/contracts';
-import { CoreUnavailableError, jerryPaths, readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
+import { CoreUnavailableError, jerryPaths, readCoreRuntimeInfoForUser, requestCore, resolveJerryHome } from '@jerry/platform';
 import { WORK_STATES } from '@jerry/workflow';
 import { z } from 'zod';
 import { getCoreStatus } from './core-commands.js';
@@ -31,7 +31,7 @@ export async function showStatus(): Promise<void> {
     return;
   }
 
-  const info = readCoreRuntimeInfo(home);
+  const info = readCoreRuntimeInfoForUser(home);
   const startOfDay = new Date();
   startOfDay.setHours(0, 0, 0, 0);
   const [tasks, flagged] = await Promise.all([

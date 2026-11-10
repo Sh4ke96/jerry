@@ -199,7 +199,7 @@ function origin(call: CallContext): CallOrigin {
   return { ...(call.toolUseId === null ? {} : { toolUseId: call.toolUseId }), ...(session === null ? {} : { sessionId: session }) };
 }
 
-const HARD_RULES_SUMMARY = 'No Git command or Git-server MCP tool that changes anything; no writes inside .git; no changes to JERRY data or the settings that enable it; no user-only jerry commands.';
+const HARD_RULES_SUMMARY = 'No Git command or Git-server MCP tool that changes anything; no writes inside .git; no changes to JERRY data or the settings that enable it; no user-only jerry commands. No reads of JERRY data either (its run, config, state, database, backups, spool and logs folders); no "jerry task complete", "jerry review skip", "jerry findings set" or "jerry eval baseline/label".';
 
 /** Said wherever JERRY does not monitor: the user decides which repositories are projects. */
 const NOT_ADDED_HINT = 'the user can add it with "jerry project add" (the user runs it, not you)';

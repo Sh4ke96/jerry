@@ -1,14 +1,14 @@
 import path from 'node:path';
 import readline from 'node:readline/promises';
 import { approvalRecordSchema, type CompletionCheck, finalChecksRerunSchema, finalReportSchema, planSchema, REVIEWER_ROLES, reviewStateSchema, type ReviewState, taskDetailSchema, taskSchema, taskWithDecisionSchema, WAIVABLE_FINAL_CHECK_CONDITIONS, workflowTransitionSchema, type ApprovalRecord, type ImplementationReportRecord, type Task, type TaskDetail } from '@jerry/contracts';
-import { readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
+import { readCoreRuntimeInfoForUser, requestCore, resolveJerryHome } from '@jerry/platform';
 import { diffPlans, isEmptyDiff, isTerminal, STATE_LABELS } from '@jerry/workflow';
 import { z } from 'zod';
 import { flag, mark, resultMark, severityMark, stateMark } from './emoji.js';
 import { confirmDecision, currentDecisionConfirmation } from './settings-commands.js';
 
 async function callCore(method: 'GET' | 'POST', apiPath: string, body?: unknown): Promise<unknown> {
-  const info = readCoreRuntimeInfo(resolveJerryHome());
+  const info = readCoreRuntimeInfoForUser(resolveJerryHome());
   return requestCore(info, { method, path: apiPath, timeoutMs: 5000, ...(body === undefined ? {} : { body }) });
 }
 

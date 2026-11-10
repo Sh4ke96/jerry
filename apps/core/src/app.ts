@@ -91,12 +91,29 @@ import {
   type TaskSummary,
 } from '@jerry/contracts';
 import { EMOJI, SEVERITY_EMOJI, decorate } from '@jerry/contracts/emoji';
-import { absolutePath, analystsFor, approvedPlansForRepo, comparablePath, evaluateGate, gradePlan, isComparableInside, relativeInside, taskTouchesRepo } from '@jerry/policy-engine';
+import { absolutePath, analystsFor, approvedPlansForRepo, comparablePath, evaluateGate, gradePlan, isComparableInside, protectedReadRoots, relativeInside, taskTouchesRepo } from '@jerry/policy-engine';
 import { isTerminal, WORK_STATES } from '@jerry/workflow';
 import { buildEventEnvelope } from '@jerry/trace-engine';
 import type { z } from 'zod';
 import { applyAgentModels, disableUsageCollection, enableUsageCollection, jerryPaths, readTelemetryConfig, resolveClaudeConfigDir, resolveCorePort, TELEMETRY_KEY_HEADER, TELEMETRY_METRICS_PATH, usageCollectionStatus, writeTelemetryLast, type UsageCollectionChange } from '@jerry/platform';
-import { BrowserSessions, clearedSessionCookie, CSRF_HEADER, loginNextFromBody, loginRedirectTarget, loginUrl, readCookie, safeEqual, SESSION_COOKIE, sessionCookie, type BrowserSession } from './auth.js';
+import {
+  accessDeniedMessage,
+  allowsClient,
+  bearerClientKind,
+  BrowserSessions,
+  clearedSessionCookie,
+  CSRF_HEADER,
+  isAccessClass,
+  loginNextFromBody,
+  loginRedirectTarget,
+  loginUrl,
+  readCookie,
+  safeEqual,
+  SESSION_COOKIE,
+  sessionCookie,
+  type AccessClass,
+  type BrowserSession,
+} from './auth.js';
 import { evaluatePending, isMonitoredEvent, withRepoRoot } from './events.js';
 import { dataUsage, forget, previewForget, previewPrune, prune, type DataContext } from './data-maintenance.js';
 import { checkCitations } from './citations.js';
@@ -124,22 +141,67 @@ import { DASHBOARD_SECURITY_HEADERS, dashboardPlaceholderPage, HTML_SECURITY_HEA
 const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_EVENTS_PAGE = 500;
 
-/** token: the CLI and hooks (bearer token from core.json). session: the dashboard in a browser. */
-type Client = { kind: 'token' } | { kind: 'session'; session: BrowserSession };
-type ClientKind = Client['kind'];
+/**
+ * agent: the agent token from run/core.json (hooks, MCP server, status line). user: the user's token
+ * from run/core-user.json (jerry CLI, desktop app). session: the dashboard in a browser.
+ */
+type Client = { kind: 'agent' } | { kind: 'user' } | { kind: 'session'; session: BrowserSession };
+
+/** Route access declared before the token split ('token' meant any bearer token); see legacyAccess. */
+type LegacyClientKind = 'token' | 'session';
 
 declare module 'fastify' {
   interface FastifyRequest {
     client: Client | null;
   }
   interface FastifyContextConfig {
-    /** Who may call the route. Routes without it are public (health, login). */
-    clients?: readonly ClientKind[];
+    /** Who may call the route (auth.ts ROUTE_ACCESS). Every route declares it. */
+    access?: AccessClass;
+    /**
+     * The declaration before the token split, still used by skill-routes.ts; mapped to an access class
+     * when the route is registered (legacyAccess). New routes declare `access`.
+     */
+    clients?: readonly LegacyClientKind[];
   }
 }
 
+/** A registered route and its access class (routeAccessTable). */
+export interface RouteAccessEntry {
+  method: string;
+  url: string;
+  access: AccessClass;
+}
+
+const routeTables = new WeakMap<FastifyInstance, RouteAccessEntry[]>();
+
+/** Every route of a Core app with its access class, in registration order (tests check it). */
+export function routeAccessTable(app: FastifyInstance): readonly RouteAccessEntry[] {
+  return routeTables.get(app) ?? [];
+}
+
+/**
+ * The access class of a route declared the old way (skill-routes.ts). Fail-closed: a bearer-or-session
+ * route that changes state becomes USER_DECISION, a bearer-only one USER_ONLY; only reads stay open to
+ * the agent token.
+ */
+function legacyAccess(clients: readonly LegacyClientKind[], methods: readonly string[]): AccessClass | null {
+  const readOnly = methods.every((method) => method === 'GET' || method === 'HEAD');
+  const token = clients.includes('token');
+  const session = clients.includes('session');
+  if (token && session) return readOnly ? 'READ' : 'USER_DECISION';
+  if (token) return readOnly ? 'AGENT' : 'USER_ONLY';
+  if (session) return 'SESSION_ONLY';
+  return null;
+}
+
 export interface CoreAppOptions {
+  /** The user's token (run/core-user.json): the jerry CLI and the desktop app; every bearer route. */
   token: string;
+  /**
+   * The agent token (run/core.json): hooks, MCP server and status line; agent and read routes only,
+   * never a user decision. Without it no agent token is accepted.
+   */
+  agentToken?: string;
   store: StateStore;
   jerryHome: string;
   protectedRoots: readonly string[];
@@ -190,10 +252,13 @@ export function gateEvaluator(
   skillStates?: (name: string) => readonly WorkflowState[] | null,
   workspaceFolder?: (absolutePath: string) => { name: string; repoRoots: readonly string[] } | null,
   skillClassifications?: (name: string) => readonly PlanClassification[] | null,
+  /** JERRY's data folders agents may not read; the bridge decides reads itself, Core checks them too. */
+  readRoots?: readonly string[],
 ): (request: GateCheckRequest) => GateDecision {
   return (request) => {
     const snapshot: CoreState = store.snapshot();
     return evaluateGate(request, {
+      ...(readRoots === undefined ? {} : { protectedReadRoots: readRoots }),
       ...(skillStates === undefined ? {} : { skillStates }),
       ...(skillClassifications === undefined ? {} : { skillClassifications }),
       ...(workspaceFolder === undefined ? {} : { workspaceFolder }),
@@ -216,9 +281,13 @@ export function gateEvaluator(
   };
 }
 
-const TOKEN_ONLY = { clients: ['token'] } as const;
-const TOKEN_OR_SESSION = { clients: ['token', 'session'] } as const;
-const SESSION_ONLY = { clients: ['session'] } as const;
+// Route access classes (auth.ts ROUTE_ACCESS). The agent token reaches only AGENT and READ routes.
+const PUBLIC = { access: 'PUBLIC' } as const;
+const AGENT = { access: 'AGENT' } as const;
+const READ = { access: 'READ' } as const;
+const USER_DECISION = { access: 'USER_DECISION' } as const;
+const USER_ONLY = { access: 'USER_ONLY' } as const;
+const SESSION_ONLY = { access: 'SESSION_ONLY' } as const;
 const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 /**
  * Warnings Claude needs once per session, agent and repository: they say the same thing every
@@ -282,6 +351,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     (name) => skillService?.triggerStates(name) ?? null,
     (folder) => workspaces.parentFolderOf(folder),
     (name) => skillService?.triggerClassifications(name) ?? null,
+    protectedReadRoots(options.jerryHome),
   );
   const profiles = options.profiles ?? new ProfileService(store);
   // Read once: a running Core serves the dashboard of its own version, even after a new build or install.
@@ -294,8 +364,21 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
 
   app.decorateRequest('client', null);
 
+  // 0. Every route declares its access class; a route without one is refused at registration.
+  const routeTable: RouteAccessEntry[] = [];
+  routeTables.set(app, routeTable);
+  app.addHook('onRoute', (route) => {
+    const methods = Array.isArray(route.method) ? route.method : [route.method];
+    const declared = route.config?.access;
+    const access = declared ?? (route.config?.clients === undefined ? null : legacyAccess(route.config.clients, methods));
+    if (!isAccessClass(access)) throw new Error(`Core route ${methods.join(',')} ${route.url} has no access class`);
+    route.config = { ...route.config, access };
+    for (const method of methods) routeTable.push({ method, url: route.url, access });
+  });
+
   // 1. DNS rebinding: only our own loopback host names are answered.
-  // 2. Identify the caller: bearer token (CLI, hooks) or browser session (dashboard).
+  // 2. Identify the caller: agent token (hooks, MCP server, status line), user's token (CLI, desktop
+  //    app) or browser session (dashboard).
   // Finish running checks on close; a scheduler passed in (shared across app instances) is stopped by its owner.
   app.addHook('onClose', async () => {
     await quality.idle();
@@ -305,16 +388,20 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   app.addHook('onRequest', async (request) => {
     const host = request.headers.host ?? '';
     if (!origins().some((origin) => origin === `http://${host}`)) throw new HttpError(421, 'Unexpected Host header');
-    request.client = identify(request, options.token, sessions, origins());
+    request.client = identify(request, { user: options.token, agent: options.agentToken }, sessions, origins());
   });
 
   // 3. Per-route access: who may call it, and CSRF for state-changing browser requests.
   app.addHook('preHandler', async (request) => {
-    const allowed = request.routeOptions.config.clients;
-    if (allowed === undefined) return;
+    // No route matched: the not-found handler answers 404.
+    if (request.is404) return;
+    const access = request.routeOptions.config.access;
+    // Unreachable: onRoute gives every route its class; a route without one stays closed.
+    if (access === undefined) throw new HttpError(403, 'This endpoint declares no access class');
+    if (access === 'PUBLIC') return;
     const client = request.client;
     if (client === null) throw new HttpError(401, 'Missing or invalid JERRY credentials. Open the dashboard with "jerry ui".');
-    if (!allowed.includes(client.kind)) throw new HttpError(403, client.kind === 'session' ? 'This endpoint is for the JERRY CLI and hooks only' : 'This endpoint is for the dashboard only');
+    if (!allowsClient(access, client.kind)) throw new HttpError(403, accessDeniedMessage(access, client.kind));
     if (client.kind === 'session' && MUTATING.has(request.method)) {
       const origin = request.headers.origin;
       if (origin === undefined || !origins().includes(origin)) throw new HttpError(403, 'State-changing browser requests must come from the JERRY dashboard origin');
@@ -340,9 +427,9 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   });
 
   // --- public -----------------------------------------------------------------------------
-  app.get('/health', async () => ({ status: 'ok' }));
+  app.get('/health', { config: PUBLIC }, async () => ({ status: 'ok' }));
 
-  app.get('/ui/login', async (request, reply) => {
+  app.get('/ui/login', { config: PUBLIC }, async (request, reply) => {
     const { code, next } = request.query as { code?: unknown; next?: unknown };
     const session = typeof code === 'string' ? sessions.redeemLoginCode(code) : null;
     reply.headers(HTML_SECURITY_HEADERS).header('referrer-policy', 'no-referrer');
@@ -368,13 +455,13 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   });
 
   // The manifest and icons are fetched without cookies when the dashboard is installed as an app; they hold no data.
-  app.get('/manifest.webmanifest', async (_request, reply) => {
+  app.get('/manifest.webmanifest', { config: PUBLIC }, async (_request, reply) => {
     const file = dashboard.read('', 'manifest.webmanifest');
     if (file === null) throw new HttpError(404, 'The dashboard is not built');
     return reply.type(file.contentType).send(file.body);
   });
 
-  app.get('/icons/:name', async (request, reply) => {
+  app.get('/icons/:name', { config: PUBLIC }, async (request, reply) => {
     const file = dashboard.read('icons', (request.params as { name: string }).name);
     if (file === null) throw new HttpError(404, 'No such icon');
     return reply.type(file.contentType).send(file.body);
@@ -391,12 +478,13 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   });
 
   // --- CLI and hooks (bearer token) -----------------------------------------------------------
-  app.post('/api/v1/ui/login-codes', { config: TOKEN_ONLY }, async (request) => {
+  // A login code opens the dashboard, where every user decision can be made: the user's token only.
+  app.post('/api/v1/ui/login-codes', { config: USER_ONLY }, async (request) => {
     const { code, expiresAt } = sessions.issueLoginCode();
     return { url: loginUrl(origins()[0]!, code, loginNextFromBody(request.body)), expiresAt: new Date(expiresAt).toISOString() };
   });
 
-  app.get('/api/v1/status', { config: TOKEN_OR_SESSION }, async () => {
+  app.get('/api/v1/status', { config: READ }, async () => {
     const snapshot = store.snapshot();
     const status: CoreStatus = {
       status: 'ok',
@@ -412,7 +500,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     return status;
   });
 
-  app.post('/api/v1/gate/check', { config: TOKEN_ONLY }, async (request) => {
+  app.post('/api/v1/gate/check', { config: AGENT }, async (request) => {
     const now = new Date();
     const gateRequest = parse(gateCheckRequestSchema, request.body);
     const decision = evaluate(gateRequest);
@@ -465,7 +553,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     return answer;
   });
 
-  app.post('/api/v1/events', { config: TOKEN_ONLY }, async (request, reply) => {
+  app.post('/api/v1/events', { config: AGENT }, async (request, reply) => {
     const body = parse(eventIngestRequestSchema, request.body);
     // Events from outside the projects are not stored.
     const events = body.events.filter((event) => isMonitoredEvent(store, event, (folder) => workspaces.parentFolderOf(folder) !== null)).map((event) => withRepoRoot(evaluatePending(event, evaluate)));
@@ -477,7 +565,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     return reply.code(202).send({ accepted: body.events.length, inserted });
   });
 
-  app.get('/api/v1/events', { config: TOKEN_OR_SESSION }, async (request) => {
+  app.get('/api/v1/events', { config: READ }, async (request) => {
     const query = request.query as Record<string, unknown>;
     const text = (key: string): string | undefined => (typeof query[key] === 'string' && query[key] !== '' ? (query[key] as string) : undefined);
     const limit = Math.min(Number(query['limit'] ?? '100') || 100, MAX_EVENTS_PAGE);
@@ -496,7 +584,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     });
   });
 
-  app.get('/api/v1/repositories/state', { config: TOKEN_OR_SESSION }, async (request) => {
+  app.get('/api/v1/repositories/state', { config: READ }, async (request) => {
     const query = request.query as Record<string, unknown>;
     const path = query['path'];
     if (typeof path !== 'string' || path === '') throw new HttpError(400, 'path is required');
@@ -520,7 +608,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   });
 
   /** What the gate would say about edits to these paths; nothing is recorded. */
-  app.post('/api/v1/gate/preview', { config: TOKEN_ONLY }, async (request) => {
+  app.post('/api/v1/gate/preview', { config: AGENT }, async (request) => {
     const body = parse(gatePreviewRequestSchema, request.body);
     return {
       decisions: body.paths.map((target) => ({
@@ -530,7 +618,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     };
   });
 
-  app.post('/api/v1/sessions', { config: TOKEN_ONLY }, async (request) => {
+  app.post('/api/v1/sessions', { config: AGENT }, async (request) => {
     const now = new Date();
     const registration = parse(sessionRegistrationSchema, request.body);
     const repoRoot = findGitRoot(realPathOfNearestExisting(registration.cwd));
@@ -565,10 +653,10 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   });
 
   /** The exclusions recorded before projects existed; monitoring follows the projects now. */
-  app.get('/api/v1/repositories/exclusions', { config: TOKEN_OR_SESSION }, async () => store.snapshot().excludedRepos);
+  app.get('/api/v1/repositories/exclusions', { config: READ }, async () => store.snapshot().excludedRepos);
 
   /** The project profile of the repository containing a path; rescanned when stale. */
-  app.get('/api/v1/repositories/profile', { config: TOKEN_OR_SESSION }, async (request) => {
+  app.get('/api/v1/repositories/profile', { config: READ }, async (request) => {
     const query = request.query as Record<string, unknown>;
     const target = query['path'];
     if (typeof target !== 'string' || target === '') throw new HttpError(400, 'path is required');
@@ -581,7 +669,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   });
 
   /** Rescans a repository now (read-only; the dashboard's Refresh). */
-  app.post('/api/v1/repositories/scan', { config: TOKEN_OR_SESSION }, async (request) => {
+  app.post('/api/v1/repositories/scan', { config: USER_DECISION }, async (request) => {
     const body = parse(repositoryScanRequestSchema, request.body);
     const repoRoot = findGitRoot(realPathOfNearestExisting(body.repoPath));
     if (repoRoot === null) throw new HttpError(400, `${body.repoPath} is not inside a Git repository`);
@@ -589,7 +677,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   });
 
   /** Repositories JERRY knows, with their cached profiles (no scan). */
-  app.get('/api/v1/repositories', { config: TOKEN_OR_SESSION }, async () => {
+  app.get('/api/v1/repositories', { config: READ }, async () => {
     const snapshot = store.snapshot();
     const known = await store.knownRepositories();
     for (const project of store.projects()) {
@@ -610,10 +698,10 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   });
 
   /** Links between known repositories from their cached profiles. */
-  app.get('/api/v1/workspace/graph', { config: TOKEN_OR_SESSION }, async () => profiles.graph(await store.knownRepositories()));
+  app.get('/api/v1/workspace/graph', { config: READ }, async () => profiles.graph(await store.knownRepositories()));
 
   /** The former exclusion switch: excluding removes the project, including adds it. */
-  app.post('/api/v1/repositories/exclusions', { config: TOKEN_OR_SESSION }, async (request) => {
+  app.post('/api/v1/repositories/exclusions', { config: USER_DECISION }, async (request) => {
     const body = parse(repositoryExclusionRequestSchema, request.body);
     const fromDashboard = request.client?.kind === 'session';
     if (fromDashboard && body.excluded && body.confirmation !== 'exclude') {
@@ -621,7 +709,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     }
     const repoRoot = findGitRoot(realPathOfNearestExisting(body.repoPath));
     if (repoRoot === null) throw new HttpError(400, `${body.repoPath} is not inside a Git repository`);
-    const channel = fromDashboard ? 'dashboard' : 'cli';
+    const channel = decisionChannel(request);
     if (body.excluded) {
       await store.removeProject(repoRoot, new Date(), channel);
       // Kept in the exclusion list the dashboard still shows.
@@ -634,23 +722,22 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
 
   // --- Projects: the repositories JERRY monitors --------------------------------------------------
   // The CLI asks in a terminal before it calls these; the dashboard's browser session must send the
-  // repository root typed by the user, and the preHandler checks its CSRF token and Origin.
+  // repository root typed by the user, and the preHandler checks its CSRF token and Origin. User
+  // decisions: the user's token or the dashboard, never the agent token.
 
-  const PROJECT_ROUTES = TOKEN_OR_SESSION;
-
-  app.get('/api/v1/projects', { config: TOKEN_OR_SESSION }, async () => projectSummaries(store, store.projects()));
+  app.get('/api/v1/projects', { config: READ }, async () => projectSummaries(store, store.projects()));
 
   /**
    * A project's own review mode (null follows the global setting). A plain setting: no typed
    * confirmation, but a browser session needs its CSRF token and Origin (preHandler).
    */
-  app.post('/api/v1/projects/settings', { config: PROJECT_ROUTES }, async (request) => {
+  app.post('/api/v1/projects/settings', { config: USER_DECISION }, async (request) => {
     const body = parse(projectSettingsRequestSchema, request.body);
     const target = path.resolve(body.path);
     const wanted = fs.existsSync(target) ? (findGitRoot(realPathOfNearestExisting(target)) ?? target) : target;
     const project = store.projects().find((candidate) => sameRepo(candidate.repoRoot, wanted));
     if (project === undefined) throw new HttpError(404, `${body.path} is not a JERRY project (see "jerry project list")`);
-    const updated = await store.setProjectReviewMode(project.repoRoot, body.reviewMode, new Date(), request.client?.kind === 'session' ? 'dashboard' : 'cli');
+    const updated = await store.setProjectReviewMode(project.repoRoot, body.reviewMode, new Date(), decisionChannel(request));
     const [summary] = await projectSummaries(store, [updated]);
     return summary!;
   });
@@ -667,6 +754,8 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   app.post(
     TELEMETRY_METRICS_PATH,
     {
+      // No JERRY credential: the telemetry key below is this route's own.
+      config: PUBLIC,
       bodyLimit: MAX_BODY_BYTES,
       onRequest: async (request) => {
         if (!isLoopback(request.socket.remoteAddress)) throw new HttpError(403, 'Metrics are accepted from this machine only');
@@ -713,31 +802,31 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   );
 
   /** The status-line script's snapshots; limits from any session, the rest only of project sessions. */
-  app.post('/api/v1/usage/snapshots', { config: TOKEN_ONLY }, async (request, reply) => {
+  app.post('/api/v1/usage/snapshots', { config: AGENT }, async (request, reply) => {
     const body = parse(usageSnapshotsRequestSchema, request.body);
     const result = await usage.recordSnapshots(body.snapshots);
     return reply.code(202).send({ accepted: body.snapshots.length, ...result });
   });
 
   /** Characters the hook bridge or the MCP server put into Claude's context (JERRY's share). */
-  app.post('/api/v1/usage/jerry-share', { config: TOKEN_ONLY }, async (request, reply) => {
+  app.post('/api/v1/usage/jerry-share', { config: AGENT }, async (request, reply) => {
     const body = parse(jerryShareRequestSchema, request.body);
     const recorded = await usage.recordJerryShare(body, await store.resolveOrigin(body.origin), new Date());
     return reply.code(202).send({ recorded });
   });
 
-  app.get('/api/v1/usage', { config: TOKEN_OR_SESSION }, async (): Promise<UsageSummary> => usage.summary(new Date(), usageLocations, store.settings()));
+  app.get('/api/v1/usage', { config: READ }, async (): Promise<UsageSummary> => usage.summary(new Date(), usageLocations, store.settings()));
 
   /**
    * Turns both sources on or off in the user's Claude Code settings, exactly like "jerry usage
    * enable|disable" (a backup first; only JERRY's keys). The CLI asks in a terminal; the dashboard
    * shows its own confirmation and needs its CSRF token and Origin (preHandler).
    */
-  app.post('/api/v1/usage/collection', { config: TOKEN_OR_SESSION }, async (request): Promise<UsageCollectionResult> => {
+  app.post('/api/v1/usage/collection', { config: USER_DECISION }, async (request): Promise<UsageCollectionResult> => {
     const body = parse(usageCollectionRequestSchema, request.body);
     const change = body.enabled ? enableUsageCollection({ ...usageLocations, port: telemetryPort() }) : disableUsageCollection(usageLocations);
     const problems = collectionProblems(change);
-    await store.recordAudit('usage.collection', { enabled: body.enabled, channel: request.client?.kind === 'session' ? 'dashboard' : 'cli', problems }, new Date());
+    await store.recordAudit('usage.collection', { enabled: body.enabled, channel: decisionChannel(request), problems }, new Date());
     const status = usageCollectionStatus(usageLocations);
     return { statusline: status.statusline, telemetry: status.telemetry, showBar: store.settings().usageShowBar, problems };
   });
@@ -757,11 +846,11 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   registerSkillRoutes(app, skills, () => store.settings().decisionConfirmation);
 
   // --- Settings: changed only by the user (the CLI asks in a terminal; the dashboard needs CSRF) ---
-  app.get('/api/v1/settings', { config: TOKEN_OR_SESSION }, async (): Promise<Settings> => store.settings());
+  app.get('/api/v1/settings', { config: READ }, async (): Promise<Settings> => store.settings());
 
-  app.post('/api/v1/settings', { config: TOKEN_OR_SESSION }, async (request): Promise<Settings> => {
+  app.post('/api/v1/settings', { config: USER_DECISION }, async (request): Promise<Settings> => {
     const body = parse(settingsUpdateRequestSchema, request.body);
-    return store.updateSettings(body, new Date(), request.client?.kind === 'session' ? 'dashboard' : 'cli');
+    return store.updateSettings(body, new Date(), decisionChannel(request));
   });
 
   // --- Models of the read-only subagents: the user's choice, written into the installed plugin ------
@@ -780,18 +869,18 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     if (fs.existsSync(installedPluginDir)) applyAgentModels(installedPluginDir, await store.agentModels());
   });
 
-  app.get('/api/v1/agents/models', { config: TOKEN_OR_SESSION }, async (): Promise<AgentModelsResponse> => agentModelsResponse(await store.agentModels(), []));
+  app.get('/api/v1/agents/models', { config: READ }, async (): Promise<AgentModelsResponse> => agentModelsResponse(await store.agentModels(), []));
 
-  app.post('/api/v1/agents/models', { config: TOKEN_OR_SESSION }, async (request): Promise<AgentModelsResponse> => {
+  app.post('/api/v1/agents/models', { config: USER_DECISION }, async (request): Promise<AgentModelsResponse> => {
     const body = parse(agentModelsUpdateRequestSchema, request.body);
-    const channel = request.client?.kind === 'session' ? 'dashboard' : 'cli';
+    const channel = decisionChannel(request);
     const choices = await store.setAgentModels(body, new Date(), channel);
     const problems = applyAgentModels(installedPluginDir, choices);
     if (problems.length > 0) await store.recordAudit('agents.models.problems', { problems, channel }, new Date());
     return agentModelsResponse(choices, problems);
   });
 
-  app.post('/api/v1/projects', { config: PROJECT_ROUTES }, async (request, reply) => {
+  app.post('/api/v1/projects', { config: USER_DECISION }, async (request, reply) => {
     const body = parse(projectAddRequestSchema, request.body);
     const target = path.resolve(body.path);
     if (!fs.existsSync(target)) throw new HttpError(400, `${body.path} does not exist`);
@@ -800,11 +889,11 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     if (repoRoot === null) throw new HttpError(400, `${body.path} is not inside a Git repository`);
     if (!sameRepo(real, repoRoot)) throw new HttpError(400, `${body.path} is inside the Git repository ${repoRoot}; add the repository root itself`);
     if (request.client?.kind === 'session' && !typedRoot(body.confirmation, repoRoot)) throw new HttpError(400, `Type the repository root (${repoRoot}) to add it`);
-    const result: ProjectAddResult = await store.addProject(checkedProjectRoot(repoRoot, options.jerryHome), new Date(), request.client?.kind === 'session' ? 'dashboard' : 'cli', body.note ?? null);
+    const result: ProjectAddResult = await store.addProject(checkedProjectRoot(repoRoot, options.jerryHome), new Date(), decisionChannel(request), body.note ?? null);
     return reply.code(result.added ? 201 : 200).send(result);
   });
 
-  app.post('/api/v1/projects/remove', { config: PROJECT_ROUTES }, async (request) => {
+  app.post('/api/v1/projects/remove', { config: USER_DECISION }, async (request) => {
     const body = parse(projectRemoveRequestSchema, request.body);
     const target = path.resolve(body.path);
     // The directory may be gone already; then the path is matched as given.
@@ -817,7 +906,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
       .snapshot()
       .tasks.filter((task) => !isTerminal(task.state) && taskRepositoryRoots(task).some((root) => isComparableInside(comparablePath(root, root, process.platform), key)))
       .map((task) => task.taskId);
-    const removed = await store.removeProject(project.repoRoot, new Date(), request.client?.kind === 'session' ? 'dashboard' : 'cli');
+    const removed = await store.removeProject(project.repoRoot, new Date(), decisionChannel(request));
     const result: ProjectRemoveResult = {
       ...removed,
       openTasks,
@@ -834,40 +923,39 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     if (!Number.isInteger(id) || id <= 0) throw new HttpError(400, 'Not a workspace id');
     return id;
   };
-  const channelOf = (request: FastifyRequest): 'cli' | 'dashboard' => (request.client?.kind === 'session' ? 'dashboard' : 'cli');
   const confirmName = (request: FastifyRequest, confirmation: string | undefined, name: string): void => {
-    if (request.client?.kind !== 'session') return;
+    if (request.client?.kind === 'user') return;
     const given = confirmation?.trim() ?? '';
     if ((store.settings().decisionConfirmation === 'typed' || given !== '') && given.toLowerCase() !== name.trim().toLowerCase()) throw new HttpError(400, `Type the workspace name (${name}) to confirm`);
   };
-  app.get('/api/v1/workspaces', { config: TOKEN_OR_SESSION }, async () => workspaces.list());
-  app.get('/api/v1/workspaces/:id', { config: TOKEN_OR_SESSION }, async (request) => workspaces.get(workspaceId(request)));
+  app.get('/api/v1/workspaces', { config: READ }, async () => workspaces.list());
+  app.get('/api/v1/workspaces/:id', { config: READ }, async (request) => workspaces.get(workspaceId(request)));
   /** The Git repositories in a folder, to choose from; changes nothing. */
-  app.post('/api/v1/workspaces/scan', { config: TOKEN_OR_SESSION }, async (request) => workspaces.scan(parse(workspaceScanRequestSchema, request.body).folder));
-  app.post('/api/v1/workspaces', { config: PROJECT_ROUTES }, async (request, reply) => {
+  app.post('/api/v1/workspaces/scan', { config: USER_DECISION }, async (request) => workspaces.scan(parse(workspaceScanRequestSchema, request.body).folder));
+  app.post('/api/v1/workspaces', { config: USER_DECISION }, async (request, reply) => {
     const body = parse(workspaceCreateRequestSchema, request.body);
     confirmName(request, body.confirmation, body.name);
-    return reply.code(201).send(await workspaces.create(body.name, body.paths, channelOf(request)));
+    return reply.code(201).send(await workspaces.create(body.name, body.paths, decisionChannel(request)));
   });
-  app.post('/api/v1/workspaces/:id/repos', { config: PROJECT_ROUTES }, async (request) => {
+  app.post('/api/v1/workspaces/:id/repos', { config: USER_DECISION }, async (request) => {
     const id = workspaceId(request);
     const body = parse(workspaceRepoRequestSchema, request.body);
     confirmName(request, body.confirmation, workspaces.get(id).name);
-    return workspaces.addRepo(id, body.path, channelOf(request));
+    return workspaces.addRepo(id, body.path, decisionChannel(request));
   });
-  app.post('/api/v1/workspaces/:id/repos/remove', { config: PROJECT_ROUTES }, async (request) => {
+  app.post('/api/v1/workspaces/:id/repos/remove', { config: USER_DECISION }, async (request) => {
     const id = workspaceId(request);
     const body = parse(workspaceRepoRequestSchema, request.body);
     confirmName(request, body.confirmation, workspaces.get(id).name);
     return workspaces.removeRepo(id, body.path);
   });
-  app.post('/api/v1/workspaces/:id/rename', { config: PROJECT_ROUTES }, async (request) => {
+  app.post('/api/v1/workspaces/:id/rename', { config: USER_DECISION }, async (request) => {
     const id = workspaceId(request);
     const body = parse(workspaceRenameRequestSchema, request.body);
     confirmName(request, body.confirmation, workspaces.get(id).name);
     return workspaces.rename(id, body.name);
   });
-  app.post('/api/v1/workspaces/:id/delete', { config: PROJECT_ROUTES }, async (request) => {
+  app.post('/api/v1/workspaces/:id/delete', { config: USER_DECISION }, async (request) => {
     const id = workspaceId(request);
     const body = parse(workspaceDeleteRequestSchema, request.body ?? {});
     confirmName(request, body.confirmation, workspaces.get(id).name);
@@ -877,41 +965,39 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   // --- Data: what JERRY stores, and deleting old data ---------------------------------------------
   // The CLI previews and asks for the typed confirmation in a terminal; the dashboard's browser
   // session must send it ("delete", or the repository root), and the preHandler checks its CSRF token
-  // and Origin.
-
-  const DATA_ROUTES = TOKEN_OR_SESSION;
+  // and Origin. User decisions: the user's token or the dashboard, never the agent token.
   const dataContext: DataContext = { store, logsDir: path.join(options.jerryHome, 'logs'), retentionDays: options.retentionDays ?? DEFAULT_RETENTION_DAYS };
 
-  app.get('/api/v1/data/usage', { config: TOKEN_OR_SESSION }, async () => dataUsage(dataContext, new Date()));
+  app.get('/api/v1/data/usage', { config: READ }, async () => dataUsage(dataContext, new Date()));
 
-  app.post('/api/v1/data/prune/preview', { config: DATA_ROUTES }, async (request) => {
+  app.post('/api/v1/data/prune/preview', { config: USER_DECISION }, async (request) => {
     const { confirmation: _ignored, ...options } = parse(pruneRequestSchema, request.body);
     return previewPrune(dataContext, options, new Date());
   });
 
-  app.post('/api/v1/data/prune', { config: DATA_ROUTES }, async (request) => {
+  app.post('/api/v1/data/prune', { config: USER_DECISION }, async (request) => {
     const { confirmation, ...options } = parse(pruneRequestSchema, request.body);
     const fromDashboard = request.client?.kind === 'session';
     if (fromDashboard && confirmation !== 'delete') throw new HttpError(400, 'Deleting data from the dashboard needs the typed confirmation "delete"');
-    return prune(dataContext, options, new Date(), fromDashboard ? 'dashboard' : 'cli');
+    return prune(dataContext, options, new Date(), decisionChannel(request));
   });
 
-  app.post('/api/v1/data/forget/preview', { config: DATA_ROUTES }, async (request) => {
+  app.post('/api/v1/data/forget/preview', { config: USER_DECISION }, async (request) => {
     const body = parse(forgetRequestSchema, request.body);
     return previewForget(dataContext, forgetRoot(body.path));
   });
 
-  app.post('/api/v1/data/forget', { config: DATA_ROUTES }, async (request) => {
+  app.post('/api/v1/data/forget', { config: USER_DECISION }, async (request) => {
     const body = parse(forgetRequestSchema, request.body);
     const repoRoot = forgetRoot(body.path);
     const fromDashboard = request.client?.kind === 'session';
     if (fromDashboard && !typedRoot(body.confirmation, repoRoot)) throw new HttpError(400, `Type the repository root (${repoRoot}) to make JERRY forget it`);
-    return forget(dataContext, repoRoot, new Date(), fromDashboard ? 'dashboard' : 'cli');
+    return forget(dataContext, repoRoot, new Date(), decisionChannel(request));
   });
 
-  app.get('/api/v1/tasks', { config: TOKEN_OR_SESSION }, async () => summarize(store, store.snapshot().tasks));
+  app.get('/api/v1/tasks', { config: READ }, async () => summarize(store, store.snapshot().tasks));
 
-  app.get('/api/v1/tasks/:taskId', { config: TOKEN_OR_SESSION }, async (request) => {
+  app.get('/api/v1/tasks/:taskId', { config: READ }, async (request) => {
     const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId);
     const task = store.snapshot().tasks.find((candidate) => candidate.taskId === taskId);
     if (task === undefined) throw new HttpError(404, `Unknown task ${taskId}`);
@@ -928,14 +1014,14 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   });
 
   /** Claude's implementation report (through MCP): moves the task to the user's acceptance. */
-  app.post('/api/v1/tasks/:taskId/reports', { config: TOKEN_ONLY }, async (request, reply) => {
+  app.post('/api/v1/tasks/:taskId/reports', { config: AGENT }, async (request, reply) => {
     const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId);
     const body = parse(reportSubmitRequestSchema, request.body);
     const sessionId = await store.resolveOrigin(body.origin);
     return reply.code(201).send(await store.submitReport(taskId, body.report, body.submittedBy, sessionId, new Date()));
   });
 
-  app.post('/api/v1/tasks', { config: TOKEN_ONLY }, async (request, reply) => {
+  app.post('/api/v1/tasks', { config: AGENT }, async (request, reply) => {
     const body = parse(taskCreateRequestSchema, request.body);
     if ((body.document?.analysis?.reports.length ?? 0) > 0) throw new HttpError(400, 'a new task has no analysis reports to cite; start it with an intake (start_task) first');
     const repoRoot = findGitRoot(realPathOfNearestExisting(body.repoPath));
@@ -952,7 +1038,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   });
 
   /** Earlier work in a project, by files or words: what JERRY recorded, for Claude (read-only). */
-  app.get('/api/v1/history', { config: TOKEN_ONLY }, async (request): Promise<HistoryResponse> => {
+  app.get('/api/v1/history', { config: AGENT }, async (request): Promise<HistoryResponse> => {
     const raw = request.query as Record<string, unknown>;
     // paths is repeated (?paths=a&paths=b): a glob may hold commas ({a,b}).
     const list = (value: unknown): string[] => (Array.isArray(value) ? value.map(String) : typeof value === 'string' && value !== '' ? [value] : []);
@@ -964,7 +1050,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   });
 
   /** Task intake before a plan: DISCOVERY with the area to analyse; nothing is approved. */
-  app.post('/api/v1/tasks/intake', { config: TOKEN_ONLY }, async (request, reply) => {
+  app.post('/api/v1/tasks/intake', { config: AGENT }, async (request, reply) => {
     const body = parse(taskIntakeRequestSchema, request.body);
     const repoRoot = findGitRoot(realPathOfNearestExisting(body.repoPath));
     if (repoRoot === null) throw new HttpError(400, `${body.repoPath} is not inside a Git repository`);
@@ -980,7 +1066,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     return reply.code(201).send(await store.startTask({ repoRoot, title: body.title, goal: body.goal, focus: body.focus, analysts, submittedBy: body.submittedBy, sessionId }, new Date()));
   });
 
-  app.post('/api/v1/tasks/:taskId/plan', { config: TOKEN_ONLY }, async (request) => {
+  app.post('/api/v1/tasks/:taskId/plan', { config: AGENT }, async (request) => {
     const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId);
     const body = parse(planReviseRequestSchema, request.body);
     // A plan may cite only this task's analysis reports.
@@ -997,7 +1083,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   });
 
   /** An analyst's evidence-backed report (through MCP); Core checks its citations. */
-  app.post('/api/v1/tasks/:taskId/analyses', { config: TOKEN_ONLY }, async (request, reply) => {
+  app.post('/api/v1/tasks/:taskId/analyses', { config: AGENT }, async (request, reply) => {
     const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId);
     const body = parse(analysisReportRequestSchema, request.body);
     const task = store.snapshot().tasks.find((candidate) => candidate.taskId === taskId);
@@ -1007,7 +1093,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   });
 
   /** Claude's progress notes (through MCP). Notes only: no state changes. */
-  app.post('/api/v1/tasks/:taskId/checkpoints', { config: TOKEN_ONLY }, async (request, reply) => {
+  app.post('/api/v1/tasks/:taskId/checkpoints', { config: AGENT }, async (request, reply) => {
     const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId);
     const body = parse(checkpointRequestSchema, request.body);
     const sessionId = await store.resolveOrigin(body.origin);
@@ -1018,34 +1104,34 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
    * A reversible decision from the dashboard (approve or reject a plan, accept or reject a report,
    * approve or reject a fix plan, skip review). The task ID must be typed only when the user chose
    * typed confirmations in Settings; a task ID sent anyway must match. The session, its CSRF token and
-   * the Origin are checked by the preHandler in both modes; token (CLI) requests confirm in a terminal.
+   * the Origin are checked by the preHandler in both modes; requests with the user's token (CLI)
+   * confirm in a terminal. The agent token never reaches these routes (USER_DECISION).
    * Irreversible actions (cancel, project removal, prune, forget, exclusion) check their own typed
    * confirmation and ignore this setting.
    */
   const checkDecisionConfirmation = (request: FastifyRequest, taskId: string, typed: string | undefined, message: string): void => {
-    if (request.client?.kind !== 'session') return;
+    if (request.client?.kind === 'user') return;
     const given = typed?.trim().toUpperCase() ?? '';
     const required = store.settings().decisionConfirmation === 'typed';
     if ((required || given !== '') && given !== taskId.toUpperCase()) throw new HttpError(400, message);
   };
 
-  app.post('/api/v1/tasks/:taskId/approvals', { config: TOKEN_OR_SESSION }, async (request, reply) => {
+  app.post('/api/v1/tasks/:taskId/approvals', { config: USER_DECISION }, async (request, reply) => {
     const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId);
     const body = parse(approvalRequestSchema, request.body);
-    const fromDashboard = request.client?.kind === 'session';
     checkDecisionConfirmation(request, taskId, body.confirmTaskId, `Approving from the dashboard needs the task ID typed as confirmation (${taskId})`);
-    return reply.code(201).send(await store.recordApproval(taskId, body, new Date(), fromDashboard ? 'dashboard' : 'cli'));
+    return reply.code(201).send(await store.recordApproval(taskId, body, new Date(), decisionChannel(request)));
   });
 
   /**
    * Claude waits here for the user's decision after a submission (MCP wait_for_decision): a long poll
    * that answers at once when the decision on that stage and version exists, else when it arrives or
-   * after waitMs ('pending'). Token only and read-only: waiting never decides anything.
+   * after waitMs ('pending'). Bearer tokens only (AGENT) and read-only: waiting never decides anything.
    */
   const decisionWaits = new DecisionWaits(store);
   // Closing Core does not wait for a long poll: open waits answer 'pending' at once.
   app.addHook('preClose', async () => decisionWaits.abortAll());
-  app.get('/api/v1/tasks/:taskId/decision', { config: TOKEN_ONLY }, async (request, reply) => {
+  app.get('/api/v1/tasks/:taskId/decision', { config: AGENT }, async (request, reply) => {
     const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId);
     const query = parse(decisionWaitQuerySchema, request.query);
     // The client went away (Claude stopped the call): stop waiting.
@@ -1054,13 +1140,13 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     return decisionWaits.wait({ taskId, ...query, signal: gone.signal });
   });
 
-  app.get('/api/v1/tasks/:taskId/transitions', { config: TOKEN_OR_SESSION }, async (request) => {
+  app.get('/api/v1/tasks/:taskId/transitions', { config: READ }, async (request) => {
     const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId);
     return store.listTransitions(taskId);
   });
 
   /** Quality findings, newest first: by task, repository, status or file. */
-  app.get('/api/v1/findings', { config: TOKEN_OR_SESSION }, async (request) => {
+  app.get('/api/v1/findings', { config: READ }, async (request) => {
     const query = parse(findingsQuerySchema, request.query);
     const repoRoot = query.repoPath === undefined ? undefined : (findGitRoot(realPathOfNearestExisting(query.repoPath)) ?? undefined);
     return store.findings({
@@ -1072,7 +1158,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     });
   });
 
-  app.get('/api/v1/findings/:findingId', { config: TOKEN_OR_SESSION }, async (request) => {
+  app.get('/api/v1/findings/:findingId', { config: READ }, async (request) => {
     const findingId = parse(findingIdSchema, (request.params as { findingId: string }).findingId.toUpperCase());
     const [finding] = await store.findings({ findingId });
     if (finding === undefined) throw new HttpError(404, `Unknown finding ${findingId}`);
@@ -1080,15 +1166,14 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   });
 
   /** The user's decision on a finding, with a reason; the CLI asks in a terminal, the dashboard in a dialog. */
-  app.post('/api/v1/findings/:findingId/status', { config: TOKEN_OR_SESSION }, async (request) => {
+  app.post('/api/v1/findings/:findingId/status', { config: USER_DECISION }, async (request) => {
     const findingId = parse(findingIdSchema, (request.params as { findingId: string }).findingId.toUpperCase());
     const body = parse(findingStatusRequestSchema, request.body);
-    const fromDashboard = request.client?.kind === 'session';
-    return store.setFindingStatus(findingId, body.status, body.reason, new Date(), fromDashboard ? 'dashboard' : 'cli');
+    return store.setFindingStatus(findingId, body.status, body.reason, new Date(), decisionChannel(request));
   });
 
   /** Up to three implementers with disjoint files; Claude's orchestrator records them through MCP. */
-  app.post('/api/v1/tasks/:taskId/assignments', { config: TOKEN_ONLY }, async (request, reply) => {
+  app.post('/api/v1/tasks/:taskId/assignments', { config: AGENT }, async (request, reply) => {
     const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId.toUpperCase());
     const body = parse(assignmentRequestSchema, request.body);
     return reply.code(201).send(await store.assignWork(taskId, body.assignments, await store.resolveOrigin(body.origin), new Date()));
@@ -1097,7 +1182,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   // --- Final report and the optional Artifact ----------------------------------------------------
 
   /** The final report, assembled from stored facts; a draft until the task is DONE. */
-  app.get('/api/v1/tasks/:taskId/final-report', { config: TOKEN_OR_SESSION }, async (request) => {
+  app.get('/api/v1/tasks/:taskId/final-report', { config: READ }, async (request) => {
     const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId.toUpperCase());
     const task = store.snapshot().tasks.find((candidate) => candidate.taskId === taskId);
     if (task === undefined) throw new HttpError(404, `Unknown task ${taskId}`);
@@ -1105,20 +1190,20 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   });
 
   /** The user's choice about an Artifact, recorded by the skill through MCP. */
-  app.post('/api/v1/tasks/:taskId/artifact', { config: TOKEN_ONLY }, async (request, reply) => {
+  app.post('/api/v1/tasks/:taskId/artifact', { config: AGENT }, async (request, reply) => {
     const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId.toUpperCase());
     const body = parse(artifactDecisionRequestSchema, request.body);
     const { origin, ...decision } = body;
     return reply.code(201).send(await store.recordArtifactDecision(taskId, decision, await store.resolveOrigin(origin), new Date()));
   });
 
-  app.get('/api/v1/artifacts', { config: TOKEN_OR_SESSION }, async () => store.artifactDecisions());
+  app.get('/api/v1/artifacts', { config: READ }, async () => store.artifactDecisions());
 
   /** The user's switch for an Artifact when the task is done (task page); Claude has no way to set it. */
-  app.post('/api/v1/tasks/:taskId/artifact-request', { config: TOKEN_OR_SESSION }, async (request) => {
+  app.post('/api/v1/tasks/:taskId/artifact-request', { config: USER_DECISION }, async (request) => {
     const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId.toUpperCase());
     const body = parse(artifactRequestSchema, request.body);
-    const task = await store.setArtifactRequest(taskId, body, new Date(), request.client?.kind === 'session' ? 'dashboard' : 'cli');
+    const task = await store.setArtifactRequest(taskId, body, new Date(), decisionChannel(request));
     return { taskId, request: effectiveArtifactRequest(task) };
   });
 
@@ -1131,11 +1216,11 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   };
 
   /** A finished eval run, recorded by the CLI runner. */
-  app.post('/api/v1/evals/runs', { config: TOKEN_ONLY }, async (request, reply) => reply.code(201).send(await evals.recordRun(parse(evalRunSubmissionSchema, request.body), new Date())));
-  app.get('/api/v1/evals/runs', { config: TOKEN_OR_SESSION }, async () => evals.runs());
-  app.get('/api/v1/evals/runs/:runId', { config: TOKEN_OR_SESSION }, async (request) => evals.run((request.params as { runId: string }).runId));
-  app.get('/api/v1/evals/status', { config: TOKEN_OR_SESSION }, async () => evals.status(await ownFingerprint()));
-  app.get('/api/v1/evals/calibration', { config: TOKEN_OR_SESSION }, async () => evals.calibration());
+  app.post('/api/v1/evals/runs', { config: USER_ONLY }, async (request, reply) => reply.code(201).send(await evals.recordRun(parse(evalRunSubmissionSchema, request.body), new Date())));
+  app.get('/api/v1/evals/runs', { config: READ }, async () => evals.runs());
+  app.get('/api/v1/evals/runs/:runId', { config: READ }, async (request) => evals.run((request.params as { runId: string }).runId));
+  app.get('/api/v1/evals/status', { config: READ }, async () => evals.status(await ownFingerprint()));
+  app.get('/api/v1/evals/calibration', { config: READ }, async () => evals.calibration());
 
   // "jerry eval run" from the dashboard: the CLI next to this Core runs in the background.
   const distDir = options.dashboardDir === undefined ? null : path.resolve(options.dashboardDir, '..', '..');
@@ -1152,7 +1237,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     const recorded = since === null || status.state === 'running' ? undefined : (await evals.runs()).filter((run) => Date.parse(run.startedAt) >= since.getTime()).sort((a, b) => a.startedAt.localeCompare(b.startedAt))[0];
     return { ...status, runId: recorded?.runId ?? null };
   };
-  app.get('/api/v1/evals/runner', { config: TOKEN_OR_SESSION }, async () => runnerStatus());
+  app.get('/api/v1/evals/runner', { config: READ }, async () => runnerStatus());
   /** Starts real Claude Code sessions: only from the dashboard (session and CSRF), where the user confirmed it. */
   app.post('/api/v1/evals/runner/start', { config: SESSION_ONLY }, async (request, reply) => {
     try {
@@ -1170,14 +1255,14 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   });
 
   /** The user's baseline choice: the dashboard also needs the run ID typed. */
-  app.post('/api/v1/evals/baseline', { config: TOKEN_OR_SESSION }, async (request) => {
+  app.post('/api/v1/evals/baseline', { config: USER_DECISION }, async (request) => {
     const body = parse(evalBaselineRequestSchema, request.body);
     if (request.client?.kind === 'session' && body.confirm?.trim().toUpperCase() !== body.runId.toUpperCase()) throw new HttpError(400, `Type ${body.runId} to confirm the new baseline`);
     return evals.setBaseline(body.runId, body.note, new Date());
   });
 
   /** A human label of a rubric result, for calibration. */
-  app.post('/api/v1/evals/labels', { config: TOKEN_OR_SESSION }, async (request, reply) => {
+  app.post('/api/v1/evals/labels', { config: USER_DECISION }, async (request, reply) => {
     await evals.label(parse(evalLabelRequestSchema, request.body), new Date());
     return reply.code(201).send(await evals.calibration());
   });
@@ -1186,76 +1271,76 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   const taskParam = (request: { params: unknown }): string => parse(taskIdSchema, (request.params as { taskId: string }).taskId.toUpperCase());
 
   /** A reviewer's submission (through MCP); tied to its subagent run through the hook's record. */
-  app.post('/api/v1/tasks/:taskId/reviews', { config: TOKEN_ONLY }, async (request, reply) => {
+  app.post('/api/v1/tasks/:taskId/reviews', { config: AGENT }, async (request, reply) => {
     const body = parse(reviewSubmissionRequestSchema, request.body);
     const [sessionId, agentId] = await Promise.all([store.resolveOrigin(body.origin), store.resolveAgent(body.origin)]);
     return reply.code(201).send(await store.submitReview(taskParam(request), body.review, sessionId, agentId, new Date()));
   });
 
   /** Claude closes a round although a reviewer did not report (the gap stays visible). */
-  app.post('/api/v1/tasks/:taskId/reviews/finish', { config: TOKEN_ONLY }, async (request) => store.finishReview(taskParam(request), new Date()));
+  app.post('/api/v1/tasks/:taskId/reviews/finish', { config: AGENT }, async (request) => store.finishReview(taskParam(request), new Date()));
 
-  app.get('/api/v1/tasks/:taskId/review', { config: TOKEN_OR_SESSION }, async (request) => store.reviewState(taskParam(request)));
+  app.get('/api/v1/tasks/:taskId/review', { config: READ }, async (request) => store.reviewState(taskParam(request)));
 
   /** Claude's remediation plan; the user decides on it like on a plan (stage REVIEW_FIX). */
-  app.post('/api/v1/tasks/:taskId/fix-plan', { config: TOKEN_ONLY }, async (request, reply) => {
+  app.post('/api/v1/tasks/:taskId/fix-plan', { config: AGENT }, async (request, reply) => {
     const body = parse(fixPlanRequestSchema, request.body);
     return reply.code(201).send(await store.proposeFixes(taskParam(request), body.plan, await store.resolveOrigin(body.origin), new Date()));
   });
 
   /** The approved fixes are done; the same reviewers check again. */
-  app.post('/api/v1/tasks/:taskId/fixes', { config: TOKEN_ONLY }, async (request, reply) => {
+  app.post('/api/v1/tasks/:taskId/fixes', { config: AGENT }, async (request, reply) => {
     const body = parse(fixesReportRequestSchema, request.body);
     return reply.code(201).send(await store.reportFixes(taskParam(request), body.summary, await store.resolveOrigin(body.origin), new Date()));
   });
 
   /** The user waives the review with a reason; the dashboard needs the typed task ID only in typed mode. */
-  app.post('/api/v1/tasks/:taskId/review/skip', { config: TOKEN_OR_SESSION }, async (request) => {
+  app.post('/api/v1/tasks/:taskId/review/skip', { config: USER_DECISION }, async (request) => {
     const taskId = taskParam(request);
     const body = parse(reviewSkipRequestSchema, request.body);
-    const fromDashboard = request.client?.kind === 'session';
     checkDecisionConfirmation(request, taskId, body.confirmTaskId, `Type ${taskId} to confirm waiving the review`);
-    return store.skipReview(taskId, body.reason, new Date(), fromDashboard ? 'dashboard' : 'cli');
+    return store.skipReview(taskId, body.reason, new Date(), decisionChannel(request));
   });
 
   /**
    * The user re-runs the final checks of a task waiting in FINAL_REPORT; Core sets DONE if they pass.
-   * User only: the CLI token (the terminal asked) or a dashboard session with CSRF and Origin, typed
-   * task ID as Settings require. Not an MCP tool, and the hard rules block agents' direct calls.
+   * User only: the user's token (the CLI; the terminal asked) or a dashboard session with CSRF and
+   * Origin, typed task ID as Settings require. Not an MCP tool; the agent token is refused
+   * (USER_DECISION), and the hard rules block agents' direct calls.
    */
-  app.post('/api/v1/tasks/:taskId/final-checks', { config: TOKEN_OR_SESSION }, async (request): Promise<FinalChecksRerun> => {
+  app.post('/api/v1/tasks/:taskId/final-checks', { config: USER_DECISION }, async (request): Promise<FinalChecksRerun> => {
     const taskId = taskParam(request);
     const body = parse(finalChecksRerunRequestSchema, request.body ?? {});
-    const fromDashboard = request.client?.kind === 'session';
     checkDecisionConfirmation(request, taskId, body.confirmTaskId, `Type ${taskId} to confirm re-running its final checks`);
-    return store.rerunFinalChecks(taskId, new Date(), fromDashboard ? 'dashboard' : 'cli');
+    return store.rerunFinalChecks(taskId, new Date(), decisionChannel(request));
   });
 
   /**
    * The user completes a task the final checks refused, with a reason (a recorded waiver). User only:
-   * the CLI token (the terminal asked for the reason and the typed task ID) or a dashboard session with
-   * CSRF and Origin. Completing cannot be undone, so the dashboard always needs the typed task ID,
-   * whatever the decision confirmation setting says. Not an MCP tool; the hard rules block agents.
+   * the user's token (the CLI; the terminal asked for the reason and the typed task ID) or a dashboard
+   * session with CSRF and Origin. Completing cannot be undone, so the dashboard always needs the typed
+   * task ID, whatever the decision confirmation setting says. Not an MCP tool; the agent token is
+   * refused (USER_DECISION) and the hard rules block agents.
    */
-  app.post('/api/v1/tasks/:taskId/final-checks/waive', { config: TOKEN_OR_SESSION }, async (request): Promise<FinalChecksRerun> => {
+  app.post('/api/v1/tasks/:taskId/final-checks/waive', { config: USER_DECISION }, async (request): Promise<FinalChecksRerun> => {
     const taskId = taskParam(request);
     const body = parse(finalChecksWaiveRequestSchema, request.body);
     const fromDashboard = request.client?.kind === 'session';
     if (fromDashboard && body.confirmTaskId?.trim().toUpperCase() !== taskId) {
       throw new HttpError(400, `Completing ${taskId} despite its final checks needs the task ID typed as confirmation (${taskId})`);
     }
-    return store.waiveFinalChecks(taskId, body.reason, body.seen, new Date(), fromDashboard ? 'dashboard' : 'cli');
+    return store.waiveFinalChecks(taskId, body.reason, body.seen, new Date(), decisionChannel(request));
   });
 
   /** The task's current implementer assignments; cheap, no Git. */
-  app.get('/api/v1/tasks/:taskId/assignments', { config: TOKEN_OR_SESSION }, async (request) => {
+  app.get('/api/v1/tasks/:taskId/assignments', { config: READ }, async (request) => {
     const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId.toUpperCase());
     if (!store.snapshot().tasks.some((candidate) => candidate.taskId === taskId)) throw new HttpError(404, `Unknown task ${taskId}`);
     return store.assignmentsOf(taskId);
   });
 
   /** Where the work strays from the plan, the step layers and the assignments. */
-  app.get('/api/v1/tasks/:taskId/drift', { config: TOKEN_OR_SESSION }, async (request) => {
+  app.get('/api/v1/tasks/:taskId/drift', { config: READ }, async (request) => {
     const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId.toUpperCase());
     const task = store.snapshot().tasks.find((candidate) => candidate.taskId === taskId);
     if (task === undefined) throw new HttpError(404, `Unknown task ${taskId}`);
@@ -1263,7 +1348,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   });
 
   /** The tests that belong to the task's changes, and the command limited to them. */
-  app.get('/api/v1/tasks/:taskId/targeted-tests', { config: TOKEN_OR_SESSION }, async (request) => {
+  app.get('/api/v1/tasks/:taskId/targeted-tests', { config: READ }, async (request) => {
     const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId.toUpperCase());
     const task = store.snapshot().tasks.find((candidate) => candidate.taskId === taskId);
     if (task === undefined) throw new HttpError(404, `Unknown task ${taskId}`);
@@ -1271,7 +1356,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   });
 
   /** The implementation report prefilled from what JERRY recorded; Claude completes and submits it. */
-  app.get('/api/v1/tasks/:taskId/report-draft', { config: TOKEN_ONLY }, async (request): Promise<ReportDraft> => {
+  app.get('/api/v1/tasks/:taskId/report-draft', { config: AGENT }, async (request): Promise<ReportDraft> => {
     const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId.toUpperCase());
     const task = store.snapshot().tasks.find((candidate) => candidate.taskId === taskId);
     if (task === undefined) throw new HttpError(404, `Unknown task ${taskId}`);
@@ -1280,7 +1365,7 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
   });
 
   /** Every plan version, oldest first; the dashboard and CLI diff them. */
-  app.get('/api/v1/tasks/:taskId/plans', { config: TOKEN_OR_SESSION }, async (request) => {
+  app.get('/api/v1/tasks/:taskId/plans', { config: READ }, async (request) => {
     const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId);
     return store.planVersions(taskId);
   });
@@ -1290,21 +1375,23 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
    * cannot be undone, so the dashboard always needs the typed task ID for it, whatever the decision
    * confirmation setting says; pause and resume are one click.
    */
-  app.post('/api/v1/tasks/:taskId/transitions', { config: TOKEN_OR_SESSION }, async (request, reply) => {
+  app.post('/api/v1/tasks/:taskId/transitions', { config: USER_DECISION }, async (request, reply) => {
     const taskId = parse(taskIdSchema, (request.params as { taskId: string }).taskId);
     const body = parse(taskTransitionRequestSchema, request.body);
     const fromDashboard = request.client?.kind === 'session';
     if (fromDashboard && body.event === 'task.cancelled' && body.confirmTaskId !== taskId) {
       throw new HttpError(400, `Cancelling from the dashboard needs the task ID typed as confirmation (${taskId})`);
     }
-    return reply.code(201).send(await store.controlTask(taskId, body.event, body.reason, new Date(), fromDashboard ? 'dashboard' : 'cli'));
+    return reply.code(201).send(await store.controlTask(taskId, body.event, body.reason, new Date(), decisionChannel(request)));
   });
 
-  app.post('/api/v1/database/backups', { config: TOKEN_OR_SESSION }, async (_request, reply) => reply.code(201).send({ file: await store.backup('manual') }));
+  app.post('/api/v1/database/backups', { config: USER_DECISION }, async (_request, reply) => reply.code(201).send({ file: await store.backup('manual') }));
 
-  app.get('/api/v1/database/health', { config: TOKEN_ONLY }, async () => ({ integrity: store.integrityCheck(), migration: store.migration, file: store.databaseFile }));
+  // Read-only and bearer-only as before the token split (doctor); no decision, so the agent token may ask.
+  app.get('/api/v1/database/health', { config: AGENT }, async () => ({ integrity: store.integrityCheck(), migration: store.migration, file: store.databaseFile }));
 
-  app.post('/api/v1/shutdown', { config: TOKEN_ONLY }, async (request, reply) => {
+  /** Stopping Core switches the guard off: the user's token only (jerry core stop, the desktop app). */
+  app.post('/api/v1/shutdown', { config: USER_ONLY }, async (request, reply) => {
     const body = parse(coreShutdownRequestSchema, request.body ?? {});
     setImmediate(() => options.onShutdownRequested(body));
     return reply.code(202).send({ stopping: true });
@@ -1314,17 +1401,32 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
 }
 
 /**
- * Bearer token: CLI and hooks. A request carrying both a token and an Origin header came from a
- * browser page holding the token, which never happens legitimately, so it is refused.
+ * Where a user decision came from: 'cli' for the user's token (the jerry CLI, the desktop app),
+ * 'dashboard' for a browser session. Any other caller is refused; the preHandler already refuses it
+ * on USER_DECISION routes, this keeps a misdeclared route from recording an agent as the user.
+ */
+function decisionChannel(request: FastifyRequest): 'cli' | 'dashboard' {
+  const client = request.client;
+  if (client === null) throw new HttpError(401, 'Missing or invalid JERRY credentials');
+  if (client.kind === 'session') return 'dashboard';
+  if (client.kind === 'user') return 'cli';
+  throw new HttpError(403, accessDeniedMessage('USER_DECISION', client.kind));
+}
+
+/**
+ * Bearer token: the user's token (CLI, desktop app) or the agent token (hooks, MCP server, status
+ * line). A request carrying both a token and an Origin header came from a browser page holding the
+ * token, which never happens legitimately, so it is refused.
  * Session cookie: the dashboard; a cross-site Origin or Sec-Fetch-Site is refused.
  */
-function identify(request: FastifyRequest, token: string, sessions: BrowserSessions, origins: readonly string[]): Client | null {
+function identify(request: FastifyRequest, tokens: { user: string; agent: string | undefined }, sessions: BrowserSessions, origins: readonly string[]): Client | null {
   const authorization = request.headers.authorization;
   if (authorization !== undefined) {
     const presented = authorization.startsWith('Bearer ') ? authorization.slice('Bearer '.length) : '';
-    if (!safeEqual(presented, token)) throw new HttpError(401, 'Missing or invalid JERRY token');
+    const kind = bearerClientKind(presented, tokens);
+    if (kind === null) throw new HttpError(401, 'Missing or invalid JERRY token');
     if (request.headers.origin !== undefined) throw new HttpError(403, 'Browser-originated requests may not use the CLI token');
-    return { kind: 'token' };
+    return { kind };
   }
   const sessionId = readCookie(request.headers.cookie, SESSION_COOKIE);
   if (sessionId === null) return null;

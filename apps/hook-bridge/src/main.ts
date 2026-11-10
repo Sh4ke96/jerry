@@ -1,11 +1,11 @@
 import fs from 'node:fs';
 // Types only from the contracts index: the bridge runs on every tool call and must not load Zod
 // (checked by the build). The guards and the emoji vocabulary are dependency-free.
-import type { EventEnvelope, GateCheckRequest, GateDecision, OpenTask, SessionRegistrationResponse, SessionStartInput } from '@jerry/contracts';
+import type { EventEnvelope, GateCheckRequest, GateDecision, OpenTask, PreToolUseInput, SessionRegistrationResponse, SessionStartInput } from '@jerry/contracts';
 import { EMOJI, STATE_EMOJI, decorate } from '@jerry/contracts/emoji';
 import { isGateDecision, isPreToolUseInput, isSessionRegistrationResponse, isSessionStartInput } from '@jerry/contracts/guards';
 import { autostartCore, protectedRoots, readCoreRuntimeInfo, readProjectsFile, requestCore, resolveJerryHome, spoolEvent } from '@jerry/platform';
-import { absolutePath, classifyToolCall, comparablePath, evaluateHardRules, isComparableInside } from '@jerry/policy-engine';
+import { absolutePath, classifyToolCall, comparablePath, evaluateHardRules, isComparableInside, protectedReadRoots, type ToolAction } from '@jerry/policy-engine';
 import { buildEventEnvelope, newEventId, type EnvelopeOverrides } from '@jerry/trace-engine';
 import { STATE_LABELS } from '@jerry/workflow';
 
@@ -18,6 +18,8 @@ import { STATE_LABELS } from '@jerry/workflow';
  *      the hard rules cannot be checked and the call is blocked.
  *   Outside the projects the user added (JERRY_HOME/run/projects.json) that is all: no Core call,
  *   no record, no Core start. Without that file Core decides, as it always did.
+ *   Read tools (Read, NotebookRead, Grep, Glob, LS) stop here too: a permitted read never reaches
+ *   Core; only a read of JERRY's own data is blocked and recorded.
  *   2. Ask Core for the monitoring verdict (recorded in the gate log).
  *      Once the hard rules passed, any Core problem lets the call proceed: an outage costs
  *      monitoring, never Claude's ability to work.
@@ -35,6 +37,12 @@ const WATCHDOG_MS = 8000;
 const MAX_STDIN_BYTES = 64 * 1024 * 1024;
 /** Only these tool_input fields are forwarded to Core: never file contents or edit payloads. */
 const FORWARDED_TOOL_INPUT_FIELDS = ['file_path', 'notebook_path', 'command'] as const;
+/**
+ * Read tools (Read, NotebookRead, Grep, Glob, LS) also name where they read in these fields. They
+ * are judged here only: a read never goes to Core unless it is blocked.
+ */
+const READ_TOOLS: ReadonlySet<string> = new Set(['Read', 'NotebookRead', 'Grep', 'Glob', 'LS']);
+const READ_TOOL_INPUT_FIELDS = ['path', 'pattern', 'glob'] as const;
 
 /** pre-tool-use and session-start answer Claude Code; event records telemetry hooks. */
 type BridgeEvent = 'pre-tool-use' | 'session-start' | 'event';
@@ -82,9 +90,12 @@ async function preToolUse(raw: string): Promise<void> {
   if (!isPreToolUseInput(input)) onFailure('unrecognised PreToolUse input');
 
   const forwardedInput: Record<string, unknown> = {};
-  for (const field of FORWARDED_TOOL_INPUT_FIELDS) {
+  const fields = READ_TOOLS.has(input.tool_name) ? [...FORWARDED_TOOL_INPUT_FIELDS, ...READ_TOOL_INPUT_FIELDS] : FORWARDED_TOOL_INPUT_FIELDS;
+  for (const field of fields) {
     if (field in input.tool_input) forwardedInput[field] = input.tool_input[field];
   }
+  const action = classifyToolCall(input.tool_name, forwardedInput);
+  if (action.kind === 'file-read') await readToolCall(action, input);
   const eventId = newEventId();
   const request: GateCheckRequest = {
     eventId,
@@ -98,7 +109,7 @@ async function preToolUse(raw: string): Promise<void> {
   // What gets spooled if Core cannot record the call itself (same event ID: replay stays idempotent).
   const spoolable = (overrides: EnvelopeOverrides) => buildEventEnvelope({ ...input, tool_input: forwardedInput }, { eventId, ...overrides });
 
-  const hardRule = evaluateHardRules(classifyToolCall(request.toolName, request.toolInput), request.cwd, {
+  const hardRule = evaluateHardRules(action, request.cwd, {
     platform: process.platform,
     protectedRoots: protectedRoots(),
     realPath: (target) => target,
@@ -129,6 +140,44 @@ async function preToolUse(raw: string): Promise<void> {
     proceed();
   }
   emit(decision);
+}
+
+/**
+ * Read tools: only the hard rule on JERRY's own data applies, judged here with real paths (links,
+ * junctions and short names resolved). A permitted read ends here, with no Core round-trip and no
+ * record. A blocked one is recorded in the session's project like other blocked attempts: to
+ * Core, or to the spool when Core is down; outside the projects the user added, nothing is recorded.
+ */
+async function readToolCall(action: Extract<ToolAction, { kind: 'file-read' }>, input: PreToolUseInput): Promise<never> {
+  const hardRule = evaluateHardRules(action, input.cwd, {
+    platform: process.platform,
+    protectedRoots: [],
+    protectedReadRoots: realReadRoots(resolveJerryHome()),
+    realPath: nearestRealPath,
+  });
+  if (hardRule === null) {
+    hardRulesCleared = true;
+    proceed();
+  }
+  const reason = `${hardRule.reason} [${hardRule.ruleId}]`;
+  if (outsideProjects(null, input.cwd)) block(reason);
+  // Recorded by the session's working directory: the path read is in JERRY_HOME, which is no
+  // project, so the record names it in the reason, not as the call's target.
+  const event = buildEventEnvelope({ ...input, tool_input: {} }, { verdict: 'DENY', ruleId: hardRule.ruleId, extraPayload: { reason: hardRule.reason } });
+  if (event !== null) {
+    try {
+      await requestCore(readCoreRuntimeInfo(resolveJerryHome()), { method: 'POST', path: '/api/v1/events', body: { events: [event] }, timeoutMs: CORE_TIMEOUT_MS });
+    } catch {
+      spool(event);
+    }
+  }
+  block(reason);
+}
+
+/** JERRY's data folders as configured and where they really are (JERRY_HOME or a folder may be a link). */
+function realReadRoots(home: string): string[] {
+  const folders = protectedReadRoots(home);
+  return [...new Set([...folders, ...folders.map(nearestRealPath)])];
 }
 
 function spool(event: EventEnvelope | null): void {
@@ -253,7 +302,7 @@ function emit(decision: GateDecision): never {
  * rules Claude is told about.
  */
 const HARD_RULES_TEXT =
-  'Hard rules, always enforced: you may not run any Git command that changes anything (commit, push, merge, rebase, checkout, switch, reset, restore, stash, fetch, pull, tag, branch changes, config changes, gh/npm version and similar), and you may not use MCP tools of Git servers that push, commit, create branches or files, or open or merge pull requests; the user does all Git operations manually. Read-only Git (status, diff, log, show, blame) is fine. You may not write inside .git, modify JERRY data or the Claude Code settings that enable JERRY, run "jerry approve/reject/install/uninstall/ui", "jerry repo exclude/include", "jerry project add/remove", "jerry data prune/forget", "jerry core start/stop" or "jerry db restore", or call the JERRY API or dashboard. The user alone also runs "jerry task pause/resume/cancel/recheck", "jerry settings set", "jerry statusline enable/disable", "jerry usage enable/disable", "jerry skill add/enable/disable/update/remove/states" and "jerry workspace create/add/remove/rename/delete".';
+  'Hard rules, always enforced: you may not run any Git command that changes anything (commit, push, merge, rebase, checkout, switch, reset, restore, stash, fetch, pull, tag, branch changes, config changes, gh/npm version and similar), and you may not use MCP tools of Git servers that push, commit, create branches or files, or open or merge pull requests; the user does all Git operations manually. Read-only Git (status, diff, log, show, blame) is fine. You may not write inside .git, modify JERRY data or the Claude Code settings that enable JERRY, run "jerry approve/reject/install/uninstall/ui", "jerry repo exclude/include", "jerry project add/remove", "jerry data prune/forget", "jerry core start/stop" or "jerry db restore", or call the JERRY API or dashboard. The user alone also runs "jerry task pause/resume/cancel/recheck", "jerry settings set", "jerry statusline enable/disable", "jerry usage enable/disable", "jerry skill add/enable/disable/update/remove/states" and "jerry workspace create/add/remove/rename/delete". The user alone also runs "jerry task complete", "jerry review skip", "jerry findings set" and "jerry eval baseline/label". You may not read JERRY data either: its run, config, state, database, backups, spool and logs folders (the plugin files stay readable).';
 
 /** The whole session context outside the projects the user added, followed by the hard rules. */
 const NOT_A_PROJECT_LINE = decorate(EMOJI.jerry, 'JERRY: this project is not added; only hard rules apply. The user can add it with jerry project add.');

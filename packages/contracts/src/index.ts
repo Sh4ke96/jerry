@@ -797,7 +797,11 @@ export const coreStateSchema = z.object({
 });
 export type CoreState = z.infer<typeof coreStateSchema>;
 
-/** Written by Core to JERRY_HOME/run/core.json; read by the bridge and CLI to reach Core. */
+/**
+ * Written by Core to JERRY_HOME/run/core.json; read by the bridge, the MCP server and the status line
+ * to reach Core. Its token is the agent token: it reaches the agent and read routes, never a user
+ * decision (see core-user.json).
+ */
 export const coreRuntimeInfoSchema = z.object({
   pid: z.number().int().positive(),
   port: z.number().int().min(1).max(65535),
@@ -808,6 +812,18 @@ export const coreRuntimeInfoSchema = z.object({
   version: z.string().min(1),
 });
 export type CoreRuntimeInfo = z.infer<typeof coreRuntimeInfoSchema>;
+
+/**
+ * Written by Core to JERRY_HOME/run/core-user.json right after core.json: the user's token, a separate
+ * random token per start. The jerry CLI and the desktop app send it; only it (or a dashboard session)
+ * makes user decisions, mints login codes and stops Core. The token in core.json is the agent token
+ * (hooks, MCP server, status line). A file whose pid differs from core.json's is stale.
+ */
+export const coreUserInfoSchema = z.object({
+  pid: z.number().int().positive(),
+  token: z.string().regex(CORE_TOKEN_PATTERN),
+});
+export type CoreUserInfo = z.infer<typeof coreUserInfoSchema>;
 
 export const coreStatusSchema = z.object({
   status: z.literal('ok'),

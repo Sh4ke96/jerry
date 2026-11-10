@@ -1,7 +1,7 @@
 import path from 'node:path';
 import readline from 'node:readline/promises';
 import { findingEventSchema, findingSchema, type Finding } from '@jerry/contracts';
-import { readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
+import { readCoreRuntimeInfoForUser, requestCore, resolveJerryHome } from '@jerry/platform';
 import { z } from 'zod';
 import { mark, severityMark } from './emoji.js';
 
@@ -12,7 +12,7 @@ import { mark, severityMark } from './emoji.js';
  */
 
 async function callCore(method: 'GET' | 'POST', apiPath: string, body?: unknown): Promise<unknown> {
-  const info = readCoreRuntimeInfo(resolveJerryHome());
+  const info = readCoreRuntimeInfoForUser(resolveJerryHome());
   return requestCore(info, { method, path: apiPath, timeoutMs: 5000, ...(body === undefined ? {} : { body }) });
 }
 

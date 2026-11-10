@@ -1,7 +1,8 @@
 import type { CoreState, GateCheckRequest, Task, WorkflowState } from '@jerry/contracts';
 import { describe, expect, it } from 'vitest';
 import { approvedPlansForRepo, computePlanHash, computeReportHash } from '../src/approvals.js';
-import { evaluateGate, type GateContext } from '../src/gate.js';
+import { evaluateGate, PROTECTED_READ_FOLDERS, protectedReadRoots, type GateContext } from '../src/gate.js';
+import { classifyToolCall, globStaticPrefix } from '../src/tool-call.js';
 
 const REPO = 'D:/Work/Repo';
 const JERRY_HOME = 'C:/Users/u/AppData/Local/JERRY';
@@ -517,5 +518,168 @@ describe('other tools', () => {
   it('does not monitor read tools', () => {
     const request: GateCheckRequest = { sessionId: 's', cwd: REPO, toolName: 'Read', toolInput: { file_path: 'a' }, toolUseId: null, agentId: null };
     expect(evaluateGate(request, context()).verdict).toBe('PASS');
+  });
+});
+
+describe('hard rule: agents do not read JERRY data', () => {
+  const read = (toolName: string, toolInput: Record<string, unknown>, cwd = REPO): GateCheckRequest => ({ sessionId: 's', cwd, toolName, toolInput, toolUseId: null, agentId: null });
+  const guarded = (overrides: Partial<GateContext> = {}): GateContext => context(emptyState(), { protectedReadRoots: protectedReadRoots(JERRY_HOME), ...overrides });
+  const notAdded = (): GateContext => guarded({ isMonitored: () => false });
+  const expectDenied = (request: GateCheckRequest, ctx: GateContext = guarded()): void => {
+    expect(evaluateGate(request, ctx), JSON.stringify(request.toolInput)).toMatchObject({ verdict: 'DENY', ruleId: 'hard.protected-read', reason: expect.stringContaining("JERRY's own data") });
+  };
+  const expectPassed = (request: GateCheckRequest, ctx: GateContext = guarded()): void => {
+    expect(evaluateGate(request, ctx), JSON.stringify(request.toolInput)).toMatchObject({ verdict: 'PASS', ruleId: 'tool.not-guarded' });
+  };
+
+  it('classifies the read tools by where they read', () => {
+    expect(classifyToolCall('Read', { file_path: 'a.ts' })).toEqual({ kind: 'file-read', paths: ['a.ts'], search: false });
+    expect(classifyToolCall('NotebookRead', { notebook_path: 'n.ipynb' })).toEqual({ kind: 'file-read', paths: ['n.ipynb'], search: false });
+    expect(classifyToolCall('Grep', { pattern: 'C:/x', glob: '*.ts' })).toEqual({ kind: 'file-read', paths: ['.'], search: true });
+    expect(classifyToolCall('Glob', { pattern: 'C:/x/run/*.json', path: 'src' })).toEqual({ kind: 'file-read', paths: ['src', 'C:/x/run'], search: true });
+    expect(classifyToolCall('LS', { path: 'D:/x' })).toEqual({ kind: 'file-read', paths: ['D:/x'], search: true });
+    expect(globStaticPrefix('**/*.ts')).toBeNull();
+    expect(globStaticPrefix('src/**/a.ts')).toBe('src');
+    expect(globStaticPrefix('/home/u/*')).toBe('/home/u');
+    expect(globStaticPrefix('/*')).toBe('/');
+    expect(globStaticPrefix('C:\\x\\y.json')).toBe('C:/x');
+  });
+
+  it('names the data folders and leaves marketplace and runtime out', () => {
+    expect(PROTECTED_READ_FOLDERS).toEqual(['run', 'config', 'state', 'database', 'backups', 'spool', 'logs']);
+    expect(protectedReadRoots('C:\\Users\\u\\AppData\\Local\\JERRY\\')).toEqual(PROTECTED_READ_FOLDERS.map((folder) => `C:\\Users\\u\\AppData\\Local\\JERRY/${folder}`));
+  });
+
+  it('denies reading the Core tokens in every Windows spelling, in projects and outside them', () => {
+    for (const filePath of [
+      `${JERRY_HOME}/run/core.json`,
+      `${JERRY_HOME}/run/core-user.json`,
+      'C:\\Users\\u\\AppData\\Local\\JERRY\\run\\core.json',
+      'c:\\users\\U\\appdata\\local\\jerry\\RUN\\Core-User.json',
+      'C:/Users/u/AppData/Local/JERRY\\run/core.json',
+      '\\\\?\\C:\\Users\\u\\AppData\\Local\\JERRY\\run\\core.json',
+      '/c/Users/u/AppData/Local/JERRY/run/core.json',
+      'C:/Users/u/AppData/Local/Temp/../JERRY/run/core.json',
+      `${JERRY_HOME}/marketplace/../run/core-user.json`,
+    ]) {
+      expectDenied(read('Read', { file_path: filePath }));
+      expectDenied(read('Read', { file_path: filePath }), notAdded());
+    }
+    // Relative to a working directory inside JERRY_HOME.
+    expectDenied(read('Read', { file_path: 'run/core.json' }, JERRY_HOME));
+    expectDenied(read('Read', { file_path: 'core.json' }, `${JERRY_HOME}/run`));
+  });
+
+  it('denies reading every data folder, with NotebookRead too', () => {
+    for (const folder of PROTECTED_READ_FOLDERS) {
+      expectDenied(read('Read', { file_path: `${JERRY_HOME}/${folder}/x.json` }));
+      expectDenied(read('NotebookRead', { notebook_path: `${JERRY_HOME}\\${folder.toUpperCase()}\\x.ipynb` }));
+    }
+    expectDenied(read('Read', { file_path: `${JERRY_HOME}/database/jerry.sqlite` }));
+    expectDenied(read('Read', { file_path: `${JERRY_HOME}/backups/2026-11-10/jerry.sqlite` }));
+    expectDenied(read('Read', { file_path: `${JERRY_HOME}/logs/core.log` }));
+  });
+
+  it('judges a read through a link by where it really is', () => {
+    const linked = guarded({ realPath: (target) => target.replace('D:/Work/Repo/link', `${JERRY_HOME}/run`) });
+    expectDenied(read('Read', { file_path: 'link/core.json' }), linked);
+    expectDenied(read('Grep', { pattern: 'token', path: 'link' }), linked);
+  });
+
+  it('denies Grep, Glob and LS in a data folder, in JERRY_HOME and in any folder above them', () => {
+    for (const root of [`${JERRY_HOME}/run`, `${JERRY_HOME}\\Logs`, JERRY_HOME, 'C:/Users/u/AppData/Local', 'C:\\Users\\u', 'C:/', '/c/Users']) {
+      expectDenied(read('Grep', { pattern: 'token', path: root }));
+      expectDenied(read('Glob', { pattern: '**/*.json', path: root }));
+      expectDenied(read('LS', { path: root }));
+    }
+    // Without a path they search the working directory.
+    expectDenied(read('Grep', { pattern: 'token' }, 'C:/Users/u'));
+    expectDenied(read('Glob', { pattern: '**/core.json' }, JERRY_HOME));
+    // An absolute Glob pattern searches where it says; ".." climbs out of the path.
+    expectDenied(read('Glob', { pattern: `${JERRY_HOME}/run/*.json` }));
+    expectDenied(read('Glob', { pattern: 'C:\\Users\\u\\AppData\\Local\\JERRY\\**\\core.json', path: REPO }));
+    expectDenied(read('Glob', { pattern: '/c/Users/u/AppData/Local/JERRY/state/*.json' }));
+    expectDenied(read('Glob', { pattern: '../../../Users/u/AppData/Local/JERRY/run/*', path: 'C:/Work/Repo' }));
+    expectDenied(read('Glob', { pattern: '../../Users/u/AppData/Local/JERRY/run/core.json' }, 'C:/Work'));
+  });
+
+  it('lets the plugin under marketplace, runtime and look-alike folders be read', () => {
+    expectPassed(read('Read', { file_path: `${JERRY_HOME}/marketplace/plugins/jerry/skills/report/qa-scenarios.md` }));
+    expectPassed(read('Read', { file_path: 'C:\\Users\\u\\AppData\\Local\\JERRY\\marketplace\\plugins\\jerry\\skills\\report\\qa-scenarios.md' }));
+    expectPassed(read('Read', { file_path: '../report/qa-scenarios.md' }, `${JERRY_HOME}/marketplace/plugins/jerry/skills/plan`));
+    expectPassed(read('Read', { file_path: `${JERRY_HOME}/runtime/node.exe` }));
+    expectPassed(read('Grep', { pattern: 'QA', path: `${JERRY_HOME}/marketplace/plugins/jerry` }));
+    expectPassed(read('Glob', { pattern: 'skills/**/*.md', path: `${JERRY_HOME}/marketplace` }));
+    expectPassed(read('LS', { path: `${JERRY_HOME}/marketplace/plugins/jerry/skills` }));
+    // Path boundaries: a sibling whose name starts the same is not JERRY data.
+    expectPassed(read('Read', { file_path: 'C:/Users/u/AppData/Local/JERRYX/run/core.json' }));
+    expectPassed(read('Read', { file_path: `${JERRY_HOME}/runs/core.json` }));
+    expectPassed(read('Grep', { pattern: 'x', path: 'C:/Users/u/AppData/Local/JERRYX' }));
+    // Reading a file above JERRY_HOME reads that file only.
+    expectPassed(read('Read', { file_path: 'C:/Users/u/AppData/Local/notes.txt' }));
+  });
+
+  it('lets ordinary reads and searches in the project through', () => {
+    expectPassed(read('Read', { file_path: 'src/a.ts' }));
+    expectPassed(read('Grep', { pattern: 'C:/Users/u/AppData/Local/JERRY/run', glob: '*.ts' }));
+    expectPassed(read('Glob', { pattern: '**/*.ts' }));
+    expectPassed(read('LS', { path: `${REPO}/src` }));
+    expectPassed(read('Read', {}));
+    // Where JERRY_HOME is not known, reads are not checked (the bridge always knows it).
+    expectPassed(read('Read', { file_path: `${JERRY_HOME}/run/core.json` }), context());
+  });
+
+  it('applies on POSIX, case-sensitively', () => {
+    const home = '/home/u/.local/share/jerry';
+    const posix = context(emptyState(), { platform: 'linux', protectedReadRoots: protectedReadRoots(home), findRepoRoot: () => null });
+    expectDenied(read('Read', { file_path: `${home}/run/core.json` }, '/home/u/work'), posix);
+    expectDenied(read('Read', { file_path: '../.local/share/jerry/run/core-user.json' }, '/home/u/work'), posix);
+    expectDenied(read('Grep', { pattern: 'token', path: '/home/u' }, '/home/u/work'), posix);
+    expectDenied(read('Grep', { pattern: 'token' }, '/home/u'), posix);
+    expectPassed(read('Read', { file_path: '/home/u/.local/share/JERRY/run/core.json' }, '/home/u/work'), posix);
+    expectPassed(read('Read', { file_path: `${home}/marketplace/plugins/jerry/skills/report/qa-scenarios.md` }, '/home/u/work'), posix);
+    expectPassed(read('Grep', { pattern: 'token' }, '/home/u/work'), posix);
+  });
+});
+
+describe('hard rule: review skips, finding decisions and eval baselines are the user’s', () => {
+  const notAdded = (): GateContext => context(emptyState(), { isMonitored: () => false });
+
+  it('denies them in every spelling of the CLI', () => {
+    for (const verb of ['review skip JRY-0001 --reason "x"', 'findings set F-1 accepted --reason ok', 'eval baseline run_1 --note better', 'eval label run_1 case 1 rubric pass', 'evals baseline run_1']) {
+      const [first, ...rest] = verb.split(' ');
+      for (const command of [
+        `jerry ${verb}`,
+        `node dist/cli/jerry.mjs ${verb}`,
+        `jerry.cmd ${first!.toUpperCase()}  ${rest.join(' ').toUpperCase()}`,
+        `jerry.ps1 ${verb}`,
+        `npm test && jerry ${verb}`,
+      ]) {
+        expect(evaluateGate(shell(command), context()), command).toMatchObject({ verdict: 'DENY', ruleId: 'hard.user-only-command' });
+        expect(evaluateGate(shell(command), notAdded()).ruleId, command).toBe('hard.user-only-command');
+        expect(evaluateGate(shell(command, 'PowerShell'), context()).ruleId, command).toBe('hard.user-only-command');
+      }
+    }
+  });
+
+  it('lets showing and listing them through', () => {
+    for (const command of [
+      'jerry review show JRY-0001',
+      'jerry findings',
+      'jerry findings list',
+      'jerry findings list --task JRY-0001',
+      'jerry findings show F-1',
+      'node dist/cli/jerry.mjs findings show F-1',
+      'jerry task show JRY-0001',
+      'jerry task list',
+      'jerry eval list',
+      'jerry eval runs',
+      'jerry eval show run_1',
+      'jerry eval status',
+      'jerry eval run --label nightly',
+    ]) {
+      expect(evaluateGate(shell(command), context()).verdict, command).not.toBe('DENY');
+      expect(evaluateGate(shell(command), notAdded()).verdict, command).not.toBe('DENY');
+    }
   });
 });

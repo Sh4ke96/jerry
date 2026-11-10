@@ -1,5 +1,5 @@
 {
-  "description": "JERRY guard: registers sessions, records and warns about edits outside a user-approved plan, blocks only hard rules (Git state changes, .git writes, tampering with JERRY), and records session events for the timeline.",
+  "description": "JERRY guard: registers sessions, records and warns about edits outside a user-approved plan, blocks only hard rules (Git state changes, .git writes, tampering with JERRY or reading its data), and records session events for the timeline.",
   "hooks": {
     "SessionStart": [
       {
@@ -19,7 +19,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell|Monitor|Task|Agent|Skill",
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell|Monitor|Task|Agent|Skill|Read|Grep|Glob|NotebookRead|LS",
         "hooks": [
           {
             "type": "command",

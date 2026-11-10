@@ -77,14 +77,21 @@ export interface CaseResult {
 
 interface CoreInfo {
   port: number;
+  /** The agent token (run/core.json): what Claude's hooks and MCP server send. */
   token: string;
+  /** The user's token (run/core-user.json): the user's decisions, projects and shutdown. */
+  userToken: string;
 }
 
-function request(info: CoreInfo, method: 'GET' | 'POST', apiPath: string, body?: unknown): Promise<unknown> {
+/** Who a call acts as: Claude (the agent token) or the user (the user's token). */
+type Caller = 'claude' | 'user';
+
+function request(info: CoreInfo, as: Caller, method: 'GET' | 'POST', apiPath: string, body?: unknown): Promise<unknown> {
   const payload = body === undefined ? undefined : JSON.stringify(body);
+  const token = as === 'user' ? info.userToken : info.token;
   return new Promise((resolve, reject) => {
     const call = http.request(
-      { host: '127.0.0.1', port: info.port, method, path: apiPath, agent: false, headers: { authorization: `Bearer ${info.token}`, ...(payload === undefined ? {} : { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) }) } },
+      { host: '127.0.0.1', port: info.port, method, path: apiPath, agent: false, headers: { authorization: `Bearer ${token}`, ...(payload === undefined ? {} : { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) }) } },
       (response) => {
         const chunks: Buffer[] = [];
         response.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -133,21 +140,24 @@ async function startCore(coreBundle: string, home: string, cwd: string): Promise
     child.kill();
     throw new Error('the eval Core did not start within 10 s');
   }
-  // core.json can appear a moment before it is complete.
+  // core.json can appear a moment before it is complete, and core-user.json (the user's token) right after it.
+  const userFile = path.join(home, 'run', 'core-user.json');
   for (let attempt = 0; attempt < 20; attempt += 1) {
     try {
-      const info = JSON.parse(fs.readFileSync(coreFile, 'utf8')) as CoreInfo;
-      return { child, info };
+      const runtime = JSON.parse(fs.readFileSync(coreFile, 'utf8')) as { pid: number; port: number; token: string };
+      const user = JSON.parse(fs.readFileSync(userFile, 'utf8')) as { pid: number; token: string };
+      if (user.pid === runtime.pid) return { child, info: { port: runtime.port, token: runtime.token, userToken: user.token } };
     } catch {
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      // not complete yet
     }
+    await new Promise((resolve) => setTimeout(resolve, 50));
   }
   child.kill();
-  throw new Error('the eval Core wrote an unreadable core.json');
+  throw new Error('the eval Core wrote no readable core.json and core-user.json');
 }
 
 async function stopCore(core: { child: ChildProcess; info: CoreInfo }): Promise<void> {
-  await request(core.info, 'POST', '/api/v1/shutdown', { requestedBy: 'evals', reason: 'eval case finished' }).catch(() => null);
+  await request(core.info, 'user', 'POST', '/api/v1/shutdown', { requestedBy: 'evals', reason: 'eval case finished' }).catch(() => null);
   await new Promise<void>((resolve) => {
     const timer = setTimeout(() => {
       core.child.kill();
@@ -221,15 +231,15 @@ async function seedHistory(info: CoreInfo, fixture: Fixture, seed: HistoryTaskSe
     tests: [{ kind: 'unit', description: 'seeded' }],
     definitionOfDone: [seed.goal],
   };
-  const created = (await request(info, 'POST', '/api/v1/tasks', { repoPath: fixture.repo, title: seed.title, scope: paths, document: plan })) as { taskId: string };
+  const created = (await request(info, 'claude', 'POST', '/api/v1/tasks', { repoPath: fixture.repo, title: seed.title, scope: paths, document: plan })) as { taskId: string };
   const taskId = created.taskId;
   let version = 1;
   if (seed.feedback !== undefined) {
-    await request(info, 'POST', `/api/v1/tasks/${taskId}/approvals`, { stage: 'PLAN', version: 1, decision: 'REJECTED', comment: seed.feedback });
-    await request(info, 'POST', `/api/v1/tasks/${taskId}/plan`, { scope: paths, document: plan });
+    await request(info, 'user', 'POST', `/api/v1/tasks/${taskId}/approvals`, { stage: 'PLAN', version: 1, decision: 'REJECTED', comment: seed.feedback });
+    await request(info, 'claude', 'POST', `/api/v1/tasks/${taskId}/plan`, { scope: paths, document: plan });
     version = 2;
   }
-  await request(info, 'POST', `/api/v1/tasks/${taskId}/approvals`, { stage: 'PLAN', version, decision: 'APPROVED' });
+  await request(info, 'user', 'POST', `/api/v1/tasks/${taskId}/approvals`, { stage: 'PLAN', version, decision: 'APPROVED' });
   // Written (not yet committed) so the acceptance snapshot records their content.
   for (const [file, content] of Object.entries(seed.files)) {
     const target = path.join(fixture.repo, file);
@@ -248,8 +258,8 @@ async function seedHistory(info: CoreInfo, fixture: Fixture, seed: HistoryTaskSe
     qaScenarios: [{ id: 'QA-1', priority: 'P3', title: seed.title, location: paths[0] ?? 'repository', roles: [], preconditions: '', testData: '', steps: ['seeded'], expected: 'seeded', negative: '', related: '', kind: 'new' }],
     artifact: '',
   };
-  await request(info, 'POST', `/api/v1/tasks/${taskId}/reports`, { report, submittedBy: 'user' });
-  await request(info, 'POST', `/api/v1/tasks/${taskId}/approvals`, { stage: 'IMPLEMENTATION', version: 1, decision: 'APPROVED' });
+  await request(info, 'claude', 'POST', `/api/v1/tasks/${taskId}/reports`, { report, submittedBy: 'user' });
+  await request(info, 'user', 'POST', `/api/v1/tasks/${taskId}/approvals`, { stage: 'IMPLEMENTATION', version: 1, decision: 'APPROVED' });
   commitSeededFiles(fixture, seed.files, `history ${index + 1}: ${seed.title}`);
 }
 
@@ -302,13 +312,13 @@ export async function runAttempt(evalCase: EvalCase, attempt: number, options: R
     const home = path.join(fixture.base, 'jerry-home');
     core = await startCore(options.coreBundle, home, fixture.base);
     // JERRY monitors only projects: the fixture is added the way the user adds a repository.
-    await request(core.info, 'POST', '/api/v1/projects', { path: fixture.repo });
+    await request(core.info, 'user', 'POST', '/api/v1/projects', { path: fixture.repo });
     for (const [index, seed] of evalCase.setup.history.entries()) await seedHistory(core.info, fixture, seed, index);
     let taskId: string | null = null;
     if (evalCase.setup.task !== undefined) {
-      const created = (await request(core.info, 'POST', '/api/v1/tasks', { repoPath: fixture.repo, title: evalCase.setup.task.title, scope: evalCase.setup.task.scope })) as { taskId: string };
+      const created = (await request(core.info, 'claude', 'POST', '/api/v1/tasks', { repoPath: fixture.repo, title: evalCase.setup.task.title, scope: evalCase.setup.task.scope })) as { taskId: string };
       taskId = created.taskId;
-      if (evalCase.setup.task.approve) await request(core.info, 'POST', `/api/v1/tasks/${taskId}/approvals`, { stage: 'PLAN', version: 1, decision: 'APPROVED' });
+      if (evalCase.setup.task.approve) await request(core.info, 'user', 'POST', `/api/v1/tasks/${taskId}/approvals`, { stage: 'PLAN', version: 1, decision: 'APPROVED' });
     }
     const env: NodeJS.ProcessEnv = { ...process.env, JERRY_HOME: home, CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1' };
     const run = await runProcess(options.claudeBin, sessionArgs(evalCase, variant, options), { cwd: fixture.repo, env, timeoutMs: evalCase.session.timeoutMs });
@@ -321,7 +331,7 @@ export async function runAttempt(evalCase: EvalCase, attempt: number, options: R
     if (environment.some((problem) => problem.startsWith("JERRY's plugin"))) throw new Error(`the eval environment is wrong: ${environment.join('; ')}`);
     // Telemetry hooks are asynchronous: give them a moment to land.
     await new Promise((resolve) => setTimeout(resolve, 1500));
-    const taskState = taskId === null ? null : ((await request(core.info, 'GET', `/api/v1/tasks/${taskId}`)) as { state: string }).state;
+    const taskState = taskId === null ? null : ((await request(core.info, 'claude', 'GET', `/api/v1/tasks/${taskId}`)) as { state: string }).state;
     results = await grade(evalCase, {
       output,
       costUsd,
