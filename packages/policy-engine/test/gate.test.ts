@@ -239,11 +239,19 @@ describe('hard rules: always blocked, with or without a plan, outside projects t
     expect(evaluateGate(shell('node dist/cli/jerry.mjs core stop'), context()).ruleId).toBe('hard.user-only-command');
     expect(evaluateGate(shell('jerry uninstall --purge-data'), context()).ruleId).toBe('hard.user-only-command');
     expect(evaluateGate(shell('node dist/cli/jerry.mjs ui --print-url'), context()).ruleId).toBe('hard.user-only-command');
-    for (const action of ['pause', 'resume', 'cancel', 'recheck']) {
+    for (const action of ['pause', 'resume', 'cancel', 'recheck', 'complete']) {
       expect(evaluateGate(shell(`jerry task ${action} JRY-0001`), context()).ruleId, action).toBe('hard.user-only-command');
     }
     // Re-running the final checks can set DONE: the user's decision, in every spelling of the CLI.
-    for (const command of ['node dist/cli/jerry.mjs task recheck JRY-0001', 'jerry.cmd TASK  RECHECK JRY-0001', 'jerry.ps1 task recheck jry-0001']) {
+    // Completing a task despite failed final checks sets DONE too: the user's decision alone.
+    for (const command of [
+      'node dist/cli/jerry.mjs task recheck JRY-0001',
+      'jerry.cmd TASK  RECHECK JRY-0001',
+      'jerry.ps1 task recheck jry-0001',
+      'node dist/cli/jerry.mjs task complete JRY-0001 --reason "fine"',
+      'jerry.cmd TASK  COMPLETE JRY-0001',
+      'jerry.ps1 task complete jry-0001',
+    ]) {
       expect(evaluateGate(shell(command), context()).ruleId, command).toBe('hard.user-only-command');
       expect(evaluateGate(shell(command), notAdded()).ruleId, command).toBe('hard.user-only-command');
     }
@@ -283,6 +291,7 @@ describe('hard rules: always blocked, with or without a plan, outside projects t
     expect(evaluateGate(shell('curl -c c.txt "http://127.0.0.1:47823/ui/login?code=abc"'), context()).ruleId).toBe('hard.core-api');
     expect(evaluateGate(shell('curl -X POST http://127.0.0.1:5555/api/v1/tasks/JRY-0001/approvals'), context(approved)).ruleId).toBe('hard.core-api');
     expect(evaluateGate(shell('curl -X POST http://127.0.0.1:5555/api/v1/tasks/JRY-0001/final-checks'), context(approved)).ruleId).toBe('hard.core-api');
+    expect(evaluateGate(shell('curl -X POST http://127.0.0.1:5555/api/v1/tasks/JRY-0001/final-checks/waive -d "{}"'), context(approved)).ruleId).toBe('hard.core-api');
   });
 
   it('blocks commands that reference JERRY data, even read-only ones', () => {

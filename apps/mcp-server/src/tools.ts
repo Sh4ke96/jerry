@@ -1347,7 +1347,7 @@ function stateAction(state: RepositoryState): { action: string; details: string 
       .join(' | ');
     return {
       action: 'final-checks-failed',
-      details: `${EMOJI.fail} JERRY did not complete ${refused.map((task) => task.taskId).join(', ')} (${reasons}). Tell the user; they decide whether to re-run the final checks (dashboard 'Re-run final checks' or 'jerry task recheck <id>', e.g. when later approved tasks changed the files), request changes or cancel. Do not change code until then; edits now are recorded as deviations.`,
+      details: `${EMOJI.fail} JERRY did not complete ${refused.map((task) => task.taskId).join(', ')} (${reasons}). Tell the user; they decide whether to re-run the final checks (dashboard 'Re-run final checks' or 'jerry task recheck <id>', e.g. when later approved tasks changed the files), request changes, cancel, or complete the task anyway with a reason (dashboard 'Complete anyway' or 'jerry task complete <id>'; only they can, and it is recorded as their waiver). Do not suggest completing it anyway to cover a failure of your own work; offer to fix it. Do not change code until then; edits now are recorded as deviations.`,
     };
   }
   const paused = ids(['PAUSED']);

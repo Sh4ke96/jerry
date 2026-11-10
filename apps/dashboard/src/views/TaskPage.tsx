@@ -243,21 +243,31 @@ export const TaskPage = defineComponent({
       const check = current.finalCheck;
       if (check === null) return null;
       const failed = check.conditions.filter((condition) => condition.blocking && !condition.passed);
-      // An older Core sends no later-work list.
+      // An older Core sends no later-work list, nor a waiver.
       const laterWork = (check.laterWork as typeof check.laterWork | undefined) ?? [];
+      const waiver = (check.waiver as typeof check.waiver | undefined) ?? null;
+      const tone = waiver !== null ? 'border-amber-500/40 bg-amber-500/5' : check.passed ? 'border-emerald-500/40 bg-emerald-500/5' : 'border-destructive/40 bg-destructive/5';
       return (
-        <section class={cn('final-check grid gap-2 rounded-lg border p-4 text-sm', check.passed ? 'border-emerald-500/40 bg-emerald-500/5' : 'border-destructive/40 bg-destructive/5')} data-passed={check.passed ? 'true' : 'false'}>
+        <section class={cn('final-check grid gap-2 rounded-lg border p-4 text-sm', tone)} data-passed={check.passed ? 'true' : 'false'} data-waived={waiver !== null ? 'true' : undefined}>
           <h3 class="flex flex-wrap items-center gap-x-2 font-medium">
-            <Emoji symbol={check.passed ? EMOJI.done : EMOJI.fail} class="mr-0" />
-            {check.passed ? 'Completed by JERRY' : 'JERRY did not complete the task'}{' '}
+            <Emoji symbol={waiver !== null ? EMOJI.warning : check.passed ? EMOJI.done : EMOJI.fail} class="mr-0" />
+            {waiver !== null ? 'Completed by you despite failed final checks' : check.passed ? 'Completed by JERRY' : 'JERRY did not complete the task'}{' '}
             <span class="text-muted-foreground text-xs font-normal">
               final checks {formatTime(check.at)}
               {check.reportVersion !== null && ` · report v${check.reportVersion}`}
+              {waiver !== null && ` · completed ${formatTime(waiver.at)} from the ${waiver.channel === 'cli' ? 'CLI' : 'dashboard'}`}
             </span>
           </h3>
+          {waiver !== null && (
+            <div class="final-check__waiver grid gap-1" data-waiver>
+              <p class="font-medium">Your reason</p>
+              <blockquote class="border-l-2 pl-3 [overflow-wrap:anywhere] whitespace-pre-line">{waiver.reason}</blockquote>
+              <p class="text-muted-foreground text-xs">The blockers below were waived by you; JERRY's final checks did not pass.</p>
+            </div>
+          )}
           {failed.length > 0 && (
             <div class="final-check__failed grid gap-1">
-              <p class="font-medium">What blocks it</p>
+              <p class="font-medium">{waiver !== null ? 'Waived by you' : 'What blocks it'}</p>
               <ul class={LIST}>
                 {failed.map((condition) => (
                   <li key={condition.id} data-condition={condition.id}>
@@ -307,7 +317,11 @@ export const TaskPage = defineComponent({
               </li>
             ))}
           </ul>
-          {!check.passed && <p class="text-muted-foreground text-xs">Re-run the final checks when what blocks it is resolved (for example after a later task reported), request changes to send the work back to Claude, or cancel the task.</p>}
+          {!check.passed && current.state === 'FINAL_REPORT' && (
+            <p class="text-muted-foreground text-xs">
+              Re-run the final checks when what blocks it is resolved (for example after a later task reported), request changes to send the work back to Claude, complete the task anyway with your reason if what blocks it is acceptable, or cancel the task.
+            </p>
+          )}
         </section>
       );
     };

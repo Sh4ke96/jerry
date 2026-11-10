@@ -130,6 +130,7 @@ const refusedTask: TaskSummary = {
     ],
     definitionOfDone: ['tests pass'],
     laterWork: [{ taskId: 'JRY-0009', files: ['src/lexer.ts', 'src/parser.ts'] }],
+    waiver: null,
   },
 };
 
@@ -1252,6 +1253,74 @@ describe('Dashboard app', () => {
     expect(wrapper.get('.final-report .final-report__review').text()).toBe(`${EMOJI.review}Review: not requested at acceptance`);
     // Files a later task changed under its own approved plan.
     expect(wrapper.get('.final-report .final-report__later-work').text()).toBe(`${EMOJI.info}Changed later by other tasksJRY-0009: src/lexer.ts, src/parser.ts`);
+    wrapper.unmount();
+  });
+
+  it('completes a refused task anyway with a reason and the typed task ID, then shows it as done by the waiver', async () => {
+    // One-click decisions in Settings: completing anyway still needs the typed task ID.
+    decisionMode = 'click';
+    const base = globalThis.fetch;
+    const reason = 'the failing run was the reproduction before the fix';
+    const waiver = { at: NOW, reason, channel: 'dashboard' as const, conditions: [{ id: 'report.no-failed-checks', detail: 'failed: npm test' }] };
+    const waived: TaskSummary = { ...refusedTask, state: 'DONE', finalCheck: { ...refusedTask.finalCheck!, waiver } };
+    let current: TaskSummary = refusedTask;
+    const report = {
+      taskId: 'JRY-0005', title: 'Parser', state: 'DONE', status: 'final', completedAt: NOW, generatedAt: NOW, goal: 'Parse.',
+      repositories: [], diffSummary: { files: 0, added: 0, modified: 0, deleted: 0, renamed: 0, seenByGit: [], unreported: [] },
+      tests: { checks: [], observedRuns: [], claimedVsObserved: [] }, qa: [], security: { risks: [], openFindings: [], securityFindings: [] }, review: null,
+      rules: { skills: [], deviations: 0, blocked: 0, planDeviations: [] }, commitSubjects: [],
+      artifact: { planned: '', decision: 'not-asked', kind: null, title: null, url: null }, coverage: { reviewedFiles: [], notReviewed: [], checksNotRun: [] },
+      limitations: ['waived by the user (final checks did not pass): failed: npm test'], decisions: [], definitionOfDone: { items: ['tests pass'], passed: false, evidence: [] },
+      completion: { kind: 'waived', waiver },
+    };
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+      if (url === '/api/v1/tasks') return json([reportedTask, current]);
+      if (url === '/api/v1/tasks/JRY-0005/final-checks/waive') {
+        calls.push({ url, init });
+        current = waived;
+        return json({ check: waived.finalCheck, state: 'DONE' });
+      }
+      if (url === '/api/v1/tasks/JRY-0005/final-report') return json(report);
+      return base(url, init);
+    });
+    const wrapper = await mountApp();
+    await openTasks(wrapper);
+    taskFilters.filter = 'all';
+    await flushPromises();
+    // Offered only for a task in final checks whose blockers may be waived.
+    expect(buttonIn(await expand(wrapper, 'JRY-0004'), 'Complete anyway')).toBeUndefined();
+    await buttonIn(await expand(wrapper, 'JRY-0005'), 'Complete anyway')!.trigger('click');
+    await flushPromises();
+    const dialog = body().get('form.dialog');
+    expect(dialog.get('h2').text()).toBe('Complete JRY-0005 despite its failed final checks');
+    expect(dialog.get('[data-waived-blockers]').text()).toContain('failed: npm test');
+    expect(dialog.find('#confirm-typed').exists()).toBe(true);
+    const submit = dialog.get('button[type="submit"]');
+    await dialog.get('#confirm-typed').setValue('JRY-0005');
+    // The reason is required.
+    expect(submit.attributes('disabled')).toBeDefined();
+    await dialog.get('textarea').setValue(reason);
+    expect(submit.attributes('disabled')).toBeUndefined();
+    await dialog.trigger('submit');
+    await flushPromises();
+    expect(posted('/api/v1/tasks/JRY-0005/final-checks/waive')).toEqual([{ reason, seen: ['report.no-failed-checks'], confirmTaskId: 'JRY-0005' }]);
+    expect(calls.find((call) => call.url === '/api/v1/tasks/JRY-0005/final-checks/waive')?.init?.headers).toMatchObject({ 'x-jerry-csrf': CSRF });
+    expect(state.notice).toBe("Completed JRY-0005. The task is done by your decision; JERRY's final checks did not pass.");
+
+    // Never shown as passed: the tile, the task page and the final report say it was your waiver.
+    expect(tile(wrapper, 'JRY-0005').get('[data-waived]').text()).toContain('done by your waiver');
+    const page = await openTask(wrapper, 'JRY-0005', 'overview');
+    const panel = page.get('.final-check');
+    expect(panel.attributes('data-waived')).toBe('true');
+    expect(panel.text()).toContain('Completed by you despite failed final checks');
+    expect(panel.get('[data-waiver]').text()).toContain(reason);
+    expect(panel.text()).toContain('Waived by you');
+    expect(buttonIn(page.get('.task-page__header'), 'Complete anyway')).toBeUndefined();
+    await openTab(wrapper, 'final');
+    await flushPromises();
+    expect(wrapper.get('.final-report').text()).toContain('DONE by your waiver');
+    expect(wrapper.get('.final-report [data-waiver]').text()).toContain(reason);
     wrapper.unmount();
   });
 

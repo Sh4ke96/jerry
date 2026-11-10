@@ -74,7 +74,7 @@ const READ_ONLY_AGENT = /jerry-[\w-]*-(?:analyst|reviewer)$/;
  * changing a setting and turning JERRY's status line or usage collection on or off (they edit the
  * Claude Code settings).
  */
-const USER_ONLY_JERRY_COMMAND = /\bjerry(?:\.mjs|\.cmd|\.ps1)?\s+(?:approve|reject|install|uninstall|ui|repo\s+(?:exclude|include)|project\s+(?:add|remove)|data\s+(?:prune|forget)|task\s+(?:pause|resume|cancel|recheck)|core\s+(?:start|stop)|db\s+restore|settings\s+set|statusline\s+(?:enable|disable)|usage\s+(?:enable|disable)|skills?\s+(?:add|enable|disable|update|remove|states)|workspaces?\s+(?:create|add|remove|rename|delete))\b/i;
+const USER_ONLY_JERRY_COMMAND = /\bjerry(?:\.mjs|\.cmd|\.ps1)?\s+(?:approve|reject|install|uninstall|ui|repo\s+(?:exclude|include)|project\s+(?:add|remove)|data\s+(?:prune|forget)|task\s+(?:pause|resume|cancel|recheck|complete)|core\s+(?:start|stop)|db\s+restore|settings\s+set|statusline\s+(?:enable|disable)|usage\s+(?:enable|disable)|skills?\s+(?:add|enable|disable|update|remove|states)|workspaces?\s+(?:create|add|remove|rename|delete))\b/i;
 /** Tools that start a Claude Code subagent. */
 const SUBAGENT_TOOLS: ReadonlySet<string> = new Set(['Task', 'Agent']);
 /** The Core API and the dashboard login: an agent holding a session could approve its own plan. */

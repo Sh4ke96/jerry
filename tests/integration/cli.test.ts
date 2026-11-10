@@ -86,8 +86,8 @@ describe('jerry CLI (Commander)', () => {
       expect(shown.stdout).toContain('JRY-0001  Waiting for plan approval (WAIT_PLAN_APPROVAL)');
       expect(shown.stdout).toMatch(/new\s+-> WAIT_PLAN_APPROVAL\s+plan\.submitted by user/);
 
-      // Re-running the final checks can set DONE: a terminal too.
-      for (const verb of ['pause', 'resume', 'cancel', 'recheck']) {
+      // Re-running the final checks or completing a task despite them can set DONE: a terminal too.
+      for (const verb of ['pause', 'resume', 'cancel', 'recheck', 'complete']) {
         const refused = jerry(['task', verb, 'JRY-0001'], { JERRY_HOME: home });
         expect(refused.exitCode, verb).toBe(1);
         expect(refused.stderr, verb).toContain('interactive terminal');

@@ -767,4 +767,14 @@ export const MIGRATIONS: Readonly<Record<string, Migration>> = {
       await db.schema.alterTable('skills').addColumn('classifications_json', 'text', (column) => column.notNull().defaultTo('[]')).execute();
     },
   },
+  '0030_final_check_waivers': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      // The user's waiver of a failed final check (the task became DONE by their decision); the
+      // check itself keeps passed = 0. All null when there was no waiver.
+      await db.schema.alterTable('task_completion_checks').addColumn('waived_at', 'text').execute();
+      await db.schema.alterTable('task_completion_checks').addColumn('waiver_reason', 'text').execute();
+      await db.schema.alterTable('task_completion_checks').addColumn('waiver_channel', 'text').execute();
+      await db.schema.alterTable('task_completion_checks').addColumn('waived_conditions_json', 'text').execute();
+    },
+  },
 };

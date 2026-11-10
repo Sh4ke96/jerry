@@ -2,6 +2,7 @@ import type { ArtifactDecision, FinalReport } from '@jerry/contracts';
 import { EMOJI } from '@jerry/contracts/emoji';
 import { defineComponent, onMounted, ref, type PropType } from 'vue';
 import { api } from '../api';
+import { formatTime } from '../format';
 import { ATTENTION, LIST } from '../lib/classes';
 import { finalReportReviewRequested } from '../settings';
 import { handleError } from '../state';
@@ -44,6 +45,8 @@ export const FinalReportView = defineComponent({
         );
       }
       const link = safeArtifactLink(r.artifact.url);
+      // An older Core sends no completion: no waiver to show.
+      const waiver = r.completion?.waiver ?? null;
       return (
         <section class="final-report grid gap-3 rounded-lg border p-4 text-sm">
           <h3 class="flex flex-wrap items-center gap-x-2 font-semibold">
@@ -53,12 +56,27 @@ export const FinalReportView = defineComponent({
               <StatusBadge tone="warn" emoji={EMOJI.waiting}>
                 draft
               </StatusBadge>
+            ) : waiver !== null ? (
+              <StatusBadge tone="warn" emoji={EMOJI.warning}>
+                DONE by your waiver
+              </StatusBadge>
             ) : (
               <StatusBadge tone="pass" emoji={EMOJI.done}>
                 DONE
               </StatusBadge>
             )}
           </h3>
+          {waiver !== null && (
+            <div class="final-report__waiver grid gap-1 rounded-md border border-amber-500/40 bg-amber-500/5 p-3" data-waiver>
+              <p class="font-medium">JERRY's final checks did not pass; you completed the task anyway ({formatTime(waiver.at)}).</p>
+              <p class="[overflow-wrap:anywhere] whitespace-pre-line">Your reason: {waiver.reason}</p>
+              <ul class={[LIST, 'text-xs']}>
+                {waiver.conditions.map((condition) => (
+                  <li key={condition.id}>Waived: {condition.detail}</li>
+                ))}
+              </ul>
+            </div>
+          )}
           <p>{r.goal}</p>
           <h4 class={HEADING}>
             <Emoji symbol={EMOJI.implementation} />

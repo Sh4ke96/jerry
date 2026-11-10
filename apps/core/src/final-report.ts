@@ -39,7 +39,13 @@ export async function buildFinalReport(store: StateStore, task: Task, now: Date 
   const line = (finding: (typeof findings)[number]): string => `${finding.findingId} ${finding.severity} ${finding.file}:${finding.lineStart} ${finding.title}`;
   const lastRound = review.rounds.at(-1);
   const reviewed = [...new Set(review.rounds.flatMap((round) => round.submissions.flatMap((submission) => submission.filesReviewed)))].sort();
-  const limitations = (finalCheck?.conditions ?? []).filter((condition) => !condition.blocking && !condition.passed).map((condition) => condition.detail);
+  // A waived DONE: the blocking conditions the user waived are limitations too, marked as waived.
+  const waiver = finalCheck?.waiver ?? null;
+  const limitations = [
+    ...(waiver?.conditions ?? []).map((condition) => `waived by the user (final checks did not pass): ${condition.detail}`),
+    ...(finalCheck?.conditions ?? []).filter((condition) => !condition.blocking && !condition.passed).map((condition) => condition.detail),
+  ];
+  const completion = task.state !== 'DONE' ? null : { kind: waiver === null ? ('passed' as const) : ('waived' as const), waiver };
 
   return {
     taskId: task.taskId,
@@ -118,5 +124,6 @@ export async function buildFinalReport(store: StateStore, task: Task, now: Date 
       passed: finalCheck?.passed ?? false,
       evidence: (finalCheck?.conditions ?? []).map((condition) => ({ id: condition.id, blocking: condition.blocking, passed: condition.passed, detail: condition.detail })),
     },
+    completion,
   };
 }

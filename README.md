@@ -39,7 +39,12 @@ not have to type "go" in Claude.
 
 🏁 Before DONE, Core runs its final checks. Files changed after the report block DONE, unless another approved task
 changed them as part of its own work; those are listed in the final report as "Changed later by other tasks". When a
-task is held back, re-run the checks with **Re-run final checks** on its tile or `jerry task recheck <id>`.
+task is held back, re-run the checks with **Re-run final checks** on its tile or `jerry task recheck <id>`. When what
+blocks it is acceptable (a failed check that was the expected red run before the fix, a critical risk you accept,
+files changed after the report), you can **Complete anyway** with your reason (`jerry task complete <id>`). Only you
+can, with the task ID typed; the checks stay marked as failed, and your reason and the waived blockers are recorded
+in the history and the final report. Blockers about your own decisions (the approved plan and report versions, the
+review) cannot be waived.
 
 ---
 
@@ -185,6 +190,7 @@ Core writes its heartbeat to `run\core-alive.json` every minute and removes it o
 | `jerry task create` | Create a task with plan version 1. |
 | `jerry task pause` / `resume` / `cancel <id>` | Pause, resume or cancel a task. 🔐 |
 | `jerry task recheck <id>` | 🏁 Re-run the final checks of a task Core held back. 🔐 |
+| `jerry task complete <id> [--reason]` | 🏁 Complete a task despite its failed final checks, with your reason (recorded as your waiver). 🔐 |
 | `jerry plan diff <id>` | What changed between plan versions. |
 | `jerry plan revise <id> --scope <glob>` | Create the next plan version with a new scope. |
 | `jerry approve <id> --stage plan\|implementation\|review-fix --version <n>` | ✅ Approve a plan, accept a report (`--review` / `--no-review`), or approve review fixes. 🔐 |

@@ -39,7 +39,8 @@ the repository, not what the plan intended.
   - `NOT_RUN` with the reason in `details` (no runner, too slow, needs a service). Never report a check you did
     not run as passed.
   A `FAIL` check blocks DONE: JERRY's final checks refuse to complete the task while the report has one, and
-  re-running them does not change that. A check records the result on the final code. An expected failure
+  re-running them does not change that. Only the user can complete such a task anyway, as their recorded
+  waiver; never count on that or suggest it to cover a failure of your work. A check records the result on the final code. An expected failure
   before the fix (reproducing the bug, a test written red first) is not a check of the result: report that
   test's run on the final code and mention the earlier expected failure in its `details`.
   The draft's checks are earlier runs JERRY recorded: run them again now and report today's result.

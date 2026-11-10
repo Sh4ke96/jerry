@@ -177,6 +177,12 @@ export interface TaskCompletionChecksTable {
   conditions_json: string;
   definition_of_done_json: string;
   created_at: string;
+  /** The user's waiver of this failed check (0030); null without one. */
+  waived_at: string | null;
+  waiver_reason: string | null;
+  waiver_channel: string | null;
+  /** JSON array of { id, detail }: the blocking conditions waived. */
+  waived_conditions_json: string | null;
 }
 
 /** Claude's progress notes on a task, for the next session. */

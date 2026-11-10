@@ -846,7 +846,20 @@ export type TaskActivity = z.infer<typeof taskActivitySchema>;
 export const laterWorkSchema = z.object({ taskId: taskIdSchema, files: z.array(z.string()) });
 export type LaterWork = z.infer<typeof laterWorkSchema>;
 
-/** Core's final checks when the user accepted a report; DONE follows only if they pass. */
+/**
+ * The user's waiver of failed final checks: the task became DONE by their decision, not because the
+ * checks passed. The check it belongs to keeps passed=false.
+ */
+export const completionWaiverSchema = z.object({
+  at: z.iso.datetime(),
+  reason: z.string(),
+  channel: z.enum(['cli', 'dashboard']),
+  /** The blocking conditions the user waived, as they failed. */
+  conditions: z.array(z.object({ id: z.string(), detail: z.string() })),
+});
+export type CompletionWaiver = z.infer<typeof completionWaiverSchema>;
+
+/** Core's final checks when the user accepted a report; DONE follows only if they pass, or by the user's waiver. */
 export const completionCheckSchema = z.object({
   taskId: taskIdSchema,
   reportVersion: z.number().int().positive().nullable(),
@@ -858,8 +871,21 @@ export const completionCheckSchema = z.object({
   definitionOfDone: z.array(z.string()),
   /** Files other tasks changed after the report under their approved plans; they do not block DONE. */
   laterWork: z.array(laterWorkSchema).default([]),
+  /** Set when the user completed the task despite this failed check; older Cores send none. */
+  waiver: completionWaiverSchema.nullable().default(null),
 });
 export type CompletionCheck = z.infer<typeof completionCheckSchema>;
+
+/**
+ * POST /api/v1/tasks/:id/final-checks/waive: the user completes a task the final checks refused.
+ * `seen` are the failed blocking condition ids the user was shown; Core refuses when they changed.
+ */
+export const finalChecksWaiveRequestSchema = z.object({
+  reason: z.string().trim().min(1).max(500),
+  seen: z.array(z.string()).min(1).max(20),
+  confirmTaskId: z.string().optional(),
+});
+export type FinalChecksWaiveRequest = z.infer<typeof finalChecksWaiveRequestSchema>;
 
 /** POST /api/v1/tasks/:id/final-checks: the user re-ran the final checks of a task in FINAL_REPORT. */
 export const finalChecksRerunRequestSchema = z.object({ confirmTaskId: z.string().optional() }).default({});
@@ -1321,6 +1347,8 @@ export const finalReportSchema = z.object({
   laterWork: z.array(laterWorkSchema).default([]),
   decisions: z.array(z.string()),
   definitionOfDone: z.object({ items: z.array(z.string()), passed: z.boolean(), evidence: z.array(z.object({ id: z.string(), blocking: z.boolean(), passed: z.boolean(), detail: z.string() })) }),
+  /** How the task became DONE: the final checks passed, or the user waived the failed ones. Null until DONE. */
+  completion: z.object({ kind: z.enum(['passed', 'waived']), waiver: completionWaiverSchema.nullable() }).nullable().default(null),
 });
 export type FinalReport = z.infer<typeof finalReportSchema>;
 

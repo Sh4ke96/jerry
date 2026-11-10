@@ -15,6 +15,8 @@ import {
   type Checkpoint,
   type CoreState,
   type CompletionCheck,
+  type CompletionWaiver,
+  WAIVABLE_FINAL_CHECK_CONDITIONS,
   type LaterWork,
   type AgentRun,
   type AnalysisReport,
@@ -578,7 +580,8 @@ export class StateStore {
 
   /**
    * The DONE validator: Core gathers the facts, records the result, and sets DONE only
-   * when every blocking condition passed. No model and no API call can set DONE otherwise.
+   * when every blocking condition passed. The only other way to DONE is the user's recorded waiver
+   * (waiveFinalChecks); no model can set DONE.
    */
   private async runFinalChecks(trx: Transaction<JerrySchema>, task: Task, at: string, gitNow: PreparedSnapshots | null): Promise<CompletionCheck> {
     const reportRow = await trx.selectFrom('implementation_reports').selectAll().where('task_id', '=', task.taskId).orderBy('version', 'desc').limit(1).executeTakeFirst();
@@ -653,7 +656,7 @@ export class StateStore {
       });
     }
     const passed = result.passed && unreadable.length === 0;
-    const check: CompletionCheck = { taskId: task.taskId, reportVersion: report?.version ?? null, at, passed, conditions, definitionOfDone: task.plan.document?.definitionOfDone ?? [], laterWork };
+    const check: CompletionCheck = { taskId: task.taskId, reportVersion: report?.version ?? null, at, passed, conditions, definitionOfDone: task.plan.document?.definitionOfDone ?? [], laterWork, waiver: null };
     await trx
       .insertInto('task_completion_checks')
       .values({ task_id: task.taskId, report_version: check.reportVersion, passed: check.passed ? 1 : 0, conditions_json: JSON.stringify(check.conditions), definition_of_done_json: JSON.stringify(check.definitionOfDone), created_at: at })
@@ -691,6 +694,51 @@ export class StateStore {
       if (row?.state !== 'FINAL_REPORT') throw new StateError(409, `${taskId} is ${row?.state ?? 'unknown'}; final checks can be re-run only while the task is waiting in FINAL_REPORT`);
       await audit(trx, at, 'task.final-checks-rerun', taskId, { channel });
       return this.runFinalChecks(trx, task, at, gitNow);
+    });
+    await this.reload();
+    return { check, state: this.requireTask(taskId).state };
+  }
+
+  /**
+   * The user completes a task the final checks refused, with a reason. In one transaction Core runs
+   * the final checks again on the repository as it is now: when they pass, the task is DONE the
+   * normal way; when a failing blocker is not waivable, or the failing blockers differ from the ones
+   * the user saw (`seen`), nothing changes (409). Otherwise the waiver is stored on that check, which
+   * keeps passed=false, and the user's transition to DONE carries the reason.
+   */
+  async waiveFinalChecks(taskId: string, reason: string, seen: readonly string[], now: Date, channel: Channel): Promise<{ check: CompletionCheck; state: WorkflowState }> {
+    const task = this.requireTask(taskId);
+    const notWaiting = (state: string) => new StateError(409, `${taskId} is ${state}; a task can be completed despite its final checks only while it is waiting in FINAL_REPORT`);
+    if (task.state !== 'FINAL_REPORT') throw notWaiting(task.state);
+    const gitNow = await this.prepareSnapshots(task, 'report');
+    const at = now.toISOString();
+    const check = await this.database.db.transaction().execute(async (trx) => {
+      const row = await trx.selectFrom('tasks').select('state').where('task_id', '=', taskId).executeTakeFirst();
+      if (row?.state !== 'FINAL_REPORT') throw notWaiting(row?.state ?? 'unknown');
+      const fresh = await this.runFinalChecks(trx, task, at, gitNow);
+      // They pass now: DONE the normal way, nothing to waive.
+      if (fresh.passed) return fresh;
+      const failing = fresh.conditions.filter((condition) => condition.blocking && !condition.passed);
+      const waivable: ReadonlySet<string> = new Set(WAIVABLE_FINAL_CHECK_CONDITIONS);
+      const notWaivable = failing.filter((condition) => !waivable.has(condition.id));
+      if (notWaivable.length > 0) {
+        throw new StateError(409, `${taskId} cannot be completed despite its final checks: ${notWaivable.map((condition) => `${condition.id} (${condition.detail})`).join('; ')} cannot be waived; it is about your own decisions on this plan or report`);
+      }
+      const failingIds = [...new Set(failing.map((condition) => condition.id))].sort();
+      const seenIds = [...new Set(seen)].sort();
+      if (failingIds.join('\n') !== seenIds.join('\n')) {
+        throw new StateError(409, `The final checks of ${taskId} changed since you looked: now failing ${failingIds.join(', ')}; you saw ${seenIds.join(', ')}. Look at them again before completing the task`);
+      }
+      const waiver: CompletionWaiver = { at, reason, channel, conditions: failing.map((condition) => ({ id: condition.id, detail: condition.detail })) };
+      const latest = await trx.selectFrom('task_completion_checks').select('id').where('task_id', '=', taskId).orderBy('id', 'desc').limit(1).executeTakeFirstOrThrow();
+      await trx
+        .updateTable('task_completion_checks')
+        .set({ waived_at: at, waiver_reason: reason, waiver_channel: channel, waived_conditions_json: JSON.stringify(waiver.conditions) })
+        .where('id', '=', latest.id)
+        .execute();
+      await this.transition(trx, taskId, 'final-checks.waived', 'user', `completed by the user despite failed final checks (${failingIds.join(', ')}): ${reason}`, at);
+      await audit(trx, at, 'task.complete-waived', taskId, { reportVersion: fresh.reportVersion, waived: waiver.conditions, reason, channel });
+      return { ...fresh, waiver };
     });
     await this.reload();
     return { check, state: this.requireTask(taskId).state };
@@ -2474,7 +2522,11 @@ function storedSetting<T>(rows: readonly { key: string; value_json: string }[], 
 function completionCheckFromRow(row: Selectable<JerrySchema['task_completion_checks']>): CompletionCheck {
   const conditions = JSON.parse(row.conditions_json) as Array<{ id: string; laterWork?: unknown }>;
   const laterWork = conditions.find((condition) => condition.id === 'code.later-work')?.laterWork ?? [];
-  return completionCheckSchema.parse({ taskId: row.task_id, reportVersion: row.report_version, at: row.created_at, passed: row.passed === 1, conditions, definitionOfDone: JSON.parse(row.definition_of_done_json), laterWork });
+  const waiver =
+    row.waived_at === null
+      ? null
+      : { at: row.waived_at, reason: row.waiver_reason ?? '', channel: row.waiver_channel ?? 'cli', conditions: row.waived_conditions_json === null ? [] : JSON.parse(row.waived_conditions_json) };
+  return completionCheckSchema.parse({ taskId: row.task_id, reportVersion: row.report_version, at: row.created_at, passed: row.passed === 1, conditions, definitionOfDone: JSON.parse(row.definition_of_done_json), laterWork, waiver });
 }
 
 function reportFromRow(row: Selectable<JerrySchema['implementation_reports']>): ImplementationReportRecord {

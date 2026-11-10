@@ -85,6 +85,18 @@ describe('workflow transitions', () => {
     expect(go('IMPLEMENTATION', 'task.completed', 'core')).toMatchObject({ ok: false });
   });
 
+  it('lets only the user complete a task the final checks refused, and only from the final checks', () => {
+    expect(go('FINAL_REPORT', 'final-checks.waived', 'user')).toEqual({ ok: true, to: 'DONE' });
+    expect(go('FINAL_REPORT', 'final-checks.waived', 'claude')).toMatchObject({ ok: false });
+    expect(go('FINAL_REPORT', 'final-checks.waived', 'core')).toMatchObject({ ok: false });
+    for (const state of ['IMPLEMENTATION', 'WAIT_IMPLEMENTATION_ACCEPTANCE', 'CODE_REVIEW', 'DONE', 'PAUSED'] as const) {
+      expect(go(state, 'final-checks.waived', 'user'), state).toMatchObject({ ok: false });
+    }
+    // It is offered to the user in the final checks, never to Claude.
+    expect(availableEvents('FINAL_REPORT', 'user')).toContain('final-checks.waived');
+    expect(availableEvents('FINAL_REPORT', 'claude')).not.toContain('final-checks.waived');
+  });
+
   it('pauses and resumes to the state the task was in', () => {
     expect(go('IMPLEMENTATION', 'task.paused')).toEqual({ ok: true, to: 'PAUSED' });
     expect(go('PAUSED', 'task.resumed', 'user', 'IMPLEMENTATION')).toEqual({ ok: true, to: 'IMPLEMENTATION' });

@@ -6,7 +6,7 @@ import { AccordionContent, AccordionHeader, AccordionItem, AccordionRoot, Accord
 import { defineComponent, ref, type PropType } from 'vue';
 import { api } from '../api';
 import { CHIP } from '../lib/classes';
-import { rerunCanHelp } from '../lib/final-checks';
+import { canWaive, failedBlocking, rerunCanHelp } from '../lib/final-checks';
 import { REVIEW_STATES, REVIEWER_STATES, projectOf } from '../lib/tasks';
 import { classProp, cn } from '../lib/utils';
 import { decisionConfirmation, projectReviewMode, taskReviewMode, type ReviewMode } from '../settings';
@@ -25,7 +25,7 @@ import { Switch } from './ui/switch';
  * user chose typed confirmations in Settings; cancelling too (its dialog says it cannot be undone).
  * Pause and resume are one click without a dialog.
  */
-type ConfirmedAction = 'approve' | 'reject' | 'withdraw' | 'accept' | 'request-changes' | 'cancel' | 'skip-review' | 'approve-fixes' | 'reject-fixes' | 'recheck';
+type ConfirmedAction = 'approve' | 'reject' | 'withdraw' | 'accept' | 'request-changes' | 'cancel' | 'skip-review' | 'approve-fixes' | 'reject-fixes' | 'recheck' | 'complete-anyway';
 
 /** The kinds of Artifact (kept here: a value import from the contracts would bundle Zod). */
 export const ARTIFACT_KIND_LABEL: Record<ArtifactRequest['kind'], string> = {
@@ -148,6 +148,14 @@ const DIALOG: Record<ConfirmedAction, { title: string; confirm: string; tone: 'p
     tone: 'primary',
     note: 'JERRY runs the same final checks again; the task is done if they pass. Files later approved tasks changed are listed, not held against it.',
   },
+  'complete-anyway': {
+    title: 'Complete',
+    confirm: 'Complete despite failed checks',
+    tone: 'danger',
+    note: 'JERRY runs the final checks once more: if they pass, the task is done as usual; if they changed, nothing happens and you look again. Otherwise the task is DONE by your decision. This cannot be undone; your reason and the waived blockers are recorded in the history and the final report, and the checks stay marked as failed.',
+    comment: 'Why is it fine to complete the task anyway? (required)',
+    commentRequired: true,
+  },
 };
 
 
@@ -201,6 +209,7 @@ function decisionDetails(pending: Pending) {
 
 function subjectOf(pending: Pending): string {
   const { task, action } = pending;
+  if (action === 'complete-anyway') return `${task.taskId} despite its failed final checks`;
   if (action === 'cancel' || action === 'skip-review' || action === 'recheck') return task.taskId;
   if (action === 'approve-fixes' || action === 'reject-fixes') return `${task.taskId} (round ${pending.round ?? '?'})`;
   if (action === 'accept' || action === 'request-changes') return `${task.taskId} report v${task.lastReport?.version ?? '?'}`;
@@ -220,6 +229,7 @@ export function effectiveReviewMode(task: TaskSummary): ReviewMode | null {
 function outcomeNotice(taskId: string, done: string): string {
   const after = state.tasks.find((candidate) => candidate.taskId === taskId);
   if (after === undefined) return done;
+  if (after.state === 'DONE' && after.finalCheck?.waiver) return `${done} The task is done by your decision; JERRY's final checks did not pass.`;
   if (after.state === 'DONE') return `${done} JERRY's final checks passed: the task is done.`;
   if (after.state === 'FINAL_REPORT') return `${done} JERRY's final checks did not pass.`;
   if (REVIEWER_STATES.has(after.state)) return `${done} The task is in independent review: run /jerry:review ${taskId} in Claude Code.`;
@@ -300,6 +310,13 @@ function useTaskDecisions(task: () => TaskSummary, changed: () => void) {
         if (done) state.notice = outcomeNotice(id, `Re-ran the final checks of ${id}.`);
         return done;
       }
+      case 'complete-anyway': {
+        // The blockers the user was shown: Core refuses when the checks now fail differently.
+        const seen = failedBlocking(subject).map((condition) => condition.id);
+        const done = await perform(() => api.waiveFinalChecks(id, comment, seen, typed), `Completed ${id}.`);
+        if (done) state.notice = outcomeNotice(id, `Completed ${id}.`);
+        return done;
+      }
       case 'approve-fixes':
       case 'reject-fixes': {
         const round = current.round ?? 0;
@@ -378,7 +395,7 @@ function useTaskDecisions(task: () => TaskSummary, changed: () => void) {
           key="decision"
           title={`${DIALOG[current.action].title} ${subjectOf(current)}`}
           expected={current.task.taskId}
-          mode={decisionConfirmation(state.settings)}
+          mode={current.action === 'complete-anyway' ? 'typed' : decisionConfirmation(state.settings)}
           confirmLabel={DIALOG[current.action].confirm}
           tone={DIALOG[current.action].tone}
           busy={busy.value}
@@ -392,6 +409,18 @@ function useTaskDecisions(task: () => TaskSummary, changed: () => void) {
               <p class="text-foreground">{current.task.title}</p>,
               decisionDetails(current),
               <p class="text-xs">{DIALOG[current.action].note}</p>,
+              current.action === 'complete-anyway' && (
+                <div class="text-foreground grid gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs" data-waived-blockers>
+                  <p class="font-medium">You waive what JERRY's final checks found:</p>
+                  <ul class="grid list-disc gap-0.5 pl-4 [overflow-wrap:anywhere]">
+                    {failedBlocking(current.task).map((condition) => (
+                      <li key={condition.id} data-condition={condition.id}>
+                        {condition.detail}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ),
               current.action === 'recheck' && !rerunCanHelp(current.task) && (
                 <p class="text-foreground rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs" data-rerun-warning>
                   A re-run cannot pass: everything that blocks this task is in its report or plan, which a re-run checks unchanged. Request changes instead, so Claude submits a corrected report.
@@ -535,6 +564,14 @@ export const TaskActions = defineComponent({
         buttons.push(
           <Button key="request-changes" variant="outline" size="sm" onClick={() => decisions.ask('request-changes')}>
             Request changes
+          </Button>,
+        );
+      }
+      // The user's override of failed final checks: offered only when every blocker may be waived.
+      if (allowed.includes('final-checks.waived') && canWaive(task)) {
+        buttons.push(
+          <Button key="complete-anyway" variant="outline" size="sm" onClick={() => decisions.ask('complete-anyway')} data-complete-anyway>
+            Complete anyway
           </Button>,
         );
       }

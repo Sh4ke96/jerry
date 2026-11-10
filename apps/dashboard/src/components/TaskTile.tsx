@@ -65,9 +65,16 @@ export function checksSummary(task: TaskSummary) {
       )}
       {final !== null && (
         <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <StatusBadge tone={final.passed ? 'pass' : 'deny'} emoji={final.passed ? EMOJI.done : EMOJI.fail}>
-            {final.passed ? 'final checks passed' : 'final checks failed'}
-          </StatusBadge>
+          {final.waiver ? (
+            // DONE by the user's decision: never shown as a pass.
+            <StatusBadge tone="warn" emoji={EMOJI.warning} data-waived>
+              done by your waiver · final checks failed
+            </StatusBadge>
+          ) : (
+            <StatusBadge tone={final.passed ? 'pass' : 'deny'} emoji={final.passed ? EMOJI.done : EMOJI.fail}>
+              {final.passed ? 'final checks passed' : 'final checks failed'}
+            </StatusBadge>
+          )}
           <span class="text-muted-foreground text-xs">
             {final.conditions.filter((condition) => !condition.passed && condition.blocking).length} blocking · {formatTime(final.at)}
           </span>

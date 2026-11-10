@@ -96,7 +96,7 @@ export function repositoryOf(repoRoot: string, repositories: RepositorySummary[]
 
 /** The latest thing that happened to the task. */
 export function lastActivity(task: TaskSummary): string {
-  const candidates = [task.activity.lastActivityAt, task.lastCheckpoint?.at, task.lastReport?.createdAt, task.finalCheck?.at, task.plan.createdAt, task.createdAt];
+  const candidates = [task.activity.lastActivityAt, task.lastCheckpoint?.at, task.lastReport?.createdAt, task.finalCheck?.at, task.finalCheck?.waiver?.at, task.plan.createdAt, task.createdAt];
   return candidates.filter((value): value is string => typeof value === 'string').sort().at(-1) ?? task.createdAt;
 }
 
@@ -113,7 +113,7 @@ const NEXT_STEP: Partial<Record<WorkflowState, string>> = {
   WAIT_REVIEW_FIX_APPROVAL: 'Your decision: approve or reject the fix plan.',
   FIX_IMPLEMENTATION: 'Claude makes the approved fixes.',
   REVERIFICATION: 'The same reviewers re-check the fixes: run /jerry:review in Claude Code.',
-  FINAL_REPORT: 'JERRY did not complete the task: see what blocks it, then re-run the final checks, request changes or cancel it.',
+  FINAL_REPORT: 'JERRY did not complete the task: see what blocks it, then re-run the final checks, request changes, complete it anyway with your reason, or cancel it.',
   DONE: 'Nothing: the task is done. Committing stays with you.',
   BLOCKED: 'Something blocks the task; see its history.',
   PAUSED: 'Paused by you: resume it to continue.',
@@ -122,6 +122,7 @@ const NEXT_STEP: Partial<Record<WorkflowState, string>> = {
 
 /** What happens next, in one sentence (Claude's own next step while it is working). */
 export function nextStepText(task: TaskSummary): string {
+  if (task.state === 'DONE' && task.finalCheck?.waiver) return "Nothing: you completed the task despite JERRY's failed final checks. Committing stays with you.";
   // The user sent the report back and Claude has not picked it up yet (no checkpoint since): say how to continue.
   const sentBack = task.state === 'IMPLEMENTATION' && task.reportDecision?.decision === 'REJECTED' ? task.reportDecision : null;
   if (sentBack !== null && !((task.lastCheckpoint?.at ?? '') > sentBack.approvedAt)) {

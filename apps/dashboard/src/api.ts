@@ -132,6 +132,12 @@ export const api = {
   skipReview: (taskId: string, reason: string, confirmTaskId: string) => request<ReviewState>('POST', `/api/v1/tasks/${encodeURIComponent(taskId)}/review/skip`, { reason, confirmTaskId }),
   /** The user re-runs the final checks of a task waiting in FINAL_REPORT; Core sets DONE if they pass. */
   rerunFinalChecks: (taskId: string, confirmTaskId: string) => request<FinalChecksRerun>('POST', `/api/v1/tasks/${encodeURIComponent(taskId)}/final-checks`, { confirmTaskId }),
+  /**
+   * The user completes a task despite its failed final checks: a reason, the blockers they saw (Core
+   * refuses when those changed) and always the typed task ID.
+   */
+  waiveFinalChecks: (taskId: string, reason: string, seen: string[], confirmTaskId: string) =>
+    request<FinalChecksRerun>('POST', `/api/v1/tasks/${encodeURIComponent(taskId)}/final-checks/waive`, { reason, seen, confirmTaskId }),
   /** Plan drift, step order and implementer assignments. */
   drift: (taskId: string) => request<PlanDrift>('GET', `/api/v1/tasks/${encodeURIComponent(taskId)}/drift`),
   /** Quality findings of a task, all statuses. */

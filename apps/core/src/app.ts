@@ -56,6 +56,7 @@ import {
   fixesReportRequestSchema,
   reviewSkipRequestSchema,
   finalChecksRerunRequestSchema,
+  finalChecksWaiveRequestSchema,
   type FinalChecksRerun,
   coreShutdownRequestSchema,
   type CoreShutdownRequest,
@@ -1228,6 +1229,22 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
     const fromDashboard = request.client?.kind === 'session';
     checkDecisionConfirmation(request, taskId, body.confirmTaskId, `Type ${taskId} to confirm re-running its final checks`);
     return store.rerunFinalChecks(taskId, new Date(), fromDashboard ? 'dashboard' : 'cli');
+  });
+
+  /**
+   * The user completes a task the final checks refused, with a reason (a recorded waiver). User only:
+   * the CLI token (the terminal asked for the reason and the typed task ID) or a dashboard session with
+   * CSRF and Origin. Completing cannot be undone, so the dashboard always needs the typed task ID,
+   * whatever the decision confirmation setting says. Not an MCP tool; the hard rules block agents.
+   */
+  app.post('/api/v1/tasks/:taskId/final-checks/waive', { config: TOKEN_OR_SESSION }, async (request): Promise<FinalChecksRerun> => {
+    const taskId = taskParam(request);
+    const body = parse(finalChecksWaiveRequestSchema, request.body);
+    const fromDashboard = request.client?.kind === 'session';
+    if (fromDashboard && body.confirmTaskId?.trim().toUpperCase() !== taskId) {
+      throw new HttpError(400, `Completing ${taskId} despite its final checks needs the task ID typed as confirmation (${taskId})`);
+    }
+    return store.waiveFinalChecks(taskId, body.reason, body.seen, new Date(), fromDashboard ? 'dashboard' : 'cli');
   });
 
   /** The task's current implementer assignments; cheap, no Git. */

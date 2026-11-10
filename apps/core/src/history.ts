@@ -1,4 +1,4 @@
-import { citationCheckSchema, analysisReportSchema, taskRepositoryRoots, type Freshness, type HistoryQuery, type HistoryResponse, type HistoryTask, type ImplementationReportRecord, type PlanDocument, type Task } from '@jerry/contracts';
+import { citationCheckSchema, analysisReportSchema, taskRepositoryRoots, type CompletionWaiver, type Freshness, type HistoryQuery, type HistoryResponse, type HistoryTask, type ImplementationReportRecord, type PlanDocument, type Task } from '@jerry/contracts';
 import { comparablePath, matchesAnyGlob } from '@jerry/policy-engine';
 import { fingerprintFiles } from './git-reader.js';
 import type { StateStore } from './state-store.js';
@@ -29,6 +29,12 @@ const trim = (text: string, max: number): string => {
 
 const normalized = (file: string): string => file.trim().replaceAll('\\', '/').replace(/^\.\//, '');
 
+/** A waived DONE as the first decision of a history entry: the final checks did not pass. */
+function waiverDecision(waiver: CompletionWaiver | null): string[] {
+  if (waiver === null) return [];
+  return [`DONE by the user's waiver; JERRY's final checks did NOT pass (${waiver.conditions.map((condition) => condition.detail).join('; ')}). The user's reason: ${waiver.reason}`];
+}
+
 export async function buildHistory(store: StateStore, repoRoot: string, query: HistoryQuery): Promise<HistoryResponse> {
   const caseInsensitive = process.platform === 'win32';
   const key = (root: string): string => comparablePath(root, root, process.platform);
@@ -46,6 +52,8 @@ export async function buildHistory(store: StateStore, repoRoot: string, query: H
   const tasks = snapshot.tasks.filter((task) => taskRepositoryRoots(task).some((root) => key(root) === ownKey));
   const reports = await store.latestReports();
   const finished = await finishedAt(store, tasks.map((task) => task.taskId));
+  // Tasks the user completed despite failed final checks: later work must not take them as checked.
+  const checks = await store.latestCompletionChecks();
 
   const candidates: Array<{ task: Task; entry: HistoryTask; rank: number }> = [];
   for (const task of tasks) {
@@ -71,7 +79,9 @@ export async function buildHistory(store: StateStore, repoRoot: string, query: H
       summary: report === null ? null : trim(report.document.summary, 800),
       files: shown.map((change) => ({ path: normalized(change.path), kind: change.kind, description: trim(change.description, 300), fresh: fresh.get(normalized(change.path)) ?? 'unknown' })),
       patterns: patternsOf(document, globs.length === 0 ? null : matchesPath),
-      decisions: (report?.document.planDeviations ?? []).slice(0, MAX_DECISIONS).map((deviation) => trim(`${deviation.description} (why: ${deviation.reason})`, 300)),
+      decisions: [...waiverDecision(task.state === 'DONE' ? (checks.get(task.taskId)?.waiver ?? null) : null), ...(report?.document.planDeviations ?? []).map((deviation) => `${deviation.description} (why: ${deviation.reason})`)]
+        .slice(0, MAX_DECISIONS)
+        .map((decision) => trim(decision, 300)),
       userFeedback: snapshot.approvals
         .filter((approval) => approval.taskId === task.taskId && approval.comment.trim() !== '')
         .slice(-MAX_FEEDBACK)

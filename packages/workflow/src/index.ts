@@ -8,6 +8,7 @@ import type { ImplementationReportRecord, ReviewMode, WorkflowActor, WorkflowEve
  *   user    approvals, rejections, accepting or sending back an implementation, pause, resume, cancel
  *   claude  submitting and revising plans, submitting the implementation report
  *   core    completing a task after the final checks (DONE is never set by a model)
+ *   user    also completing a task the final checks refused, as a recorded waiver with a reason
  */
 
 // The PURE annotations let bundlers drop what a consumer does not use: the hook bridge needs only
@@ -81,6 +82,8 @@ const RULES: Readonly<Record<WorkflowEvent, Rule>> = {
   // The fixes are done: the same reviewers check again.
   'fixes.reported': { from: ['FIX_IMPLEMENTATION'], to: 'REVERIFICATION', actors: ['claude', 'user'] },
   'task.completed': { from: ['FINAL_REPORT'], to: 'DONE', actors: ['core'] },
+  // The user completes a task the final checks refused, with a reason; Core records it as a waiver.
+  'final-checks.waived': { from: ['FINAL_REPORT'], to: 'DONE', actors: ['user'] },
   'task.paused': { from: PAUSABLE, to: 'PAUSED', actors: ['user'] },
   'task.resumed': { from: ['PAUSED'], to: 'resume', actors: ['user'] },
   'task.cancelled': { from: /* @__PURE__ */ PAUSABLE.concat('PAUSED'), to: 'CANCELLED', actors: ['user'] },

@@ -1,6 +1,6 @@
 import path from 'node:path';
 import readline from 'node:readline/promises';
-import { approvalRecordSchema, type CompletionCheck, finalChecksRerunSchema, finalReportSchema, planSchema, REVIEWER_ROLES, reviewStateSchema, type ReviewState, taskDetailSchema, taskSchema, taskWithDecisionSchema, workflowTransitionSchema, type ApprovalRecord, type ImplementationReportRecord, type Task, type TaskDetail } from '@jerry/contracts';
+import { approvalRecordSchema, type CompletionCheck, finalChecksRerunSchema, finalReportSchema, planSchema, REVIEWER_ROLES, reviewStateSchema, type ReviewState, taskDetailSchema, taskSchema, taskWithDecisionSchema, WAIVABLE_FINAL_CHECK_CONDITIONS, workflowTransitionSchema, type ApprovalRecord, type ImplementationReportRecord, type Task, type TaskDetail } from '@jerry/contracts';
 import { readCoreRuntimeInfo, requestCore, resolveJerryHome } from '@jerry/platform';
 import { diffPlans, isEmptyDiff, isTerminal, STATE_LABELS } from '@jerry/workflow';
 import { z } from 'zod';
@@ -390,7 +390,16 @@ function printFinalCheck(task: TaskDetail): void {
 
 function printCheck(taskId: string, check: CompletionCheck): void {
   console.log(
-    `\n${check.passed ? mark('done', `JERRY final checks passed: ${taskId} is DONE.`) : mark('fail', `JERRY final checks did not pass: ${taskId} stays in final checks. Request changes, cancel the task, or re-run the checks later with "jerry task recheck ${taskId}".`)}`,
+    `\n${
+      check.waiver !== null
+        ? mark('done', `${taskId} is DONE by your waiver; JERRY's final checks did NOT pass. Your reason: ${check.waiver.reason}`)
+        : check.passed
+          ? mark('done', `JERRY final checks passed: ${taskId} is DONE.`)
+          : mark(
+              'fail',
+              `JERRY final checks did not pass: ${taskId} stays in final checks. Request changes, cancel the task, re-run the checks later with "jerry task recheck ${taskId}", or complete it anyway with a reason: "jerry task complete ${taskId}".`,
+            )
+    }`,
   );
   for (const condition of check.conditions) {
     const label = condition.passed ? 'ok  ' : condition.blocking ? 'FAIL' : 'note';
@@ -433,6 +442,51 @@ export async function recheckTask(taskId: string): Promise<void> {
   const result = finalChecksRerunSchema.parse(await callCore('POST', `/api/v1/tasks/${encodeURIComponent(task.taskId)}/final-checks`, {}));
   printCheck(task.taskId, result.check);
   if (!result.check.passed) process.exitCode = 1;
+}
+
+/**
+ * Completing a task despite failed final checks is the user's decision: an interactive terminal, the
+ * blockers shown, a reason, and the typed task ID (DONE cannot be undone). Core runs the checks once
+ * more and refuses when they changed or a blocker cannot be waived.
+ */
+export async function completeTask(taskId: string, options: { reason?: string }): Promise<void> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error('"jerry task complete" requires an interactive terminal (PowerShell or the VS Code terminal). In Git Bash/mintty run it via "winpty".');
+  }
+  const id = taskId.toUpperCase();
+  const task = taskDetailSchema.parse(await callCore('GET', `/api/v1/tasks/${encodeURIComponent(id)}`));
+  console.log(stateMark(task.state, `${task.taskId}  ${STATE_LABELS[task.state]}  ${task.title}`));
+  if (task.state !== 'FINAL_REPORT' || task.finalCheck === null) {
+    process.exitCode = 1;
+    console.error(mark('fail', `${task.taskId} is ${STATE_LABELS[task.state]} (${task.state}); only a task waiting in final checks can be completed despite them.`));
+    return;
+  }
+  const waivable: ReadonlySet<string> = new Set(WAIVABLE_FINAL_CHECK_CONDITIONS);
+  const blocking = task.finalCheck.conditions.filter((condition) => condition.blocking && !condition.passed);
+  console.log('\nJERRY\'s final checks did not pass:');
+  for (const condition of blocking) console.log(`  ${resultMark('FAIL', 'FAIL')} ${condition.detail}${waivable.has(condition.id) ? '' : '  (cannot be waived)'}`);
+  const fixed = blocking.filter((condition) => !waivable.has(condition.id));
+  if (fixed.length > 0) {
+    process.exitCode = 1;
+    console.error(mark('fail', 'These blockers are about your own decisions on this plan or report and cannot be waived. Request changes, re-run the checks, or cancel the task.'));
+    return;
+  }
+  const prompt = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const reason = options.reason?.trim() || (await prompt.question('\nWhy is it fine to complete the task anyway? ')).trim();
+    if (reason === '') throw new Error('A reason is required; nothing changed.');
+    const typed = (await prompt.question(`DONE cannot be undone. Type ${id} to complete it despite the failed final checks: `)).trim().toUpperCase();
+    if (typed !== id) {
+      console.log(mark('info', 'Nothing was changed.'));
+      return;
+    }
+    const result = finalChecksRerunSchema.parse(
+      await callCore('POST', `/api/v1/tasks/${encodeURIComponent(id)}/final-checks/waive`, { reason, seen: blocking.map((condition) => condition.id) }),
+    );
+    printCheck(id, result.check);
+  } finally {
+    prompt.close();
+  }
 }
 
 /** The report as the user reviews it in a terminal: claims next to what JERRY recorded. */

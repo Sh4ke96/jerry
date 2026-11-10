@@ -17,7 +17,7 @@ import { addSkill, listSkills, removeSkill, setSkillEnabled, setSkillStates, sho
 import { addToWorkspace, createWorkspace, deleteWorkspace, listWorkspaces, removeFromWorkspace, renameWorkspace, showWorkspace } from './workspace-commands.js';
 import { showStatus } from './status-command.js';
 import { disableStatusline, enableStatusline, statuslineStatus } from './statusline-commands.js';
-import { controlTask, createTask, decide, listTasks, recheckTask, revisePlan, showFinalReport, showPlanDiff, showReview, showTask, skipReview } from './task-commands.js';
+import { completeTask, controlTask, createTask, decide, listTasks, recheckTask, revisePlan, showFinalReport, showPlanDiff, showReview, showTask, skipReview } from './task-commands.js';
 import { openDashboard } from './ui-command.js';
 import { disableUsageCommand, enableUsageCommand, usageStatus } from './usage-commands.js';
 
@@ -159,6 +159,11 @@ task
   .command('recheck <taskId>')
   .description('Re-run the final checks of a task waiting in final checks; DONE follows if they pass (interactive)')
   .action((taskId: string) => recheckTask(taskId));
+task
+  .command('complete <taskId>')
+  .description('Complete a task despite its failed final checks, with a reason (interactive; recorded as your waiver)')
+  .option('--reason <text>', 'why it is fine to complete the task anyway')
+  .action((taskId: string, options: { reason?: string }) => completeTask(taskId, options));
 
 const plan = program.command('plan').description('Revise or compare plans');
 plan

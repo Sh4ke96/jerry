@@ -91,10 +91,20 @@ export const WORKFLOW_EVENTS = [
   'fixes.rejected',
   'fixes.reported',
   'task.completed',
+  // The user completes a task the final checks refused, with a reason (a recorded waiver).
+  'final-checks.waived',
   'task.paused',
   'task.resumed',
   'task.cancelled',
 ] as const;
+
+/**
+ * Blocking final-check conditions the user may waive to complete a task anyway: facts about the
+ * work (a failed check, a critical risk, edits after the report). Conditions about the user's own
+ * decisions (the approved plan and report versions, the review) and any condition not listed here
+ * are never waivable.
+ */
+export const WAIVABLE_FINAL_CHECK_CONDITIONS = ['report.no-failed-checks', 'report.no-critical-risks', 'code.unchanged-since-report'] as const;
 
 /** Who caused a transition: the user, Claude (through MCP) or JERRY Core itself. */
 export const WORKFLOW_ACTORS = ['user', 'claude', 'core'] as const;
