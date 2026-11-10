@@ -1,9 +1,12 @@
 import type { ArtifactRequest, TaskSummary } from '@jerry/contracts';
 import { EMOJI } from '@jerry/contracts/emoji';
 import { availableEvents } from '@jerry/workflow';
-import { Check, Copy, Ellipsis } from '@lucide/vue';
+import { Check, ChevronDown, Copy, Ellipsis } from '@lucide/vue';
+import { AccordionContent, AccordionHeader, AccordionItem, AccordionRoot, AccordionTrigger } from 'reka-ui';
 import { defineComponent, ref, type PropType } from 'vue';
 import { api } from '../api';
+import { CHIP } from '../lib/classes';
+import { rerunCanHelp } from '../lib/final-checks';
 import { REVIEW_STATES, REVIEWER_STATES, projectOf } from '../lib/tasks';
 import { classProp, cn } from '../lib/utils';
 import { decisionConfirmation, projectReviewMode, taskReviewMode, type ReviewMode } from '../settings';
@@ -14,6 +17,7 @@ import { Button } from './ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from './ui/dropdown-menu';
 import { Label } from './ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Switch } from './ui/switch';
 
 /**
@@ -48,20 +52,18 @@ export function artifactChoice(id: string, wanted: boolean, kind: ArtifactReques
           <Label for={`${id}-kind`} class="text-muted-foreground text-xs">
             Kind
           </Label>
-          <select
-            id={`${id}-kind`}
-            class="border-input bg-background h-8 rounded-md border px-2 text-sm"
-            value={kind}
-            disabled={disabled}
-            data-artifact-kind
-            onChange={(event: Event) => change({ wanted, kind: (event.target as HTMLSelectElement).value as ArtifactRequest['kind'] })}
-          >
-            {Object.entries(ARTIFACT_KIND_LABEL).map(([value, label]) => (
-              <option key={value} value={value}>
-                {label}
-              </option>
-            ))}
-          </select>
+          <Select modelValue={kind} disabled={disabled} onUpdate:modelValue={(value: string) => change({ wanted, kind: value as ArtifactRequest['kind'] })}>
+            <SelectTrigger id={`${id}-kind`} size="sm" data-artifact-kind>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {Object.entries(ARTIFACT_KIND_LABEL).map(([value, label]) => (
+                <SelectItem key={value} value={value}>
+                  {label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       )}
       <p class="text-muted-foreground text-xs">
@@ -149,6 +151,54 @@ const DIALOG: Record<ConfirmedAction, { title: string; confirm: string; tone: 'p
 };
 
 
+/** shadcn's accordion (new-york-v4) on reka-ui, compact for a dialog. */
+const ACCORDION_TRIGGER =
+  'focus-visible:border-ring focus-visible:ring-ring/50 text-foreground flex flex-1 cursor-pointer items-center justify-between gap-4 rounded-md py-2 text-left text-sm font-medium transition-all outline-none hover:underline focus-visible:ring-[3px] [&[data-state=open]>svg]:rotate-180';
+const ACCORDION_CONTENT = 'data-[state=closed]:animate-accordion-up data-[state=open]:animate-accordion-down overflow-hidden text-sm';
+
+/**
+ * The scope and, when accepting, the Definition of Done, as an accordion folded by default: long
+ * lists of paths stay out of the way until the user opens them. Several sections may be open at once.
+ */
+function decisionDetails(pending: Pending) {
+  const { task, action } = pending;
+  const definitionOfDone = action === 'accept' ? (task.plan.document?.definitionOfDone ?? []) : [];
+  const section = (value: string, title: string, body: () => unknown) => (
+    <AccordionItem key={value} value={value} class="border-b last:border-b-0" data-details={value}>
+      <AccordionHeader class="flex">
+        <AccordionTrigger class={ACCORDION_TRIGGER}>
+          {title}
+          <ChevronDown class="text-muted-foreground pointer-events-none size-4 shrink-0 transition-transform duration-200" />
+        </AccordionTrigger>
+      </AccordionHeader>
+      <AccordionContent class={ACCORDION_CONTENT}>
+        <div class="pb-3">{body()}</div>
+      </AccordionContent>
+    </AccordionItem>
+  );
+  return (
+    <AccordionRoot type="multiple" defaultValue={[]} class="decision-details min-w-0 rounded-md border px-3">
+      {section('scope', `Scope (${task.plan.scope.length})`, () => (
+        <div class="flex flex-wrap gap-1">
+          {task.plan.scope.map((glob) => (
+            <code key={glob} class={CHIP}>
+              {glob}
+            </code>
+          ))}
+        </div>
+      ))}
+      {definitionOfDone.length > 0 &&
+        section('definition-of-done', `Definition of Done you confirm (${definitionOfDone.length})`, () => (
+          <ul class="text-foreground grid list-disc gap-1 pl-5">
+            {definitionOfDone.map((item, index) => (
+              <li key={index}>{item}</li>
+            ))}
+          </ul>
+        ))}
+    </AccordionRoot>
+  );
+}
+
 function subjectOf(pending: Pending): string {
   const { task, action } = pending;
   if (action === 'cancel' || action === 'skip-review' || action === 'recheck') return task.taskId;
@@ -185,8 +235,11 @@ function useTaskDecisions(task: () => TaskSummary, changed: () => void) {
   const busy = ref(false);
   /** Whether an accepted report goes to independent review (the switch in the accept dialog). */
   const sendToReview = ref(true);
-  /** The review instruction is shown (Claude runs the reviewers, not the dashboard). */
-  const startingReview = ref(false);
+  /**
+   * The Claude Code instruction shown: starting the review (Claude runs the reviewers), or continuing
+   * the work of a task in implementation (Claude implements and reports; the dashboard cannot).
+   */
+  const instructionShown = ref<'review' | 'continue' | null>(null);
   const copied = ref(false);
 
   /** The Artifact switch of the approve dialog, prefilled from the user's earlier choice or the plan's answer. */
@@ -318,7 +371,7 @@ function useTaskDecisions(task: () => TaskSummary, changed: () => void) {
 
   const dialogs = () => {
     const current = pending.value;
-    const instruction = `/jerry:review ${task().taskId}`;
+    const guide = instructionShown.value === null ? null : instructionFor(task(), instructionShown.value);
     return [
       current !== null && (
         <ConfirmDialog
@@ -337,18 +390,13 @@ function useTaskDecisions(task: () => TaskSummary, changed: () => void) {
           {{
             default: () => [
               <p class="text-foreground">{current.task.title}</p>,
-              <p>Scope: {current.task.plan.scope.join(', ')}</p>,
-              current.action === 'accept' && (current.task.plan.document?.definitionOfDone.length ?? 0) > 0 && (
-                <div class="grid gap-1">
-                  <p>You confirm the plan's Definition of Done:</p>
-                  <ul class="text-foreground grid list-disc gap-1 pl-5">
-                    {current.task.plan.document?.definitionOfDone.map((item, index) => (
-                      <li key={index}>{item}</li>
-                    ))}
-                  </ul>
-                </div>
-              ),
+              decisionDetails(current),
               <p class="text-xs">{DIALOG[current.action].note}</p>,
+              current.action === 'recheck' && !rerunCanHelp(current.task) && (
+                <p class="text-foreground rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs" data-rerun-warning>
+                  A re-run cannot pass: everything that blocks this task is in its report or plan, which a re-run checks unchanged. Request changes instead, so Claude submits a corrected report.
+                </p>
+              ),
             ],
             controls:
               current.action === 'accept'
@@ -359,38 +407,95 @@ function useTaskDecisions(task: () => TaskSummary, changed: () => void) {
           }}
         </ConfirmDialog>
       ),
-      <Dialog key="start-review" open={startingReview.value} onUpdate:open={(open: boolean) => (startingReview.value = open)}>
-        <DialogContent class="start-review">
-          <DialogHeader>
-            <DialogTitle>Start the review of {task().taskId}</DialogTitle>
-            <DialogDescription>Claude runs the read-only reviewers this change needs; the dashboard cannot start them. In Claude Code, in this repository, run:</DialogDescription>
-          </DialogHeader>
-          <div class="bg-muted flex items-center justify-between gap-3 rounded-md border px-3 py-2">
-            <code class="font-mono text-sm break-all" data-instruction>
-              {instruction}
-            </code>
-            <Button variant="outline" size="sm" onClick={() => void copyInstruction(instruction)}>
-              {copied.value ? <Check /> : <Copy />}
-              {copied.value ? 'Copied' : 'Copy'}
-            </Button>
-          </div>
-          <p class="text-muted-foreground text-sm">Only you approve their fix plan or skip the review.</p>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => (startingReview.value = false)}>
-              Close
-            </Button>
-          </DialogFooter>
-        </DialogContent>
+      <Dialog key="instruction" open={guide !== null} onUpdate:open={(open: boolean) => !open && (instructionShown.value = null)}>
+        {guide !== null && (
+          <DialogContent class={guide.class}>
+            <DialogHeader>
+              <DialogTitle>{guide.title}</DialogTitle>
+              <DialogDescription>{guide.description} In Claude Code, in this repository, run:</DialogDescription>
+            </DialogHeader>
+            <div class="bg-muted flex min-w-0 items-center justify-between gap-3 rounded-md border px-3 py-2">
+              <code class="font-mono text-sm break-all" data-instruction>
+                {guide.instruction}
+              </code>
+              <Button variant="outline" size="sm" onClick={() => void copyInstruction(guide.instruction)}>
+                {copied.value ? <Check /> : <Copy />}
+                {copied.value ? 'Copied' : 'Copy'}
+              </Button>
+            </div>
+            {guide.request !== null && (
+              <div class="grid gap-1 text-sm" data-sent-back>
+                <p class="font-medium">Your request to Claude</p>
+                <blockquote class="text-muted-foreground border-l-2 pl-3 [overflow-wrap:anywhere] whitespace-pre-line">{guide.request === '' ? 'No comment: Claude will ask you what to change.' : guide.request}</blockquote>
+              </div>
+            )}
+            <p class="text-muted-foreground text-sm">{guide.footnote}</p>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => (instructionShown.value = null)}>
+                Close
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        )}
       </Dialog>,
     ];
   };
 
-  const startReview = (): void => {
+  const showInstruction = (which: 'review' | 'continue'): void => {
     copied.value = false;
-    startingReview.value = true;
+    instructionShown.value = which;
   };
 
-  return { ask, askFixPlan, control, busy, pending, dialogs, startReview };
+  return { ask, askFixPlan, control, busy, pending, dialogs, startReview: () => showInstruction('review'), continueInClaude: () => showInstruction('continue') };
+}
+
+/** The user's comment when they sent the latest report back; null when the report was not sent back. */
+export function sentBackComment(task: TaskSummary): string | null {
+  return task.state === 'IMPLEMENTATION' && task.reportDecision?.decision === 'REJECTED' ? task.reportDecision.comment : null;
+}
+
+/** States in which Claude works and the dashboard can only say how to continue in Claude Code. */
+export const CLAUDE_WORK_STATES: ReadonlySet<TaskSummary['state']> = new Set(['IMPLEMENTATION', 'FIX_IMPLEMENTATION']);
+
+interface Instruction {
+  class: string;
+  title: string;
+  description: string;
+  instruction: string;
+  request: string | null;
+  footnote: string;
+}
+
+function instructionFor(task: TaskSummary, which: 'review' | 'continue'): Instruction {
+  const id = task.taskId;
+  if (which === 'review') {
+    return {
+      class: 'start-review',
+      title: `Start the review of ${id}`,
+      description: 'Claude runs the read-only reviewers this change needs; the dashboard cannot start them.',
+      instruction: `/jerry:review ${id}`,
+      request: null,
+      footnote: 'Only you approve their fix plan or skip the review.',
+    };
+  }
+  if (task.state === 'FIX_IMPLEMENTATION') {
+    return {
+      class: 'continue-in-claude',
+      title: `Continue ${id} in Claude Code`,
+      description: 'Claude makes the fixes you approved and the same reviewers re-check them; the dashboard cannot start that.',
+      instruction: `/jerry:review ${id}`,
+      request: null,
+      footnote: 'The task comes back to you if the re-check finds something.',
+    };
+  }
+  return {
+    class: 'continue-in-claude',
+    title: `Continue ${id} in Claude Code`,
+    description: 'Claude implements the approved plan and submits a report for your acceptance; the dashboard cannot start that.',
+    instruction: `/jerry:implement ${id}`,
+    request: sentBackComment(task),
+    footnote: 'Claude sees your request in JERRY; if only the report needs a change, it submits a corrected report.',
+  };
 }
 
 /** The decisions the task's state allows, as buttons. Pause, withdrawing and cancelling are in the '⋯' menu. */
@@ -472,6 +577,14 @@ export const TaskActions = defineComponent({
         buttons.push(
           <Button key="skip-review" variant="outline" size="sm" onClick={() => decisions.ask('skip-review')}>
             Skip review
+          </Button>,
+        );
+      }
+      // Claude works now: say how to continue it (e.g. after the user sent the report back).
+      if (CLAUDE_WORK_STATES.has(task.state)) {
+        buttons.push(
+          <Button key="continue" size="sm" variant={sentBackComment(task) !== null ? 'default' : 'outline'} onClick={decisions.continueInClaude} data-continue>
+            Continue in Claude Code
           </Button>,
         );
       }

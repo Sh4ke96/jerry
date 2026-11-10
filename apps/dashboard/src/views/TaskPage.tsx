@@ -20,9 +20,11 @@ import { ARTIFACT_KIND_LABEL, artifactChoice, effectiveReviewMode, TaskActions, 
 import { checksSummary, findingsSummary, reviewSummary, WaitingMarker } from '../components/TaskTile';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
+import { Loading } from '../components/ui/spinner';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { formatTime, isIntake, stateTone, waitsForUser } from '../format';
 import { CHIP, LIST } from '../lib/classes';
+import { remedyFor } from '../lib/final-checks';
 import { lastActivity, nextStepText, projectName, REVIEW_STATES, REVIEWER_STATES, taskRepositories, versionsText } from '../lib/tasks';
 import { cn } from '../lib/utils';
 import { linkTo, projectHref, taskHref } from '../router';
@@ -109,7 +111,7 @@ const TaskHistory = defineComponent({
       }
     });
     return () => {
-      if (steps.value === null) return <p class="text-muted-foreground text-xs">Loading history…</p>;
+      if (steps.value === null) return <Loading class="text-xs" text="Loading history…" />;
       if (steps.value.length === 0) return <p class="text-muted-foreground text-xs">No transitions recorded; the task predates workflow states.</p>;
       return (
         <ol class="history grid gap-1.5 text-sm">
@@ -263,6 +265,11 @@ export const TaskPage = defineComponent({
                       blocks
                     </StatusBadge>{' '}
                     {condition.detail}
+                    {current.state === 'FINAL_REPORT' && (
+                      <p class="text-muted-foreground mt-0.5 text-xs" data-remedy>
+                        What fixes it: {remedyFor(condition.id).text}
+                      </p>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -404,7 +411,7 @@ export const TaskPage = defineComponent({
             </Button>
           )}
         </div>
-        {diff.value === null && <p class="text-muted-foreground text-xs">Loading plan versions…</p>}
+        {diff.value === null && <Loading class="text-xs" text="Loading plan versions…" />}
         {diff.value != null && <PlanDiffView diff={diff.value} />}
         {drift.value === null && <p class="text-muted-foreground text-xs">Reading the repository…</p>}
         {drift.value != null && <PlanDriftView drift={drift.value} />}

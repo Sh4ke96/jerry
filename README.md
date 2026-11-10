@@ -161,6 +161,21 @@ need an interactive terminal, and Claude is not allowed to run them.
 | `jerry ui` | Open the dashboard with a one-time login link. 🔐 |
 | `jerry core start` / `stop` / `status` | Manage the local Core process. `start`/`stop` 🔐 |
 
+**🪵 When Core stopped and you do not know why**, read `JERRY_HOME\logs\core.log` (`core.log.1` is the previous
+one). Every line starts with its time (UTC). The log records:
+
+- who started Core: a Claude Code hook or JERRY's MCP server, `jerry core start`, or the desktop app;
+- who stopped it and why: `shutdown requested via API by cli: jerry core stop`, `by desktop`, `by evals`, or
+  `(requester not given)` for older clients;
+- signals (`SIGINT`, `SIGTERM`, `SIGHUP`, `SIGBREAK`), an uncaught exception with its stack (Core then exits
+  with code 1), an unhandled promise rejection with its stack (Core keeps running), and `exited with code N`.
+
+When Core ends without any of these, the next Core reports it at start: `the previous JERRY Core (pid …, last
+seen alive …) ended without a clean stop`. Something outside JERRY ended it (Task Manager, `taskkill`, the
+process tree that started it closing, a Windows restart or sign-out) or Node crashed natively; for a native
+crash look in Windows Event Viewer, Windows Logs › Application, for entries about `node.exe` near that time.
+Core writes its heartbeat to `run\core-alive.json` every minute and removes it on a clean stop.
+
 ### 🗂️ Tasks and plans
 
 | Command | Purpose |

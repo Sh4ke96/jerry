@@ -5,12 +5,13 @@ import { Plus, RefreshCw, Trash2 } from '@lucide/vue';
 import { defineComponent, onMounted, reactive, ref } from 'vue';
 import { api } from '../api';
 import { Emoji } from '../components/Emoji';
+import { FilterTabs } from '../components/FilterTabs';
 import { SKILL_NOTE, triggerText, useSkillActions } from '../components/SkillActions';
 import { StatusBadge } from '../components/StatusBadge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Switch } from '../components/ui/switch';
-import { Tabs, TabsList, TabsTrigger } from '../components/ui/tabs';
+import { Loading } from '../components/ui/spinner';
 import { formatTime } from '../format';
 import { CHIP } from '../lib/classes';
 import { linkTo, navigate, skillHref } from '../router';
@@ -148,16 +149,14 @@ export const Skills = defineComponent({
     onMounted(() => void load());
 
     const filterTabs = (added: readonly AddedSkill[]) => (
-      <Tabs modelValue={skillFilters.kind} onUpdate:modelValue={(value: string) => (skillFilters.kind = value as SkillFilter)}>
-        <TabsList aria-label="Filter skills by kind of change" class="skill-filters max-w-full justify-start overflow-x-auto">
-          {(['all', ...PLAN_CLASSIFICATIONS] as const).map((kind) => (
-            <TabsTrigger key={kind} value={kind} data-skill-filter={kind} class="flex-none">
-              {kind === 'all' ? 'All' : KIND_LABELS[kind]}
-              <span class="text-muted-foreground tabular-nums">{added.filter((skill) => skillFitsKind(skill, kind)).length}</span>
-            </TabsTrigger>
-          ))}
-        </TabsList>
-      </Tabs>
+      <FilterTabs
+        class="skill-filters"
+        label="Filter skills by kind of change"
+        marker="skill-filter"
+        modelValue={skillFilters.kind}
+        tabs={(['all', ...PLAN_CLASSIFICATIONS] as const).map((kind) => ({ value: kind, label: kind === 'all' ? 'All' : KIND_LABELS[kind], count: added.filter((skill) => skillFitsKind(skill, kind)).length }))}
+        onUpdate:modelValue={(value: string) => (skillFilters.kind = value as SkillFilter)}
+      />
     );
 
     return () => {
@@ -186,7 +185,7 @@ export const Skills = defineComponent({
             </CardHeader>
             <CardContent>
               {current === null ? (
-                <p class="text-muted-foreground text-sm">Loading…</p>
+                <Loading />
               ) : current.added.length === 0 ? (
                 <p class="text-muted-foreground text-sm">No skills added through JERRY yet. Add one from GitHub, a folder or a zip file.</p>
               ) : shown.length === 0 ? (

@@ -10,6 +10,7 @@ import { parseRoute, route } from '../src/router';
 import { setTheme, startTheme, THEME_STORAGE_KEY } from '../src/lib/theme';
 import { startDashboard, state } from '../src/state';
 import { taskFilters } from '../src/views/Tasks';
+import { chooseOption, openSelect, pickOption } from './select-helper';
 import { sampleUsage } from './usage-fixture';
 
 /** Every TSX source of the dashboard, as text. */
@@ -417,6 +418,8 @@ describe('Dashboard app', () => {
     await wrapper.get('input.task-search').setValue('jry-0001');
     expect(shownTiles(wrapper)).toEqual(['JRY-0001']);
     expect(wrapper.findAll('.task-filters [role="tab"]').map((tab) => tab.text())).toEqual(['Active1', 'Waiting for you0', 'In review0', 'Finished0', 'Cancelled0', 'All1']);
+    // Each count is its own badge next to the label.
+    expect(wrapper.findAll('.task-filters [role="tab"] [data-count]').map((badge) => badge.text())).toEqual(['1', '0', '0', '0', '0', '1']);
     await wrapper.get('input.task-search').setValue('');
 
     // The project filter is a menu of the projects and the other repositories with tasks.
@@ -819,6 +822,8 @@ describe('Dashboard app', () => {
     const page = await openTask(wrapper, 'JRY-0005', 'overview');
     const check = page.get('.final-check');
     expect(check.findAll('.final-check__failed li').map((item) => item.attributes('data-condition'))).toEqual(['report.no-failed-checks']);
+    // Each blocker says what fixes it: a failed check in the report needs a new report.
+    expect(check.get('[data-condition="report.no-failed-checks"] [data-remedy]').text()).toContain('request changes');
     const later = check.get('.final-check__later-work');
     expect(later.text()).toContain('Changed later by other tasks');
     expect(later.get('[data-later-task="JRY-0009"]').text()).toBe('JRY-0009: src/lexer.ts, src/parser.ts');
@@ -879,19 +884,85 @@ describe('Dashboard app', () => {
     const page = await openTask(wrapper, 'JRY-0005');
     await buttonIn(page.get('.task-page__header'), 'Re-run final checks')!.trigger('click');
     await flushPromises();
+    // Only the report blocks it: the dialog says a re-run cannot pass.
+    expect(body().get('form.dialog [data-rerun-warning]').text()).toContain('Request changes instead');
     await confirmWith('JRY-0005');
     expect(posted('/api/v1/tasks/JRY-0005/final-checks')).toEqual([{ confirmTaskId: 'JRY-0005' }]);
     expect(state.notice).toBe("Re-ran the final checks of JRY-0005. JERRY's final checks did not pass.");
     wrapper.unmount();
   });
 
-  it('shows the Definition of Done the user confirms when accepting', async () => {
+  it('keeps the standard re-run note when files changed after the report block the task', async () => {
+    const base = globalThis.fetch;
+    const edited: TaskSummary = {
+      ...refusedTask,
+      finalCheck: { ...refusedTask.finalCheck!, conditions: [{ id: 'code.unchanged-since-report', blocking: true, passed: false, detail: 'edited after report v2 was submitted: src/parser.ts' }] },
+    };
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => (url === '/api/v1/tasks' ? new Response(JSON.stringify([edited]), { status: 200, headers: { 'content-type': 'application/json' } }) : base(url, init)));
+    const wrapper = await mountApp();
+    const page = await openTask(wrapper, 'JRY-0005', 'overview');
+    expect(page.get('[data-condition="code.unchanged-since-report"] [data-remedy]').text()).toContain('re-run the final checks');
+    await buttonIn(page.get('.task-page__header'), 'Re-run final checks')!.trigger('click');
+    await flushPromises();
+    expect(body().find('form.dialog [data-rerun-warning]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("says how to continue a task sent back to implementation, with the user's request", async () => {
+    const base = globalThis.fetch;
+    const rejected = { ...reportedTask.planDecision!, approvalId: 'apr_9', taskId: 'JRY-0001', stage: 'IMPLEMENTATION' as const, decision: 'REJECTED' as const, comment: 'remove the pre-fix check from the report' };
+    const sentBack: TaskSummary = { ...approvedTask, lastCheckpoint: null, lastReport: { ...reportedTask.lastReport!, taskId: 'JRY-0001' }, reportDecision: rejected };
+    const fixing: TaskSummary = { ...reportedTask, taskId: 'JRY-0006', title: 'Fixing', state: 'FIX_IMPLEMENTATION' };
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) =>
+      url === '/api/v1/tasks' ? new Response(JSON.stringify([sentBack, fixing, reportedTask]), { status: 200, headers: { 'content-type': 'application/json' } }) : base(url, init),
+    );
+    const wrapper = await mountApp();
+    await openTasks(wrapper);
+    taskFilters.filter = 'all';
+    await flushPromises();
+    const sentBackTile = await expand(wrapper, 'JRY-0001');
+    expect(sentBackTile.text()).toContain('You requested changes ("remove the pre-fix check from the report"): run /jerry:implement JRY-0001 in Claude Code to continue.');
+    await buttonIn(sentBackTile, 'Continue in Claude Code')!.trigger('click');
+    await flushPromises();
+    expect(body().get('.continue-in-claude [data-instruction]').text()).toBe('/jerry:implement JRY-0001');
+    expect(body().get('.continue-in-claude [data-sent-back]').text()).toContain('remove the pre-fix check from the report');
+    await buttonIn(body().get('.continue-in-claude'), 'Close')!.trigger('click');
+    await flushPromises();
+    // Fixing review findings continues with /jerry:review.
+    await buttonIn(await expand(wrapper, 'JRY-0006'), 'Continue in Claude Code')!.trigger('click');
+    await flushPromises();
+    expect(body().get('.continue-in-claude [data-instruction]').text()).toBe('/jerry:review JRY-0006');
+    expect(body().find('.continue-in-claude [data-sent-back]').exists()).toBe(false);
+    await buttonIn(body().get('.continue-in-claude'), 'Close')!.trigger('click');
+    await flushPromises();
+    // Waiting for the user: nothing to continue in Claude Code.
+    expect(buttonIn(await expand(wrapper, 'JRY-0004'), 'Continue in Claude Code')).toBeUndefined();
+    wrapper.unmount();
+  });
+
+  it('shows the scope and the Definition of Done the user confirms when accepting, folded until opened', async () => {
     const wrapper = await mountApp();
     await openTasks(wrapper);
     await buttonIn(await expand(wrapper, 'JRY-0004'), 'Accept implementation')!.trigger('click');
+    await flushPromises();
     const dialog = body().get('form.dialog');
-    expect(dialog.text()).toContain("You confirm the plan's Definition of Done:");
-    for (const item of samplePlan('D:\\Work\\shop', ['src/auth/**']).definitionOfDone) expect(dialog.text()).toContain(item);
+    const definitionOfDone = samplePlan('D:\\Work\\shop', ['src/auth/**']).definitionOfDone;
+    const trigger = (section: string) => dialog.get(`[data-details="${section}"] button`);
+    // Both sections start folded, with their size in the heading.
+    expect(trigger('scope').text()).toBe('Scope (1)');
+    expect(trigger('definition-of-done').text()).toBe(`Definition of Done you confirm (${definitionOfDone.length})`);
+    expect(trigger('scope').attributes('aria-expanded')).toBe('false');
+    expect(trigger('definition-of-done').attributes('aria-expanded')).toBe('false');
+    expect(dialog.text()).not.toContain(definitionOfDone[0]);
+    // Opening one keeps the other as it was; opening a section does not submit the decision.
+    await trigger('definition-of-done').trigger('click');
+    await flushPromises();
+    for (const item of definitionOfDone) expect(dialog.text()).toContain(item);
+    expect(trigger('scope').attributes('aria-expanded')).toBe('false');
+    await trigger('scope').trigger('click');
+    await flushPromises();
+    expect(dialog.get('[data-details="scope"] code').text()).toBe('src/auth/**');
+    expect(posted('/api/v1/tasks/JRY-0004/approvals')).toEqual([]);
     wrapper.unmount();
   });
 
@@ -1217,8 +1288,9 @@ describe('Dashboard app', () => {
       const dialog = body().get('[role="alertdialog"]');
       expect(dialog.text()).toContain('Starts real Claude Code sessions');
       expect(dialog.text()).toContain('8 case(s)');
-      expect(dialog.findAll('#eval-suite option').map((option) => option.text())).toEqual(['All (8)', 'capability (3)', 'regression (5)']);
-      await dialog.get('#eval-suite').setValue('regression');
+      const suites = await openSelect(dialog.get('#eval-suite'));
+      expect(suites.map((option) => option.text())).toEqual(['All (8)', 'capability (3)', 'regression (5)']);
+      await chooseOption(suites, 'regression (5)');
       expect(dialog.text()).toContain('5 case(s)');
       await dialog.get('#eval-label').setValue('nightly');
       if (dialog.find('#confirm-typed').exists()) await dialog.get('#confirm-typed').setValue('evals');
@@ -1510,7 +1582,7 @@ describe('Dashboard app', () => {
     expect(choice.text()).toContain('You can switch it on later on the task page');
     await body().get('#approve-artifact-switch').trigger('click');
     await flushPromises();
-    await body().get('form.dialog [data-artifact-kind]').setValue('ui-flows');
+    await pickOption(body().get('form.dialog [data-artifact-kind]'), 'UI flows and screens');
     expect(body().get('form.dialog [data-artifact-choice]').text()).toContain('without asking again');
     await confirmWith('JRY-0002');
     expect(posted('/api/v1/tasks/JRY-0002/approvals')).toEqual([{ stage: 'PLAN', version: 1, decision: 'APPROVED', confirmTaskId: 'JRY-0002', artifact: { wanted: true, kind: 'ui-flows' } }]);
@@ -1598,7 +1670,9 @@ describe('Dashboard app', () => {
     expect(dialog.attributes('data-confirm-mode')).toBe('click');
     expect(dialog.get('h2').text()).toBe('Approve JRY-0002 plan v1');
     // What is decided is shown: the task, its plan version and scope.
-    expect(dialog.text()).toContain('Scope: src/auth/**');
+    expect(dialog.get('[data-details="scope"] button').text()).toBe('Scope (1)');
+    // Only accepting an implementation confirms the Definition of Done.
+    expect(dialog.find('[data-details="definition-of-done"]').exists()).toBe(false);
     expect(dialog.find('#confirm-typed').exists()).toBe(false);
     const submit = dialog.get('button[type="submit"]');
     expect(submit.text()).toBe('Approve plan');

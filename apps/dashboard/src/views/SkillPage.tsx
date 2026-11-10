@@ -8,6 +8,7 @@ import { Emoji } from '../components/Emoji';
 import { SkillScan, SkillStates, useSkillActions } from '../components/SkillActions';
 import { StatusBadge } from '../components/StatusBadge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
+import { Loading } from '../components/ui/spinner';
 import { formatBytes, formatTime } from '../format';
 import { CHIP } from '../lib/classes';
 import { projectName } from '../lib/tasks';
@@ -44,7 +45,7 @@ export const SkillPage = defineComponent({
     return () => {
       if (missing.value) return <p class="skill-page text-muted-foreground text-sm">There is no skill named {props.name}.</p>;
       const current = detail.value;
-      if (current === null) return <p class="skill-page text-muted-foreground text-sm">Loading…</p>;
+      if (current === null) return <Loading class="skill-page" />;
       const { skill } = current;
       return (
         <div class="skill-page flex flex-col gap-4 md:gap-6" data-skill-page={skill.name}>

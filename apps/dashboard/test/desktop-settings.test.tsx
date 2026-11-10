@@ -3,6 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DesktopSettings, SOUND_GROUPS } from '../src/components/DesktopSettings';
 import type { DesktopSettingsValue } from '../src/lib/desktop';
+import { chooseOption, openSelect } from './select-helper';
 
 const APP_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36 Edg/142.0.0.0 JerryDesktop/0.1.0';
 const STORED: DesktopSettingsValue = {
@@ -60,7 +61,8 @@ describe('Desktop app settings inline in Settings', () => {
       'coreStopped',
     ]);
     // Every sound the app knows (settings.rs SOUNDS: 25) and None.
-    expect(wrapper.findAll('#desktop-sound option')).toHaveLength(26);
+    const sounds = await openSelect(wrapper.get('#desktop-sound'));
+    expect(sounds).toHaveLength(26);
     expect(SOUND_GROUPS.flatMap((group) => group.sounds.map(([value]) => value))).toContain('Call10');
 
     await wrapper.get('[data-desktop-option="launchWithWindows"] [role="switch"]').trigger('click');
@@ -68,8 +70,7 @@ describe('Desktop app settings inline in Settings', () => {
     expect(calls.at(-1)).toEqual(['set_settings', { settings: { ...STORED, launchWithWindows: true } }]);
     expect(wrapper.get('.desktop-message').text()).toBe('Saved.');
 
-    await wrapper.get('#desktop-sound').setValue('Reminder');
-    await flushPromises();
+    await chooseOption(await openSelect(wrapper.get('#desktop-sound')), 'Reminder');
     expect(calls.at(-1)).toEqual(['set_settings', { settings: { ...STORED, launchWithWindows: true, sound: 'Reminder' } }]);
 
     await wrapper.get('[data-desktop-test]').trigger('click');

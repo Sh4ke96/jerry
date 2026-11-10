@@ -29,6 +29,7 @@ import {
   useSidebar,
 } from './components/ui/sidebar';
 import { Skeleton } from './components/ui/skeleton';
+import { Loading } from './components/ui/spinner';
 import { waitsForUser } from './format';
 import { projectName } from './lib/tasks';
 import { linkTo, route, startRouter, type Section } from './router';
@@ -248,7 +249,7 @@ export const App = defineComponent({
               <Skeleton class="h-8 w-full" />
             </div>
             <div class="flex flex-1 flex-col gap-4 p-6">
-              <p class="text-muted-foreground text-sm">Connecting to JERRY Core…</p>
+              <Loading text="Connecting to JERRY Core…" />
               <div class="grid gap-4 md:grid-cols-3">
                 <Skeleton class="h-32" />
                 <Skeleton class="h-32" />

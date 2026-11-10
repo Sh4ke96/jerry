@@ -1,20 +1,23 @@
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { JERRY_VERSION, type CoreRuntimeInfo } from '@jerry/contracts';
+import { JERRY_VERSION, type CoreRuntimeInfo, type CoreShutdownRequest } from '@jerry/contracts';
 import type { FastifyInstance } from 'fastify';
 import {
   acquireSingleInstanceLock,
   assertJerryHomeOutsideRepositories,
   buildHash,
+  describeUncleanEnd,
   jerryPaths,
   protectedRoots,
+  readCoreHeartbeat,
   resolveCorePort,
   resolveJerryHome,
   writeFileAtomic,
 } from '@jerry/platform';
 import { buildCoreApp, gateEvaluator } from './app.js';
 import { BrowserSessions } from './auth.js';
+import { describeError, log, logError } from './core-log.js';
 import { drainSpool, importLegacyGateLog } from './events.js';
 import { StateStore } from './state-store.js';
 import { QualityScheduler } from './quality-scheduler.js';
@@ -23,6 +26,15 @@ import { drainUsageSpool, UsageStore } from './usage-store.js';
 const SPOOL_DRAIN_INTERVAL_MS = 15_000;
 const RETENTION_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_RETENTION_DAYS = 90;
+/** How often Core refreshes its heartbeat (run/core-alive.json). */
+const HEARTBEAT_INTERVAL_MS = 60_000;
+
+/** The stop line for an API shutdown: who asked and why, as the client said. */
+function shutdownReason(request: CoreShutdownRequest): string {
+  const by = request.requestedBy === undefined ? ' (requester not given)' : ` by ${request.requestedBy}`;
+  const why = request.reason === undefined || request.reason === '' ? '' : `: ${request.reason}`;
+  return `shutdown requested via API${by}${why}`;
+}
 
 /** Events and sessions are kept 90 days unless JERRY_RETENTION_DAYS says otherwise. */
 function resolveRetentionDays(): number {
@@ -43,10 +55,13 @@ async function main(): Promise<void> {
   // One Core per JERRY_HOME. A concurrent start (two sessions at once) exits quietly.
   const lock = acquireSingleInstanceLock(paths.coreLockFile);
   if (!lock.acquired) {
-    process.stdout.write(`JERRY Core is already running for ${home} (pid ${lock.heldBy}); exiting.\n`);
+    log(`JERRY Core is already running for ${home} (pid ${lock.heldBy}); exiting.`);
     return;
   }
   const releaseLock = lock.release;
+  // A heartbeat left behind means the previous Core never stopped cleanly; say so before replacing it.
+  const uncleanEnd = describeUncleanEnd(readCoreHeartbeat(paths.coreAliveFile), process.pid);
+  if (uncleanEnd !== null) log(uncleanEnd);
 
   let store: StateStore;
   try {
@@ -84,7 +99,7 @@ async function main(): Promise<void> {
       sessions,
       dashboardDir: fileURLToPath(new URL('./dashboard/', import.meta.url)),
       ...(build === null ? {} : { build }),
-      onShutdownRequested: () => shutdown('shutdown requested via API'),
+      onShutdownRequested: (request) => shutdown(shutdownReason(request)),
     });
   let app = createApp();
 
@@ -93,23 +108,23 @@ async function main(): Promise<void> {
   const upkeep = async (): Promise<void> => {
     try {
       const imported = await importLegacyGateLog(paths.gateLogFile, store, new Date());
-      if (imported > 0) process.stdout.write(`Imported ${imported} gate decisions from ${paths.gateLogFile}\n`);
+      if (imported > 0) log(`Imported ${imported} gate decisions from ${paths.gateLogFile}`);
       while ((await drainSpool(home, store, evaluate)) > 0) {
         // keep draining in batches until the spool is empty
       }
       await drainUsageSpool(home, usage);
       const removed = await store.applyRetention(new Date(), retentionDays);
       if (removed.events + removed.sessions + removed.usage > 0) {
-        process.stdout.write(`Retention (${retentionDays} days): removed ${removed.events} events, ${removed.sessions} sessions and ${removed.usage} usage rows\n`);
+        log(`Retention (${retentionDays} days): removed ${removed.events} events, ${removed.sessions} sessions and ${removed.usage} usage rows`);
       }
     } catch (error) {
-      process.stderr.write(`Upkeep failed: ${error instanceof Error ? error.message : String(error)}\n`);
+      logError(`Upkeep failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
   let upkeepRunning: Promise<void> = upkeep();
   const spoolTimer = setInterval(() => {
     upkeepRunning = upkeepRunning.then(() => drainSpool(home, store, evaluate).then(() => drainUsageSpool(home, usage)).then(() => undefined, (error: unknown) => {
-      process.stderr.write(`Spool drain failed: ${error instanceof Error ? error.message : String(error)}\n`);
+      logError(`Spool drain failed: ${error instanceof Error ? error.message : String(error)}`);
     }));
   }, SPOOL_DRAIN_INTERVAL_MS);
   const retentionTimer = setInterval(() => {
@@ -124,7 +139,7 @@ async function main(): Promise<void> {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE' || configuredPort === 0) throw error;
     // Another program holds the port: keep guarding on a random port; doctor reports the fallback.
-    process.stdout.write(`Port ${configuredPort} is in use by another program; falling back to a random port.\n`);
+    log(`Port ${configuredPort} is in use by another program; falling back to a random port.`);
     await app.close();
     app = createApp();
     port = await listen(app, 0);
@@ -140,28 +155,64 @@ async function main(): Promise<void> {
     version: JERRY_VERSION,
   };
   writeFileAtomic(paths.coreInfoFile, `${JSON.stringify(info, null, 2)}\n`);
-  process.stdout.write(`JERRY Core ${JERRY_VERSION} listening on 127.0.0.1:${port} (pid ${process.pid}, home ${home})\n`);
+  log(`JERRY Core ${JERRY_VERSION} listening on 127.0.0.1:${port} (pid ${process.pid}, home ${home})`);
+
+  // The heartbeat: a clean stop removes it, so one found at the next start marks an unclean end.
+  const heartbeat = (): void => {
+    try {
+      writeFileAtomic(paths.coreAliveFile, `${JSON.stringify({ pid: process.pid, version: JERRY_VERSION, startedAt: startedAt.toISOString(), aliveAt: new Date().toISOString() })}\n`);
+    } catch (error) {
+      logError(`Heartbeat failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+  heartbeat();
+  setInterval(heartbeat, HEARTBEAT_INTERVAL_MS).unref();
 
   let stopping = false;
+  let cleanedUp = false;
   function cleanUp(): void {
+    if (cleanedUp) return;
+    cleanedUp = true;
     removeRuntimeInfoIfOwned(paths.coreInfoFile);
+    removeHeartbeatIfOwned(paths.coreAliveFile);
     releaseLock();
   }
   function shutdown(reason: string): void {
     if (stopping) return;
     stopping = true;
-    process.stdout.write(`JERRY Core stopping: ${reason}\n`);
+    log(`JERRY Core stopping: ${reason}`);
     cleanUp();
     app
       .close()
       .then(() => store.close())
-      .catch((error: unknown) => process.stderr.write(`Closing Core failed: ${String(error)}\n`))
+      .catch((error: unknown) => logError(`Closing Core failed: ${describeError(error)}`))
       .finally(() => process.exit(0));
     setTimeout(() => process.exit(0), 3000).unref();
   }
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('exit', cleanUp);
+  // Windows: SIGHUP when the console or session that owns Core closes, SIGBREAK on Ctrl+Break.
+  process.on('SIGHUP', () => shutdown('SIGHUP (the console or session that owns Core closed)'));
+  process.on('SIGBREAK', () => shutdown('SIGBREAK'));
+  // A crash stays a crash, but now it is in the log with its stack, and the lock is released.
+  process.on('uncaughtException', (error) => {
+    logError(`JERRY Core crashed: uncaught exception: ${describeError(error)}`);
+    cleanUp();
+    process.exit(1);
+  });
+  // A rejected promise nobody handled is a bug in one request or job, not in the guard: logged, Core keeps running.
+  process.on('unhandledRejection', (reason) => {
+    logError(`Unhandled promise rejection (Core keeps running): ${describeError(reason)}`);
+  });
+  process.on('exit', (code) => {
+    cleanUp();
+    log(`JERRY Core exited with code ${code}`);
+  });
+}
+
+/** Only the owning process removes its heartbeat; a heartbeat of another pid is evidence about that Core. */
+function removeHeartbeatIfOwned(coreAliveFile: string): void {
+  if (readCoreHeartbeat(coreAliveFile)?.pid === process.pid) fs.rmSync(coreAliveFile, { force: true });
 }
 
 /** Loopback only, never 0.0.0.0. */
@@ -183,6 +234,6 @@ function removeRuntimeInfoIfOwned(coreInfoFile: string): void {
 }
 
 main().catch((error: unknown) => {
-  process.stderr.write(`JERRY Core failed to start: ${error instanceof Error ? error.message : String(error)}\n`);
+  logError(`JERRY Core failed to start: ${describeError(error)}`);
   process.exit(1);
 });

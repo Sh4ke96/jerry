@@ -10,6 +10,7 @@ import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Skeleton } from '../components/ui/skeleton';
 import { formatTime } from '../format';
 import { ATTENTION } from '../lib/classes';
@@ -19,6 +20,8 @@ import { runCounts } from './EvalRunPage';
 
 /** How often the page asks how a running eval run goes. */
 const RUNNER_POLL_MS = 2000;
+/** The "all suites" choice of the run dialog; the request sends it as an empty suite. */
+const ALL_SUITES = '*';
 const RUNNER_STATE: Record<EvalRunnerStatus['state'], { label: string; tone: Tone; emoji: string }> = {
   idle: { label: 'idle', tone: 'neutral', emoji: EMOJI.info },
   running: { label: 'running', tone: 'accent', emoji: EMOJI.waiting },
@@ -284,14 +287,20 @@ export const Evals = defineComponent({
               </p>
               <div class="grid gap-1.5">
                 <Label for="eval-suite">Cases</Label>
-                <select id="eval-suite" class="border-input bg-background h-9 rounded-md border px-3 text-sm" value={suite.value} onChange={(event: Event) => (suite.value = (event.target as HTMLSelectElement).value)}>
-                  <option value="">All ({casesFor('')})</option>
-                  {runner.value.suites.map((entry) => (
-                    <option key={entry.suite} value={entry.suite}>
-                      {entry.suite} ({entry.cases})
-                    </option>
-                  ))}
-                </select>
+                {/* A select item cannot have an empty value: "all suites" is ALL_SUITES here and "" in the request. */}
+                <Select modelValue={suite.value === '' ? ALL_SUITES : suite.value} onUpdate:modelValue={(value: string) => (suite.value = value === ALL_SUITES ? '' : value)}>
+                  <SelectTrigger id="eval-suite" class="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={ALL_SUITES}>All ({casesFor('')})</SelectItem>
+                    {runner.value.suites.map((entry) => (
+                      <SelectItem key={entry.suite} value={entry.suite}>
+                        {entry.suite} ({entry.cases})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
               <div class="flex items-start gap-2">
                 <input

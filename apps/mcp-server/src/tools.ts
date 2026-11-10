@@ -943,7 +943,14 @@ export const TOOLS: readonly ToolDefinition[] = [
         if (!report.success) return failure(`The report is incomplete or malformed; fix it and submit again:\n${z.prettifyError(report.error)}`);
         const saved = implementationReportRecordSchema.parse(await core('POST', `/api/v1/tasks/${encodeURIComponent(taskId)}/reports`, { report: report.data, submittedBy: 'claude', origin: origin(call) }));
         const { evidence } = saved;
+        // A FAIL check makes the final checks refuse DONE after acceptance; say so before the user accepts.
+        const failed = saved.document.checks.filter((check) => check.result === 'FAIL').map((check) => check.command);
+        const blocksDone =
+          failed.length === 0
+            ? null
+            : `failed check(s) block DONE: ${failed.slice(0, 5).join('; ')}. If a failure was expected (a reproduction before the fix), tell the user: they can request changes so you submit the report again with the run on the final code`;
         const attention = [
+          blocksDone,
           evidence.deviationCount > 0 ? `${evidence.deviationCount} recorded deviation(s)` : null,
           evidence.unreportedEdits.length > 0 ? `edited but not in the report: ${evidence.unreportedEdits.slice(0, 10).join(', ')}` : null,
           evidence.failedOrNotRunChecks > 0 ? `${evidence.failedOrNotRunChecks} check(s) failed or not run` : null,

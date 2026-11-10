@@ -751,7 +751,7 @@ expect(
   lateWrite !== undefined && JSON.parse(lateWrite.payload_json).evaluatedLate === true,
   spooledDecisions.map((row) => `${row.tool_name}:${row.verdict}:${row.rule_id}`).join(', '),
 );
-if (autostarted !== null) await coreApi(autostarted, 'POST', '/api/v1/shutdown', {}).catch(() => null);
+if (autostarted !== null) await coreApi(autostarted, 'POST', '/api/v1/shutdown', { requestedBy: 'e2e', reason: 'live end-to-end run finished' }).catch(() => null);
 
 // JERRY itself left no footprint; Claude's edits stay uncommitted for the user.
 expect('No JERRY or harness files in repo', !['.jerry', '.harness'].some(exists), exists('.claude') ? 'note: .claude/ exists (created by Claude Code, not JERRY)' : '');

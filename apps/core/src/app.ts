@@ -57,6 +57,8 @@ import {
   reviewSkipRequestSchema,
   finalChecksRerunRequestSchema,
   type FinalChecksRerun,
+  coreShutdownRequestSchema,
+  type CoreShutdownRequest,
   reviewSubmissionRequestSchema,
   evalBaselineRequestSchema,
   evalLabelRequestSchema,
@@ -148,7 +150,8 @@ export interface CoreAppOptions {
   dashboardDir?: string;
   /** Short hash of the running core.mjs (see buildHash). */
   build?: string;
-  onShutdownRequested: () => void;
+  /** POST /api/v1/shutdown, with who asked and why when the client says so. */
+  onShutdownRequested: (request: CoreShutdownRequest) => void;
   /** Project profiles; tests may pass one with a fake PATH lookup. */
   profiles?: ProfileService;
   /** Continuous quality checks; tests may pass one with a short debounce. */
@@ -1284,8 +1287,9 @@ export function buildCoreApp(options: CoreAppOptions): FastifyInstance {
 
   app.get('/api/v1/database/health', { config: TOKEN_ONLY }, async () => ({ integrity: store.integrityCheck(), migration: store.migration, file: store.databaseFile }));
 
-  app.post('/api/v1/shutdown', { config: TOKEN_ONLY }, async (_request, reply) => {
-    setImmediate(options.onShutdownRequested);
+  app.post('/api/v1/shutdown', { config: TOKEN_ONLY }, async (request, reply) => {
+    const body = parse(coreShutdownRequestSchema, request.body ?? {});
+    setImmediate(() => options.onShutdownRequested(body));
     return reply.code(202).send({ stopping: true });
   });
 

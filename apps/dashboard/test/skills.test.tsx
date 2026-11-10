@@ -7,6 +7,7 @@ import { parseRoute, route } from '../src/router';
 import type { WorkflowSettings } from '../src/settings';
 import { startDashboard, state } from '../src/state';
 import { skillFilters } from '../src/views/Skills';
+import { pickOption } from './select-helper';
 
 const CSRF = 'c'.repeat(64);
 const NOW = new Date().toISOString();
@@ -405,12 +406,13 @@ describe('Skills in the dashboard', () => {
     expect(card.findAll('[data-agent-model]').map((row) => row.attributes('data-agent-model'))).toEqual(['jerry-architecture-analyst', 'jerry-risk-analyst', 'jerry-quality-analyst']);
     const quality = card.get('[data-agent-model="jerry-quality-analyst"]');
     expect(quality.text()).toContain('default');
-    expect((quality.get('[data-agent-field="model"]').element as HTMLSelectElement).value).toBe('claude-sonnet-5-5');
+    expect(quality.get('[data-agent-field="model"]').text()).toBe('Sonnet 5.5');
     // Every select has a label.
-    for (const select of card.findAll('select')) expect(card.find(`label[for="${select.attributes('id')}"]`).exists()).toBe(true);
+    const selects = card.findAll('[data-slot="select-trigger"]');
+    expect(selects).toHaveLength(6);
+    for (const select of selects) expect(card.find(`label[for="${select.attributes('id')}"]`).exists()).toBe(true);
 
-    await quality.get('[data-agent-field="model"]').setValue('claude-haiku-5-5');
-    await flushPromises();
+    await pickOption(quality.get('[data-agent-field="model"]'), 'Haiku 5.5');
     expect(posts('/api/v1/agents/models').map((call) => [call.body, call.csrf])).toEqual([[{ agents: [{ role: 'jerry-quality-analyst', model: 'claude-haiku-5-5', effort: 'medium' }] }, CSRF]]);
     const saved = wrapper.get('[data-agent-model="jerry-quality-analyst"]');
     expect(saved.text()).toContain('your choice');
@@ -418,8 +420,7 @@ describe('Skills in the dashboard', () => {
 
     // A problem writing the agent files is shown, not hidden.
     agentProblems = ['JERRY\'s plugin is not installed at C:\\J; run "jerry install".'];
-    await wrapper.get('[data-agent-model="jerry-risk-analyst"] [data-agent-field="effort"]').setValue('low');
-    await flushPromises();
+    await pickOption(wrapper.get('[data-agent-model="jerry-risk-analyst"] [data-agent-field="effort"]'), 'Low');
     expect(wrapper.get('[data-agent-models-message]').text()).toContain('jerry install');
     wrapper.unmount();
   });
@@ -432,8 +433,7 @@ describe('Skills in the dashboard', () => {
     expect(card.text()).toContain('Model');
     expect(card.text()).toContain('until the end of that turn');
     expect(card.findAll('[data-agent-model]').map((row) => row.attributes('data-agent-model'))).toEqual(['jerry:commit-message']);
-    await card.get('[data-agent-field="model"]').setValue('claude-haiku-5-5');
-    await flushPromises();
+    await pickOption(card.get('[data-agent-field="model"]'), 'Haiku 5.5');
     expect(posts('/api/v1/agents/models').map((call) => call.body)).toEqual([{ agents: [{ role: 'jerry:commit-message', model: 'claude-haiku-5-5', effort: 'low' }] }]);
     wrapper.unmount();
   });

@@ -38,6 +38,10 @@ the repository, not what the plan intended.
   - `FAIL` with the failing part in `details`;
   - `NOT_RUN` with the reason in `details` (no runner, too slow, needs a service). Never report a check you did
     not run as passed.
+  A `FAIL` check blocks DONE: JERRY's final checks refuse to complete the task while the report has one, and
+  re-running them does not change that. A check records the result on the final code. An expected failure
+  before the fix (reproducing the bug, a test written red first) is not a check of the result: report that
+  test's run on the final code and mention the earlier expected failure in its `details`.
   The draft's checks are earlier runs JERRY recorded: run them again now and report today's result.
 - Recorded deviations: the draft lists them (else call `list_deviations`); explain every WARN that belongs to
   this task, either as a plan deviation with its reason or as a mistake you corrected.

@@ -11,6 +11,7 @@ import { Button } from '../components/ui/button';
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
+import { Loading } from '../components/ui/spinner';
 import { workspaceSummary } from '../components/WorkspacesCard';
 import { insideRoot, projectName, taskTouches } from '../lib/tasks';
 import { isTerminal } from '@jerry/workflow';
@@ -143,7 +144,7 @@ export const WorkspacePage = defineComponent({
         );
       }
       const current = workspace.value;
-      if (current === null) return <p class="workspace-page text-muted-foreground text-sm">Loading…</p>;
+      if (current === null) return <Loading class="workspace-page" />;
       return (
         <div class="workspace-page flex flex-col gap-4 md:gap-6" data-workspace-page={current.name}>
           {back()}

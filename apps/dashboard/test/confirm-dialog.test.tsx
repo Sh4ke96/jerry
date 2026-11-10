@@ -6,7 +6,7 @@ import { state } from '../src/state';
 
 describe('ConfirmDialog', () => {
   const mounted: Array<ReturnType<typeof mount>> = [];
-  const mountDialog = async (extra: { mode?: 'click' | 'typed'; commentLabel?: string; commentRequired?: boolean } = {}) => {
+  const mountDialog = async (extra: { mode?: 'click' | 'typed'; commentLabel?: string; commentRequired?: boolean; busy?: boolean } = {}) => {
     const wrapper = mount(ConfirmDialog, {
       attachTo: document.body,
       props: { title: 'Approve JRY-0007 plan v2', expected: 'JRY-0007', confirmLabel: 'Approve plan', ...extra },
@@ -53,6 +53,21 @@ describe('ConfirmDialog', () => {
   it('shows the decision details passed in', async () => {
     const { dialog } = await mountDialog();
     expect(dialog.text()).toContain('Scope: src/**');
+  });
+
+  it('lets long details wrap inside the dialog instead of widening it', async () => {
+    const { dialog } = await mountDialog();
+    // A grid item keeps its content width unless it may shrink; long paths may break anywhere.
+    expect(dialog.get('form.dialog').classes()).toContain('min-w-0');
+    expect(dialog.get('[data-slot="alert-dialog-description"]').classes()).toEqual(expect.arrayContaining(['min-w-0', '[overflow-wrap:anywhere]']));
+  });
+
+  it('shows a spinner on the decision button while it works', async () => {
+    const { dialog } = await mountDialog({ mode: 'click', busy: true });
+    const confirm = dialog.get('button[type="submit"]');
+    expect(confirm.text()).toBe('Working…');
+    expect(confirm.get('[data-slot="spinner"]').attributes('role')).toBe('status');
+    expect(confirm.attributes('disabled')).toBeDefined();
   });
 
   it('without a mode follows the Settings option: one click by default, typed when the user chose it', async () => {

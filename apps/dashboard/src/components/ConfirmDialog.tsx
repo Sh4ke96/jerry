@@ -5,6 +5,7 @@ import { AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescript
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
+import { Spinner } from './ui/spinner';
 import { Textarea } from './ui/textarea';
 
 /**
@@ -65,10 +66,10 @@ export const ConfirmDialog = defineComponent({
     return () => (
       <AlertDialog open={true} onUpdate:open={(open: boolean) => !open && emit('cancel')}>
         <AlertDialogContent onOpenAutoFocus={focusFirst} data-confirm-mode={typing.value ? 'typed' : 'click'}>
-          <form class="dialog grid gap-4" onSubmit={submit}>
-            <AlertDialogHeader>
+          <form class="dialog grid min-w-0 gap-4" onSubmit={submit}>
+            <AlertDialogHeader class="min-w-0">
               <AlertDialogTitle>{props.title}</AlertDialogTitle>
-              <AlertDialogDescription as="div" class="grid gap-2">
+              <AlertDialogDescription as="div" class="grid min-w-0 gap-2 [overflow-wrap:anywhere]">
                 {slots.default?.()}
               </AlertDialogDescription>
             </AlertDialogHeader>
@@ -99,7 +100,7 @@ export const ConfirmDialog = defineComponent({
             <AlertDialogFooter>
               <AlertDialogCancel type="button">Cancel</AlertDialogCancel>
               <Button ref={confirmButton} type="submit" variant={props.tone === 'danger' ? 'destructive' : 'default'} disabled={!ready.value || props.busy}>
-                {props.busy ? 'Working…' : props.confirmLabel}
+                {props.busy ? [<Spinner key="spinner" label="Working…" />, 'Working…'] : props.confirmLabel}
               </Button>
             </AlertDialogFooter>
           </form>

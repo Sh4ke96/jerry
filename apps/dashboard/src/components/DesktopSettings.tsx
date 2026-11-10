@@ -6,7 +6,9 @@ import { Alert, AlertDescription } from './ui/alert';
 import { Button } from './ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Label } from './ui/label';
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from './ui/select';
 import { Separator } from './ui/separator';
+import { Loading } from './ui/spinner';
 import { Switch } from './ui/switch';
 
 /** The Windows notification sounds the app offers (settings.rs SOUNDS, plus None), grouped as on its own page. */
@@ -115,7 +117,7 @@ export const DesktopSettings = defineComponent({
               </div>
             </div>
           ) : settings.value === null ? (
-            <p class="text-muted-foreground text-sm">Loading…</p>
+            <Loading />
           ) : (
             (() => {
               const current = settings.value;
@@ -137,31 +139,31 @@ export const DesktopSettings = defineComponent({
                         <p class="text-muted-foreground text-sm">One of the Windows notification sounds. Alarm and call sounds play once.</p>
                       </div>
                       <div class="flex items-center gap-2">
-                        <select
-                          id="desktop-sound"
-                          class="border-input bg-background h-9 rounded-md border px-3 text-sm"
-                          value={current.sound}
-                          disabled={off || saving.value}
-                          onChange={(event: Event) => void save({ ...current, sound: (event.target as HTMLSelectElement).value })}
-                        >
-                          {SOUND_GROUPS.map((group) =>
-                            group.label === null ? (
-                              group.sounds.map(([value, label]) => (
-                                <option key={value} value={value}>
-                                  {label}
-                                </option>
-                              ))
-                            ) : (
-                              <optgroup key={group.label} label={group.label}>
-                                {group.sounds.map(([value, label]) => (
-                                  <option key={value} value={value}>
+                        <Select modelValue={current.sound} disabled={off || saving.value} onUpdate:modelValue={(value: string) => void save({ ...current, sound: value })}>
+                          <SelectTrigger id="desktop-sound" class="min-w-40">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {SOUND_GROUPS.map((group) =>
+                              group.label === null ? (
+                                group.sounds.map(([value, label]) => (
+                                  <SelectItem key={value} value={value}>
                                     {label}
-                                  </option>
-                                ))}
-                              </optgroup>
-                            ),
-                          )}
-                        </select>
+                                  </SelectItem>
+                                ))
+                              ) : (
+                                <SelectGroup key={group.label}>
+                                  <SelectLabel>{group.label}</SelectLabel>
+                                  {group.sounds.map(([value, label]) => (
+                                    <SelectItem key={value} value={value}>
+                                      {label}
+                                    </SelectItem>
+                                  ))}
+                                </SelectGroup>
+                              ),
+                            )}
+                          </SelectContent>
+                        </Select>
                         <Button size="sm" variant="outline" data-desktop-test onClick={() => void test(current.sound)}>
                           Send test notification
                         </Button>

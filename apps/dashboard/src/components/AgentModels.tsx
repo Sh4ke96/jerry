@@ -7,6 +7,8 @@ import { StatusBadge } from './StatusBadge';
 import { Alert, AlertDescription } from './ui/alert';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Label } from './ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
+import { Loading } from './ui/spinner';
 
 /** The JERRY skills that start read-only subagents, and the phase of those subagents. */
 export const SKILL_AGENT_PHASE: Readonly<Record<string, 'analysis' | 'review'>> = { 'jerry:analyze': 'analysis', 'jerry:review': 'review' };
@@ -31,8 +33,6 @@ const ROLE_LABEL: Record<string, string> = {
   'jerry:commit-message': 'This skill',
   'jerry:artifact': 'This skill',
 };
-
-const SELECT = 'border-input bg-background hover:bg-accent/40 h-9 rounded-md border px-3 text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50';
 
 /**
  * The model and reasoning effort of the read-only subagents a JERRY skill starts. Saved at once:
@@ -101,23 +101,33 @@ export const AgentModels = defineComponent({
             <Label class="sr-only" for={`model-${agent.role}`}>
               Model of {ROLE_LABEL[agent.role] ?? agent.role}
             </Label>
-            <select id={`model-${agent.role}`} class={SELECT} data-agent-field="model" value={agent.model} disabled={busy} onChange={(event: Event) => void save(agent, { model: (event.target as HTMLSelectElement).value as AgentModelEntry['model'] })}>
-              {Object.entries(MODEL_LABEL).map(([value, label]) => (
-                <option key={value} value={value}>
-                  {label}
-                </option>
-              ))}
-            </select>
+            <Select modelValue={agent.model} disabled={busy} onUpdate:modelValue={(value: string) => void save(agent, { model: value as AgentModelEntry['model'] })}>
+              <SelectTrigger id={`model-${agent.role}`} data-agent-field="model" class="min-w-36">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.entries(MODEL_LABEL).map(([value, label]) => (
+                  <SelectItem key={value} value={value}>
+                    {label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <Label class="sr-only" for={`effort-${agent.role}`}>
               Reasoning effort of {ROLE_LABEL[agent.role] ?? agent.role}
             </Label>
-            <select id={`effort-${agent.role}`} class={SELECT} data-agent-field="effort" value={agent.effort} disabled={busy} onChange={(event: Event) => void save(agent, { effort: (event.target as HTMLSelectElement).value as AgentModelEntry['effort'] })}>
-              {Object.entries(EFFORT_LABEL).map(([value, label]) => (
-                <option key={value} value={value}>
-                  {label}
-                </option>
-              ))}
-            </select>
+            <Select modelValue={agent.effort} disabled={busy} onUpdate:modelValue={(value: string) => void save(agent, { effort: value as AgentModelEntry['effort'] })}>
+              <SelectTrigger id={`effort-${agent.role}`} data-agent-field="effort" class="min-w-36">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.entries(EFFORT_LABEL).map(([value, label]) => (
+                  <SelectItem key={value} value={value}>
+                    {label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
         </li>
       );
@@ -140,7 +150,7 @@ export const AgentModels = defineComponent({
           {unavailable.value ? (
             <p class="text-muted-foreground text-sm">This JERRY Core does not offer model choices yet; update JERRY.</p>
           ) : agents.value === null && message.value === null ? (
-            <p class="text-muted-foreground text-sm">Loading…</p>
+            <Loading />
           ) : (
             <ul class="grid gap-3">{shown.value.map(row)}</ul>
           )}

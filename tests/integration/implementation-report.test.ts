@@ -76,6 +76,8 @@ describe('implementation report and acceptance (bundled bridge + MCP + Core)', (
     expect(result.text).toContain(`jerry approve ${taskId} --stage implementation --version 1`);
     expect(result.text).toContain('edited but not in the report: README.md');
     expect(result.text).toContain('1 check(s) failed or not run');
+    // A check that did not run is a limitation, not a block: no DONE warning.
+    expect(result.text).not.toContain('block DONE');
 
     const task = await detail();
     expect(task.state).toBe('WAIT_IMPLEMENTATION_ACCEPTANCE');
@@ -171,7 +173,10 @@ describe('implementation report and acceptance (bundled bridge + MCP + Core)', (
     const created = await client.call('submit_plan', { title: 'Second task', plan: samplePlan(repo) });
     const second = created.structured['taskId'] as string;
     await api(core, 'POST', `/api/v1/tasks/${second}/approvals`, { stage: 'PLAN', version: 1, decision: 'APPROVED' });
-    expect((await client.call('submit_report', { taskId: second, report: failing })).isError).toBe(false);
+    const submitted = await client.call('submit_report', { taskId: second, report: failing });
+    expect(submitted.isError).toBe(false);
+    // Claude learns before the user accepts that the failed check will block DONE.
+    expect(String(submitted.structured['nextStep'])).toContain('failed check(s) block DONE: npm test');
     await api(core, 'POST', `/api/v1/tasks/${second}/approvals`, { stage: 'IMPLEMENTATION', version: 1, decision: 'APPROVED' });
     const task = (await api(core, 'GET', `/api/v1/tasks/${second}`)).body as TaskDetail;
     expect(task.state).toBe('FINAL_REPORT');

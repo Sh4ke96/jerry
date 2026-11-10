@@ -9,6 +9,7 @@ import { Section } from './Section';
 import { StatusBadge, type Tone } from './StatusBadge';
 import { Button } from './ui/button';
 import { Label } from './ui/label';
+import { Loading } from './ui/spinner';
 import { Switch } from './ui/switch';
 import { Tabs, TabsList, TabsTrigger } from './ui/tabs';
 
@@ -118,7 +119,7 @@ export const FindingsPanel = defineComponent({
                     </TabsList>
                   </Tabs>
                 </div>
-                {findings.value === null && <p class="text-muted-foreground text-xs">Loading findings…</p>}
+                {findings.value === null && <Loading class="text-xs" text="Loading findings…" />}
                 {findings.value !== null && shown.value.length === 0 && <p class="text-muted-foreground">Nothing to show with these filters.</p>}
                 <ul class="divide-y">
                   {shown.value.map((finding) => (

@@ -15,6 +15,7 @@ import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle }
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
+import { Loading } from './ui/spinner';
 import { Textarea } from './ui/textarea';
 
 /** Clicks on these do their own thing; elsewhere on a workspace's row a click opens its page. */
@@ -290,7 +291,7 @@ export const WorkspacesCard = defineComponent({
         </CardHeader>
         <CardContent>
           {list.value === null ? (
-            <p class="text-muted-foreground text-sm">Loading…</p>
+            <Loading />
           ) : list.value.length === 0 ? (
             <p class="text-muted-foreground text-sm">No workspaces yet. Group the repositories you work on together, e.g. api, shop and admin.</p>
           ) : (

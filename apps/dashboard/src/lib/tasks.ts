@@ -113,7 +113,7 @@ const NEXT_STEP: Partial<Record<WorkflowState, string>> = {
   WAIT_REVIEW_FIX_APPROVAL: 'Your decision: approve or reject the fix plan.',
   FIX_IMPLEMENTATION: 'Claude makes the approved fixes.',
   REVERIFICATION: 'The same reviewers re-check the fixes: run /jerry:review in Claude Code.',
-  FINAL_REPORT: 'JERRY did not complete the task: request changes or cancel it.',
+  FINAL_REPORT: 'JERRY did not complete the task: see what blocks it, then re-run the final checks, request changes or cancel it.',
   DONE: 'Nothing: the task is done. Committing stays with you.',
   BLOCKED: 'Something blocks the task; see its history.',
   PAUSED: 'Paused by you: resume it to continue.',
@@ -122,6 +122,12 @@ const NEXT_STEP: Partial<Record<WorkflowState, string>> = {
 
 /** What happens next, in one sentence (Claude's own next step while it is working). */
 export function nextStepText(task: TaskSummary): string {
+  // The user sent the report back and Claude has not picked it up yet (no checkpoint since): say how to continue.
+  const sentBack = task.state === 'IMPLEMENTATION' && task.reportDecision?.decision === 'REJECTED' ? task.reportDecision : null;
+  if (sentBack !== null && !((task.lastCheckpoint?.at ?? '') > sentBack.approvedAt)) {
+    const request = sentBack.comment.trim();
+    return `You requested changes${request === '' ? '' : ` ("${request}")`}: run /jerry:implement ${task.taskId} in Claude Code to continue.`;
+  }
   const claude = task.lastCheckpoint?.nextSteps[0];
   if (claude !== undefined && (task.state === 'IMPLEMENTATION' || task.state === 'FIX_IMPLEMENTATION')) return `Claude: ${claude}`;
   return NEXT_STEP[task.state] ?? STATE_LABELS[task.state];

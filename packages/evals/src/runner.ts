@@ -147,7 +147,7 @@ async function startCore(coreBundle: string, home: string, cwd: string): Promise
 }
 
 async function stopCore(core: { child: ChildProcess; info: CoreInfo }): Promise<void> {
-  await request(core.info, 'POST', '/api/v1/shutdown', {}).catch(() => null);
+  await request(core.info, 'POST', '/api/v1/shutdown', { requestedBy: 'evals', reason: 'eval case finished' }).catch(() => null);
   await new Promise<void>((resolve) => {
     const timer = setTimeout(() => {
       core.child.kill();

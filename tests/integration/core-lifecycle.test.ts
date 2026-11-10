@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
-import { autostartCore, isProcessAlive, jerryPaths, readCoreRuntimeInfo, requestCore } from '@jerry/platform';
+import { autostartCore, isProcessAlive, jerryPaths, readCoreHeartbeat, readCoreRuntimeInfo, requestCore, spawnDetachedCore } from '@jerry/platform';
 import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { CORE, ROOT, createFixtureRepo, preToolUse, runBridge, startCore, tempDir, type RunningCore } from '../helpers/harness.js';
 
@@ -28,7 +28,7 @@ async function waitFor<T>(probe: () => T | null, timeoutMs = 8000): Promise<T> {
 async function shutdownCoreOf(home: string): Promise<void> {
   try {
     const info = readCoreRuntimeInfo(home);
-    await requestCore(info, { method: 'POST', path: '/api/v1/shutdown', body: {}, timeoutMs: 2000 });
+    await requestCore(info, { method: 'POST', path: '/api/v1/shutdown', body: { requestedBy: 'tests', reason: 'test cleanup' }, timeoutMs: 2000 });
     await waitFor(() => (isProcessAlive(info.pid) ? null : true));
   } catch {
     // not running
@@ -145,5 +145,72 @@ describe('Core lifecycle: port, single instance, autostart', () => {
   it('does not start anything without an installed runtime (development sessions)', () => {
     const home = newHome();
     expect(autostartCore(home)).toBe('unavailable');
+  });
+});
+
+describe('Core diagnostics in core.log', () => {
+  const base = tempDir('diagnostics');
+  const homes: string[] = [];
+  const newHome = (): string => {
+    const home = path.join(base, `home-${homes.length}`);
+    homes.push(home);
+    return home;
+  };
+  const coreLog = (home: string): string => fs.readFileSync(jerryPaths(home).coreLogFile, 'utf8');
+  /** Starts Core the way hooks and the CLI do: detached, output appended to core.log. */
+  const spawnLogged = async (home: string, startedBy: string) => {
+    spawnDetachedCore(home, CORE, { ...process.env, JERRY_CORE_PORT: '0' }, startedBy);
+    return waitFor(() => (fs.existsSync(jerryPaths(home).coreInfoFile) ? readCoreRuntimeInfo(home) : null));
+  };
+  const stopWith = async (home: string, body: unknown) => {
+    const info = readCoreRuntimeInfo(home);
+    const answer = await requestCore(info, { method: 'POST', path: '/api/v1/shutdown', body, timeoutMs: 2000 });
+    await waitFor(() => (isProcessAlive(info.pid) ? null : true));
+    return { info, answer };
+  };
+
+  afterEach(async () => {
+    for (const home of homes) await shutdownCoreOf(home);
+  });
+  afterAll(() => fs.rmSync(base, { recursive: true, force: true }));
+
+  it('timestamps every line and names who started and who stopped Core, then the exit code', async () => {
+    const home = newHome();
+    const info = await spawnLogged(home, 'integration test');
+    // The heartbeat names this Core while it runs.
+    expect(readCoreHeartbeat(jerryPaths(home).coreAliveFile)).toMatchObject({ pid: info.pid });
+    await stopWith(home, { requestedBy: 'tests', reason: 'diagnostics test' });
+    const lines = coreLog(home).trimEnd().split('\n');
+    for (const line of lines) expect(line).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z /);
+    const order = (text: string) => lines.findIndex((line) => line.includes(text));
+    expect(order(`starting JERRY Core (integration test, from pid ${process.pid})`)).toBe(0);
+    expect(order('listening on 127.0.0.1')).toBeGreaterThan(0);
+    expect(order('JERRY Core stopping: shutdown requested via API by tests: diagnostics test')).toBeGreaterThan(order('listening on'));
+    expect(lines.at(-1)).toContain('JERRY Core exited with code 0');
+    // A clean stop removes the heartbeat.
+    expect(fs.existsSync(jerryPaths(home).coreAliveFile)).toBe(false);
+  });
+
+  it('still stops on an empty request from an older client, and refuses a malformed one', async () => {
+    const home = newHome();
+    const info = await spawnLogged(home, 'integration test');
+    await expect(requestCore(info, { method: 'POST', path: '/api/v1/shutdown', body: { requestedBy: 'someone' }, timeoutMs: 2000 })).rejects.toThrow(/400/);
+    expect(isProcessAlive(info.pid)).toBe(true);
+    await stopWith(home, {});
+    expect(coreLog(home)).toContain('shutdown requested via API (requester not given)');
+  });
+
+  it('reports at the next start a Core that ended without a clean stop, with when it was last seen', async () => {
+    const home = newHome();
+    const dead = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' });
+    const lastSeen = '2026-11-10T09:58:00.000Z';
+    fs.mkdirSync(jerryPaths(home).runDir, { recursive: true });
+    fs.writeFileSync(jerryPaths(home).coreAliveFile, JSON.stringify({ pid: Number(dead.stdout), version: '0.1.0', startedAt: '2026-11-10T08:00:00.000Z', aliveAt: lastSeen }));
+    await spawnLogged(home, 'integration test');
+    expect(coreLog(home)).toContain(`the previous JERRY Core (pid ${dead.stdout}, 0.1.0, started 2026-11-10T08:00:00.000Z, last seen alive ${lastSeen}) ended without a clean stop`);
+    // After a clean stop the next start has nothing to report.
+    await stopWith(home, { requestedBy: 'tests' });
+    await spawnLogged(home, 'integration test');
+    expect(coreLog(home).split('ended without a clean stop')).toHaveLength(2);
   });
 });

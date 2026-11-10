@@ -27,6 +27,8 @@ export interface JerryPaths {
   runDir: string;
   coreInfoFile: string;
   coreLockFile: string;
+  /** Core's heartbeat (pid, start, last alive); left behind only when Core ended without a clean stop. */
+  coreAliveFile: string;
   autostartStampFile: string;
   /** Present after "jerry core stop": hooks must not restart Core against the user's wish. */
   autostartDisabledFile: string;
@@ -74,6 +76,7 @@ export function jerryPaths(home: string): JerryPaths {
     runDir,
     coreInfoFile: path.join(runDir, 'core.json'),
     coreLockFile: path.join(runDir, 'core.lock'),
+    coreAliveFile: path.join(runDir, 'core-alive.json'),
     autostartStampFile: path.join(runDir, 'autostart.stamp'),
     autostartDisabledFile: path.join(runDir, 'autostart.disabled'),
     projectsFile: path.join(runDir, 'projects.json'),

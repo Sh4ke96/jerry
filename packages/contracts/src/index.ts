@@ -866,6 +866,18 @@ export const finalChecksRerunRequestSchema = z.object({ confirmTaskId: z.string(
 export const finalChecksRerunSchema = z.object({ check: completionCheckSchema, state: workflowStateSchema });
 export type FinalChecksRerun = z.infer<typeof finalChecksRerunSchema>;
 
+/** Who asks Core to stop; core.log names it so an ended Core can be traced. */
+export const CORE_SHUTDOWN_REQUESTERS = ['cli', 'desktop', 'evals', 'e2e', 'tests', 'other'] as const;
+
+/**
+ * POST /api/v1/shutdown. Both fields are optional: older clients send an empty object, and Core then
+ * logs that the requester was not given.
+ */
+export const coreShutdownRequestSchema = z
+  .object({ requestedBy: z.enum(CORE_SHUTDOWN_REQUESTERS).optional(), reason: z.string().trim().max(200).optional() })
+  .default({});
+export type CoreShutdownRequest = z.infer<typeof coreShutdownRequestSchema>;
+
 /** `path:line` or `path:line-line`, repo-relative (absolute paths inside the repository are accepted). */
 const evidenceSchema = z.string().trim().regex(/^.+:\d+(-\d+)?$/, 'evidence is path:line or path:line-line');
 

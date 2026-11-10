@@ -70,14 +70,15 @@ export function acquireSingleInstanceLock(lockFile: string): LockResult {
 
 /**
  * Starts Core as a detached background process with JERRY_HOME as working directory and output
- * appended to logs/core.log. Returns the child PID.
+ * appended to logs/core.log, after a line saying who started it. Returns the child PID.
  */
-export function spawnDetachedCore(home: string, coreScript: string, env: Env = process.env): number {
+export function spawnDetachedCore(home: string, coreScript: string, env: Env = process.env, startedBy = 'unknown starter'): number {
   const paths = jerryPaths(home);
   fs.mkdirSync(paths.logsDir, { recursive: true });
   rotateLog(paths.coreLogFile);
   const log = fs.openSync(paths.coreLogFile, 'a');
   try {
+    fs.writeSync(log, `${new Date().toISOString()} starting JERRY Core (${startedBy}, from pid ${process.pid})\n`);
     const child = spawn(process.execPath, [coreScript], {
       cwd: home,
       detached: true,
@@ -136,6 +137,39 @@ export function autostartCore(home: string, now: number = Date.now()): 'started'
   assertJerryHomeOutsideRepositories(home);
   fs.mkdirSync(paths.runDir, { recursive: true });
   fs.writeFileSync(paths.autostartStampFile, String(now));
-  spawnDetachedCore(home, paths.runtimeCoreFile);
+  spawnDetachedCore(home, paths.runtimeCoreFile, process.env, 'automatic start by a Claude Code hook or JERRY MCP server');
   return 'started';
+}
+
+/** Core's heartbeat in run/core-alive.json: written at start and every minute, removed on a clean stop. */
+export interface CoreHeartbeat {
+  pid: number;
+  version: string;
+  startedAt: string;
+  aliveAt: string;
+}
+
+/** The heartbeat a Core left behind, or null when there is none or it is unreadable. */
+export function readCoreHeartbeat(file: string): CoreHeartbeat | null {
+  try {
+    const value = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<CoreHeartbeat>;
+    if (!Number.isInteger(value.pid) || typeof value.startedAt !== 'string' || typeof value.aliveAt !== 'string') return null;
+    return { pid: value.pid!, version: typeof value.version === 'string' ? value.version : 'unknown', startedAt: value.startedAt, aliveAt: value.aliveAt };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * What a new Core logs about the previous one: a heartbeat it left behind means it never stopped
+ * cleanly (a clean stop removes it). Null when there is nothing to say: no heartbeat, our own, or
+ * one of a Core that is still alive.
+ */
+export function describeUncleanEnd(previous: CoreHeartbeat | null, ownPid: number, alive: (pid: number) => boolean = isProcessAlive): string | null {
+  if (previous === null || previous.pid === ownPid || alive(previous.pid)) return null;
+  return (
+    `the previous JERRY Core (pid ${previous.pid}, ${previous.version}, started ${previous.startedAt}, last seen alive ${previous.aliveAt}) ended without a clean stop: ` +
+    'something outside JERRY ended it (Task Manager, taskkill, the process tree that started it closing, a Windows restart or sign-out) or it crashed natively. ' +
+    'For a native crash see Windows Event Viewer, Windows Logs > Application, entries for node.exe.'
+  );
 }

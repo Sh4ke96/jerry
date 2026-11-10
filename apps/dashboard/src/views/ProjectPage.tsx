@@ -13,6 +13,7 @@ import { TaskTile } from '../components/TaskTile';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
+import { Loading } from '../components/ui/spinner';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { formatTime, isOpen } from '../format';
 import { ATTENTION } from '../lib/classes';
@@ -259,7 +260,7 @@ export const ProjectPage = defineComponent({
           </CardHeader>
           <CardContent>
             {usage.value === null ? (
-              <p class="text-muted-foreground text-sm">Loading…</p>
+              <Loading />
             ) : stored === undefined ? (
               <p class="text-muted-foreground text-sm">JERRY stores nothing about this repository.</p>
             ) : (

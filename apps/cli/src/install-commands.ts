@@ -180,7 +180,7 @@ export async function uninstall(options: { purgeData: boolean }): Promise<void> 
   assertJerryHomeOutsideRepositories(home);
   // Before the runtime (and with --purge-data the saved previous status line and telemetry keys) is deleted.
   reportCollectionChange(disableUsage({ home, claudeConfigDir: resolveClaudeConfigDir() }), false);
-  await stopCore();
+  await stopCore('jerry uninstall');
   fs.rmSync(paths.marketplaceDir, { recursive: true, force: true });
   fs.rmSync(paths.runtimeDir, { recursive: true, force: true });
   fs.rmSync(paths.installManifestFile, { force: true });

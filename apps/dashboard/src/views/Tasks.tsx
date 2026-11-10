@@ -10,7 +10,7 @@ import { Button } from '../components/ui/button';
 import { Card, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from '../components/ui/dropdown-menu';
 import { Input } from '../components/ui/input';
-import { Tabs, TabsList, TabsTrigger } from '../components/ui/tabs';
+import { FilterTabs } from '../components/FilterTabs';
 import { CHIP } from '../lib/classes';
 import { insideRoot, projectName, TASK_FILTERS, taskTouches, type TaskFilter } from '../lib/tasks';
 import { handleError, state } from '../state';
@@ -111,16 +111,14 @@ export const Tasks = defineComponent({
     return () => (
       <div class="flex flex-col gap-4 md:gap-6">
         <div class="flex flex-col gap-3">
-          <Tabs modelValue={taskFilters.filter} onUpdate:modelValue={(value: string) => (taskFilters.filter = value as TaskFilter)}>
-            <TabsList aria-label="Filter tasks" class="task-filters max-w-full justify-start overflow-x-auto">
-              {TASK_FILTERS.map((option) => (
-                <TabsTrigger key={option.id} value={option.id} data-filter={option.id} class="flex-none">
-                  {option.label}
-                  <span class="text-muted-foreground tabular-nums">{count(option.id)}</span>
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </Tabs>
+          <FilterTabs
+            class="task-filters"
+            label="Filter tasks"
+            marker="filter"
+            modelValue={taskFilters.filter}
+            tabs={TASK_FILTERS.map((option) => ({ value: option.id, label: option.label, count: count(option.id) }))}
+            onUpdate:modelValue={(value: string) => (taskFilters.filter = value as TaskFilter)}
+          />
           <div class="flex flex-wrap items-center gap-2">
             {projectFilter()}
             <div class="relative w-full max-w-xs">

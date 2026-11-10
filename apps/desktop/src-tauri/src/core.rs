@@ -9,7 +9,7 @@
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -25,6 +25,9 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The task list can be large (analyses, agent runs); this caps what is read of it.
 const MAX_RESPONSE_BYTES: u64 = 32 * 1024 * 1024;
+
+/// The shutdown request body: Core writes the requester and reason to core.log.
+const SHUTDOWN_BODY: &str = r#"{"requestedBy":"desktop","reason":"Stop in the desktop app"}"#;
 
 // ---------------------------------------------------------------------------------------------
 // JERRY_HOME
@@ -334,10 +337,6 @@ impl CoreClient {
         self.finish(request.send(body))
     }
 
-    fn post_empty_object(&self, path: &str) -> Result<Value, CoreError> {
-        self.post_json(path, "{}")
-    }
-
     /// GET /api/v1/status
     pub fn status(&self) -> Result<CoreStatus, CoreError> {
         let body = self.get("/api/v1/status")?;
@@ -401,9 +400,9 @@ impl CoreClient {
         Ok(url.to_owned())
     }
 
-    /// POST /api/v1/shutdown
+    /// POST /api/v1/shutdown, naming the desktop app as the requester so core.log says who stopped Core.
     pub fn shutdown(&self) -> Result<(), CoreError> {
-        self.post_empty_object("/api/v1/shutdown").map(|_| ())
+        self.post_json("/api/v1/shutdown", SHUTDOWN_BODY).map(|_| ())
     }
 }
 
@@ -444,11 +443,13 @@ pub fn start_core(home: &Path, node: &OsStr) -> Result<StartOutcome, String> {
     }
     fs::create_dir_all(&paths.logs_dir).map_err(|error| format!("Cannot create {}: {error}", paths.logs_dir.display()))?;
     rotate_log(&paths.core_log_file);
-    let log = fs::OpenOptions::new()
+    let mut log = fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&paths.core_log_file)
         .map_err(|error| format!("Cannot open {}: {error}", paths.core_log_file.display()))?;
+    // Who started Core, in Core's own log format, so core.log tells the starts apart.
+    let _ = writeln!(log, "{} starting JERRY Core (desktop app, from pid {})", iso_now(), std::process::id());
     let log_err = log.try_clone().map_err(|error| error.to_string())?;
 
     let mut command = Command::new(node);
@@ -978,11 +979,14 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_posts_an_empty_object() {
+    fn shutdown_names_the_desktop_app_as_the_requester() {
         let (port, seen) = mock_core(|_| vec![(202, r#"{"stopping":true}"#.to_owned())]);
         CoreClient::new(&info_for(port), REQUEST_TIMEOUT).shutdown().unwrap();
         let request = seen.recv().unwrap();
-        assert_eq!((request.method.as_str(), request.path.as_str(), request.body.as_str()), ("POST", "/api/v1/shutdown", "{}"));
+        assert_eq!((request.method.as_str(), request.path.as_str()), ("POST", "/api/v1/shutdown"));
+        let body: Value = serde_json::from_str(&request.body).unwrap();
+        assert_eq!(body["requestedBy"], "desktop");
+        assert_eq!(body["reason"], "Stop in the desktop app");
         assert_authorized(&request, port);
     }
 
@@ -1068,7 +1072,12 @@ mod tests {
         let started: Value = serde_json::from_str(&fs::read_to_string(&marker).unwrap()).unwrap();
         let same = |value: &Value| fs::canonicalize(value.as_str().unwrap()).unwrap() == fs::canonicalize(home.path()).unwrap();
         assert!(same(&started["cwd"]) && same(&started["home"]), "{started}");
-        assert!(fs::read_to_string(&paths.core_log_file).unwrap().contains("fake core says hello"));
+        let log = fs::read_to_string(&paths.core_log_file).unwrap();
+        assert!(log.contains("fake core says hello"));
+        // The app names itself as the starter before Core's own output.
+        let start_line = log.lines().next().unwrap();
+        assert!(start_line.ends_with(&format!(" starting JERRY Core (desktop app, from pid {})", std::process::id())), "{start_line}");
+        assert!(log.find("starting JERRY Core").unwrap() < log.find("fake core says hello").unwrap());
         assert_eq!(fs::metadata(home.path().join("logs").join("core.log.1")).unwrap().len(), CORE_LOG_MAX_BYTES + 1, "the big log was rotated");
     }
 

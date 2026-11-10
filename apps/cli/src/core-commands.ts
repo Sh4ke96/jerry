@@ -37,7 +37,7 @@ export async function startCore(): Promise<void> {
 
   const coreScript = fs.existsSync(SIBLING_CORE) ? SIBLING_CORE : paths.runtimeCoreFile;
   if (!fs.existsSync(coreScript)) throw new Error(`Core not found at ${SIBLING_CORE} or ${paths.runtimeCoreFile}. Run "pnpm build" or "jerry install".`);
-  spawnDetachedCore(home, coreScript);
+  spawnDetachedCore(home, coreScript, process.env, 'jerry core start');
 
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
@@ -54,8 +54,11 @@ export async function startCore(): Promise<void> {
   throw new Error(`JERRY Core did not become healthy within 10 s; see ${paths.logsDir}\\core.log`);
 }
 
-/** Stops Core and disables automatic starts until the user runs "jerry core start" again. */
-export async function stopCore(): Promise<void> {
+/**
+ * Stops Core and disables automatic starts until the user runs "jerry core start" again. `reason`
+ * is the command that stopped it, which Core writes to core.log.
+ */
+export async function stopCore(reason = 'jerry core stop'): Promise<void> {
   const home = resolveJerryHome();
   const paths = jerryPaths(home);
   fs.mkdirSync(paths.runDir, { recursive: true });
@@ -72,7 +75,7 @@ export async function stopCore(): Promise<void> {
     throw error;
   }
   try {
-    await requestCore(info, { method: 'POST', path: '/api/v1/shutdown', body: {}, timeoutMs: 2000 });
+    await requestCore(info, { method: 'POST', path: '/api/v1/shutdown', body: { requestedBy: 'cli', reason }, timeoutMs: 2000 });
   } catch (error) {
     if (!(error instanceof CoreUnavailableError)) throw error;
     console.log(mark('warning', `JERRY Core (pid ${info.pid}) did not answer; it is probably already stopped.`));

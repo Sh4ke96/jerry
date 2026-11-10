@@ -13,6 +13,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/
 import { Label } from './ui/label';
 import { Separator } from './ui/separator';
 import { Skeleton } from './ui/skeleton';
+import { Spinner } from './ui/spinner';
 import { Switch } from './ui/switch';
 
 const STATUSLINE: Record<string, { label: string; tone: Tone }> = {
@@ -113,7 +114,7 @@ export const UsageSettings = defineComponent({
                 Cancel
               </AlertDialogCancel>
               <Button type="button" data-confirm-collection disabled={busy.value} onClick={() => void setCollection(enabling)}>
-                {busy.value ? 'Working…' : enabling ? 'Turn on' : 'Turn off'}
+                {busy.value ? [<Spinner key="spinner" label="Working…" />, 'Working…'] : enabling ? 'Turn on' : 'Turn off'}
               </Button>
             </AlertDialogFooter>
           </AlertDialogContent>
